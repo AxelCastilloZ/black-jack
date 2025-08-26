@@ -1,0 +1,13 @@
+# Node / pnpm
+node_modules/
+.pnpm-store/
+dist/
+coverage/
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Entornos
+.env
+.env.*
