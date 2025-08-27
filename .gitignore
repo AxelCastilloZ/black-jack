@@ -1,13 +1,51 @@
+# ──────────────────────────────
 # Node / pnpm
+# ──────────────────────────────
 node_modules/
 .pnpm-store/
 dist/
 coverage/
 
+# ──────────────────────────────
+# .NET / Visual Studio
+# ──────────────────────────────
+# Build
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+out/
+
+# VS / IDE
+.vs/
+.idea/
+*.user
+*.userosscache
+*.suo
+*.sln.docstates
+
+# Otros archivos de proyecto
+project.lock.json
+*.csproj.user
+
+# ──────────────────────────────
+# Publicaciones
+# ──────────────────────────────
+publish/
+
+# ──────────────────────────────
 # Sistema
+# ──────────────────────────────
 .DS_Store
 Thumbs.db
+[Dd]esktop.ini
 
-# Entornos
+# ──────────────────────────────
+# Entornos / Secretos
+# ──────────────────────────────
 .env
 .env.*
+secrets.json
+*.pfx
+*.p12
+*.key
+*.cer

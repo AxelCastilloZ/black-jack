@@ -1,4 +1,4 @@
-@black_jack_backend_HostAddress = http://localhost:5152
+@black_jack_backend_HostAddress = http://localhost:5080
 
 GET {{black_jack_backend_HostAddress}}/weatherforecast/
 Accept: application/json

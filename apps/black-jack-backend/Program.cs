@@ -1,19 +1,15 @@
-using DotNetEnv;
-
-var envFile = Path.Combine(Directory.GetCurrentDirectory(), ".env");
-if (File.Exists(envFile))
-{
-    Env.Load(envFile);
-}
-
 var builder = WebApplication.CreateBuilder(args);
 
+// Add services to the container.
+
 builder.Services.AddControllers();
+// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
+// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
