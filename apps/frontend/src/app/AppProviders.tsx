@@ -1,16 +1,12 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Router, RouterProvider } from '@tanstack/react-router'
-import { router } from './router';
-import { Toaster } from "react-hot-toast";
+import type { PropsWithChildren } from "react";
+import { useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-export const queryClient = new QueryClient();
-
-export function AppProviders() {
-  return (
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-      <Toaster position="top-right" />
-    </QueryClientProvider>
-  );
+// Exportación nombrada (para `import { AppProviders } from ...`)
+export function AppProviders({ children }: PropsWithChildren) {
+  const [client] = useState(() => new QueryClient());
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
+// Exportación por defecto (para `import AppProviders from ...`)
+export default AppProviders;
