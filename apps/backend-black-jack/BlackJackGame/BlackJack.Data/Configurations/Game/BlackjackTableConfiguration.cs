@@ -15,21 +15,27 @@ public class BlackjackTableConfiguration : IEntityTypeConfiguration<BlackjackTab
             .HasMaxLength(100);
 
         builder.Property(t => t.Status)
-            .HasConversion<string>()
+            .HasConversion<string>()   // enum a string
             .HasMaxLength(50);
 
-        // Configure Money value objects
+        // --- Money (Value Objects) ---
         builder.OwnsOne(t => t.MinBet, money =>
         {
-            money.Property(m => m.Amount).HasColumnName("MinBet");
+            money.Property(m => m.Amount)
+                 .HasColumnName("MinBet")
+                 .HasColumnType("decimal(18,2)")
+                 .IsRequired();
         });
 
         builder.OwnsOne(t => t.MaxBet, money =>
         {
-            money.Property(m => m.Amount).HasColumnName("MaxBet");
+            money.Property(m => m.Amount)
+                 .HasColumnName("MaxBet")
+                 .HasColumnType("decimal(18,2)")
+                 .IsRequired();
         });
 
-        // Configure relationships
+        // --- Relaciones ---
         builder.HasMany(t => t.Seats)
             .WithOne()
             .HasForeignKey("TableId")
@@ -40,7 +46,7 @@ public class BlackjackTableConfiguration : IEntityTypeConfiguration<BlackjackTab
             .HasForeignKey("TableId")
             .OnDelete(DeleteBehavior.Cascade);
 
-        // Ignore complex properties for now
+        // --- Propiedades complejas (no mapeadas por ahora) ---
         builder.Ignore(t => t.Deck);
         builder.Ignore(t => t.DealerHand);
     }

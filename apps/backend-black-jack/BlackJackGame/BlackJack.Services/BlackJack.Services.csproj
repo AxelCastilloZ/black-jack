@@ -6,8 +6,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\BlackJack.Domain\BlackJack.Domain.csproj" />
-  </ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\BlackJack.Data\BlackJack.Data.csproj" />
+	</ItemGroup>
+
 
 </Project>

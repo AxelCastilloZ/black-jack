@@ -10,32 +10,38 @@ public class UserProfileConfiguration : IEntityTypeConfiguration<UserProfile>
     {
         builder.HasKey(u => u.Id);
 
-        // Configure PlayerId value object
-        builder.OwnsOne(u => u.PlayerId, playerId =>
+        // PlayerId como VO (owned en la misma tabla)
+        builder.OwnsOne(u => u.PlayerId, pid =>
         {
-            playerId.Property(pid => pid.Value).HasColumnName("PlayerId");
+            pid.Property(p => p.Value)
+               .HasColumnName("PlayerId")
+               .IsRequired();
+
+            // ❌ Elimina cualquier HasIndex aquí; algunas versiones no lo soportan en owned
         });
 
         builder.Property(u => u.DisplayName)
-            .IsRequired()
-            .HasMaxLength(50);
+               .IsRequired()
+               .HasMaxLength(50);
 
         builder.Property(u => u.Email)
-            .IsRequired()
-            .HasMaxLength(255);
+               .IsRequired()
+               .HasMaxLength(255);
 
-        // Configure Money value objects
         builder.OwnsOne(u => u.Balance, money =>
         {
-            money.Property(m => m.Amount).HasColumnName("Balance");
+            money.Property(m => m.Amount)
+                 .HasColumnName("Balance")
+                 .HasColumnType("decimal(18,2)")
+                 .IsRequired();
         });
 
         builder.OwnsOne(u => u.TotalWinnings, money =>
         {
-            money.Property(m => m.Amount).HasColumnName("TotalWinnings");
+            money.Property(m => m.Amount)
+                 .HasColumnName("TotalWinnings")
+                 .HasColumnType("decimal(18,2)")
+                 .IsRequired();
         });
-
-        // Add unique index on PlayerId
-        builder.HasIndex("PlayerId").IsUnique();
     }
 }

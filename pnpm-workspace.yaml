@@ -1,2 +1,4 @@
 packages:
-  - "apps/*"
+  - 'apps/*'
+  - 'apps/*/*'   # <-- incluye subcarpetas como frontend-black-jack/blackjack-frontend
+  - 'shared'     # si tienes este paquete
