@@ -1,4 +1,4 @@
-// src/services/signalr.ts
+// src/services/signalr.ts - Versión completa con ResetTable y debugging
 import {
   HubConnection,
   HubConnectionBuilder,
@@ -60,6 +60,12 @@ interface Player {
   currentBet: number
   position: number
   isActive: boolean
+  hand?: {
+    cards: Card[]
+    handValue: number
+    isBusted: boolean
+    hasBlackjack: boolean
+  }
 }
 
 interface Card {
@@ -118,22 +124,22 @@ class SignalRService {
     return new HubConnectionBuilder()
       .withUrl(url, options)
       .withAutomaticReconnect()
-      .configureLogging(import.meta.env.DEV ? LogLevel.Information : LogLevel.Warning)
+      .configureLogging(LogLevel.Information) // Forzar logging detallado
       .build()
   }
 
   private attachCommonHandlers(conn: HubConnection, which: 'lobby' | 'game') {
     conn.onreconnecting(() => {
-      if (import.meta.env.DEV) console.warn(`[SignalR:${which}] reconnecting...`)
+      console.warn(`[SignalR:${which}] reconnecting...`)
       this.emitState('Reconnecting')
     })
     conn.onreconnected(() => {
-      if (import.meta.env.DEV) console.info(`[SignalR:${which}] reconnected`)
+      console.info(`[SignalR:${which}] reconnected`)
       this.emitState('Connected')
       this.emitHubs()
     })
     conn.onclose(() => {
-      if (import.meta.env.DEV) console.warn(`[SignalR:${which}] closed`)
+      console.warn(`[SignalR:${which}] closed`)
       this.emitState('Disconnected')
       this.emitHubs()
     })
@@ -148,15 +154,17 @@ class SignalRService {
     this.lobby.off('joinedlobby')
 
     this.lobby.on('JoinedLobby', () => {
-      if (import.meta.env.DEV) console.info('[Lobby] JoinedLobby recibido')
+      console.info('[Lobby] JoinedLobby recibido')
     })
     this.lobby.on('joinedlobby', () => {
-      if (import.meta.env.DEV) console.info('[Lobby] joinedlobby recibido')
+      console.info('[Lobby] joinedlobby recibido')
     })
     this.lobby.on('TableUpdated', (u: LobbyUpdate) => {
+      console.info('[Lobby] TableUpdated:', u)
       this.lobbyUpdListeners.forEach(fn => fn(u))
     })
     this.lobby.on('TableCreated', (t: NewTableCreated) => {
+      console.info('[Lobby] TableCreated:', t)
       this.newTableListeners.forEach(fn => fn(t))
     })
 
@@ -166,44 +174,79 @@ class SignalRService {
   private attachGameDomainHandlers() {
     if (!this.game || this.gameHandlersAttached) return
 
+    // Limpiar handlers existentes
     this.game.off('GameStateUpdated')
     this.game.off('PlayerJoined')
     this.game.off('PlayerLeft')
     this.game.off('playerJoined')
     this.game.off('playerLeft')
     this.game.off('PlayerJoinedSeat')
+    this.game.off('PlayerLeftSeat')
     this.game.off('ReceiveMessage')
+    this.game.off('RoundStarted')
+    this.game.off('TableReset')
 
     this.game.on('PlayerJoined', (connectionId: string) => {
-      if (import.meta.env.DEV) console.info(`[Game] PlayerJoined: ${connectionId}`)
+      console.info(`[Game] PlayerJoined: ${connectionId}`)
       this.onPlayerJoined?.({ connectionId })
     })
+    
     this.game.on('PlayerLeft', (connectionId: string) => {
-      if (import.meta.env.DEV) console.info(`[Game] PlayerLeft: ${connectionId}`)
+      console.info(`[Game] PlayerLeft: ${connectionId}`)
       this.onPlayerLeft?.(connectionId)
     })
+    
     this.game.on('playerJoined', (connectionId: string) => {
-      if (import.meta.env.DEV) console.info(`[Game] playerJoined: ${connectionId}`)
+      console.info(`[Game] playerJoined: ${connectionId}`)
       this.onPlayerJoined?.({ connectionId })
     })
+    
     this.game.on('playerLeft', (connectionId: string) => {
-      if (import.meta.env.DEV) console.info(`[Game] playerLeft: ${connectionId}`)
+      console.info(`[Game] playerLeft: ${connectionId}`)
       this.onPlayerLeft?.(connectionId)
     })
-    this.game.on(
-      'PlayerJoinedSeat',
-      (connectionId: string, seatPosition: number, playerId: string) => {
-        if (import.meta.env.DEV)
-          console.info(`[Game] PlayerJoinedSeat:`, { connectionId, seatPosition, playerId })
-        this.onPlayerJoined?.({ connectionId, seatPosition, playerId })
-      },
-    )
+    
+    this.game.on('PlayerJoinedSeat', (connectionId: string, seatPosition: number, playerId: string) => {
+      console.info(`[Game] PlayerJoinedSeat:`, { connectionId, seatPosition, playerId })
+      this.onPlayerJoined?.({ connectionId, seatPosition, playerId })
+    })
+    
+    this.game.on('PlayerLeftSeat', (connectionId: string, playerId: string) => {
+      console.info(`[Game] PlayerLeftSeat:`, { connectionId, playerId })
+      this.onPlayerLeft?.(playerId)
+    })
+    
+    this.game.on('RoundStarted', (data: any) => {
+      console.info('[Game] RoundStarted:', data)
+    })
+
+    this.game.on('TableReset', (data: any) => {
+      console.info('[Game] TableReset:', data)
+    })
+    
+    // HANDLER MAS IMPORTANTE: GameStateUpdated
     this.game.on('GameStateUpdated', (state: GameState) => {
-      if (import.meta.env.DEV) console.info('[Game] GameStateUpdated:', state)
+      console.group('🔄 [Game] GameStateUpdated RECIBIDO')
+      console.log('Estado completo:', state)
+      console.log('Número de jugadores:', state.players?.length || 0)
+      console.log('Estado de la mesa:', state.status)
+      console.log('Cartas del dealer:', state.dealer?.hand?.length || 0)
+      console.log('Jugadores por posición:')
+      if (state.players) {
+        state.players.forEach(p => {
+          console.log(`  - Posición ${p.position}: ${p.displayName} (ID: ${p.id})`)
+          if (p.hand && p.hand.cards) {
+            console.log(`    Cartas: ${p.hand.cards.length}, Valor: ${p.hand.handValue}`)
+          }
+        })
+      }
+      console.groupEnd()
+      
       this.onGameStateUpdate?.(state)
     })
+    
     this.game.on('ReceiveMessage', (connectionId: string, message: string) => {
-      if (import.meta.env.DEV) console.info('[Game] ReceiveMessage:', { connectionId, message })
+      console.info('[Game] ReceiveMessage:', { connectionId, message })
       const chatMessage: ChatMessage = {
         id: Date.now().toString(),
         playerName: 'Jugador',
@@ -215,6 +258,7 @@ class SignalRService {
     })
 
     this.gameHandlersAttached = true
+    console.info('[SignalR] Game handlers attached successfully')
   }
 
   // ===== API pública =====
@@ -222,7 +266,7 @@ class SignalRService {
     if (this.starting) return false
     if (!authService.getToken()) {
       this.emitState('Disconnected')
-      if (import.meta.env.DEV) console.warn('[SignalR] No token; no se inicia')
+      console.warn('[SignalR] No token; no se inicia')
       return false
     }
 
@@ -254,7 +298,7 @@ class SignalRService {
 
       await this.joinLobby()
 
-      if (import.meta.env.DEV) console.info('[SignalR] conexiones iniciadas')
+      console.info('[SignalR] conexiones iniciadas exitosamente')
       this.emitState('Connected')
       this.emitHubs()
       return true
@@ -313,7 +357,9 @@ class SignalRService {
       throw new Error('Not connected to game hub')
     }
     try {
+      console.log(`[SignalR] Invocando JoinTable para mesa: ${tableId}`)
       await this.game.invoke('JoinTable', tableId)
+      console.log(`[SignalR] JoinTable exitoso`)
     } catch (error) {
       console.error('Error joining table via SignalR:', error)
       throw error
@@ -329,34 +375,56 @@ class SignalRService {
     }
   }
 
-  // JoinSeat normalizado:
-  // - fuerza index 1-based (varios backends lo esperan así)
-  // - intenta (tableId, position, playerId) y si falla usa (tableId, position)
+  // JoinSeat CORREGIDO con debugging
   async joinSeat(tableId: string, position: number) {
     if (this.game?.state !== HubConnectionState.Connected) {
       throw new Error('Not connected to game hub')
     }
     try {
-      const seatNumber = position <= 0 ? position + 1 : position
       const user = authService.getCurrentUser()
       const playerId = user?.id
 
-      if (import.meta.env.DEV)
-        console.info(
-          `[Game] JoinSeat invocado: ${tableId}, posición ${seatNumber}, playerId: ${playerId}`,
-        )
+      console.group(`🎮 [SignalR] JoinSeat iniciado`)
+      console.log(`Mesa: ${tableId}`)
+      console.log(`Posición: ${position}`)
+      console.log(`Usuario ID: ${playerId}`)
+      console.log(`Usuario: ${user?.displayName}`)
+      console.groupEnd()
 
-      try {
-        await this.game.invoke('JoinSeat', tableId, seatNumber, playerId)
-      } catch (err) {
-        if (import.meta.env.DEV)
-          console.warn('[Game] JoinSeat(3 args) falló, probando (2 args)...', err)
-        await this.game.invoke('JoinSeat', tableId, seatNumber)
-      }
+      // Enviar posición sin modificar (el backend espera 0-5)
+      await this.game.invoke('JoinSeat', tableId, position)
 
-      if (import.meta.env.DEV) console.info('[Game] JoinSeat exitoso')
+      console.log(`✅ [SignalR] JoinSeat completado exitosamente`)
     } catch (error) {
-      console.error('Error joining seat:', error)
+      console.error('❌ [SignalR] Error joining seat:', error)
+      throw error
+    }
+  }
+
+  async leaveSeat(tableId: string) {
+    if (this.game?.state !== HubConnectionState.Connected) {
+      throw new Error('Not connected to game hub')
+    }
+    try {
+      console.log(`🚪 [SignalR] LeaveSeat iniciado para mesa: ${tableId}`)
+      await this.game.invoke('LeaveSeat', tableId)
+      console.log(`✅ [SignalR] LeaveSeat completado`)
+    } catch (error) {
+      console.error('❌ [SignalR] Error leaving seat:', error)
+      throw error
+    }
+  }
+
+  async resetTable(tableId: string) {
+    if (this.game?.state !== HubConnectionState.Connected) {
+      throw new Error('Not connected to game hub')
+    }
+    try {
+      console.info(`[Game] ResetTable invocado para mesa: ${tableId}`)
+      await this.game.invoke('ResetTable', tableId)
+      console.info('[Game] ResetTable exitoso')
+    } catch (error) {
+      console.error('Error resetting table:', error)
       throw error
     }
   }
@@ -375,6 +443,20 @@ class SignalRService {
 
   async sendChatMessage(tableId: string, message: string) {
     return this.sendMessage(tableId, message)
+  }
+
+  async startRound(tableId: string) {
+    if (this.game?.state !== HubConnectionState.Connected) {
+      throw new Error('Not connected to game hub')
+    }
+    try {
+      console.info(`[Game] StartRound invocado para mesa: ${tableId}`)
+      await this.game.invoke('StartRound', tableId)
+      console.info('[Game] StartRound exitoso')
+    } catch (error) {
+      console.error('Error starting round:', error)
+      throw error
+    }
   }
 
   // Métodos aún no implementados en tu GameHub

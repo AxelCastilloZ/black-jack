@@ -1,10 +1,17 @@
-// src/components/game/BlackjackTable.tsx
+// src/components/game/BlackJackTable.tsx
 import React, { useState, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { signalRService, type GameState } from '../../services/signalr'
 import { authService } from '../../services/auth'
 
-// Tipos simplificados para tu backend actual
+// Tipos alineados al payload que envía tu GameHub.NotifyGameState
+interface Card {
+  suit: string    // p.ej. "Spades", "Hearts", "Clubs", "Diamonds"
+  rank: string    // p.ej. "Ace", "King", "10", "7", etc.
+  value: number
+  isHidden?: boolean
+}
+
 interface Player {
   id: string
   displayName: string
@@ -12,11 +19,78 @@ interface Player {
   currentBet: number
   position: number
   isActive: boolean
+  hand?: {
+    cards: Card[]
+    handValue: number
+    isBusted: boolean
+    hasBlackjack: boolean
+  }
 }
 
 interface BlackjackTableProps {
   gameState: GameState
   onGameAction?: (action: string, data?: any) => void
+}
+
+// Helpers para mostrar ♠ ♥ ♦ ♣ y ranks cortos
+function mapSuit(s: string): '♠'|'♥'|'♦'|'♣' {
+  const k = s.toLowerCase()
+  if (k.includes('spade')) return '♠'
+  if (k.includes('heart')) return '♥'
+  if (k.includes('diamond')) return '♦'
+  return '♣'
+}
+function mapRank(r: string): string {
+  const k = r.toLowerCase()
+  const table: Record<string,string> = { ace:'A', jack:'J', queen:'Q', king:'K' }
+  if (table[k]) return table[k]
+  const num = parseInt(k, 10)
+  return Number.isFinite(num) ? String(num) : (r.length > 3 ? r.slice(0,2) : r[0]?.toUpperCase() || r)
+}
+
+// Carta visual
+const CardFace: React.FC<{ card: Card }> = ({ card }) => {
+  if (card.isHidden) {
+    return (
+      <div
+        className="w-12 h-16 rounded-md border border-gray-700 bg-gradient-to-br from-gray-700 to-gray-900 flex items-center justify-center shadow"
+        title="Carta oculta"
+      >
+        <div className="w-10 h-14 rounded bg-gray-800 border border-gray-600" />
+      </div>
+    )
+  }
+  const rank = mapRank(card.rank)
+  const suit = mapSuit(card.suit)
+  const isRed = suit === '♥' || suit === '♦'
+  return (
+    <div
+      className="w-12 h-16 rounded-md border border-gray-300 bg-white flex items-center justify-center shadow"
+      title={`${rank}${suit}`}
+    >
+      <div className={`text-sm font-bold ${isRed ? 'text-red-600' : 'text-gray-900'}`}>
+        {rank}{suit}
+      </div>
+    </div>
+  )
+}
+
+// Mano de jugador (bajo el asiento)
+const PlayerHand: React.FC<{ player: Player }> = ({ player }) => {
+  const hand = player.hand
+  if (!hand || !hand.cards?.length) return null
+  return (
+    <div className="mt-2 flex items-end justify-center gap-2">
+      {hand.cards.map((c, idx) => (
+        <motion.div key={idx} initial={{ y: 6, opacity: 0 }} animate={{ y: 0, opacity: 1 }}>
+          <CardFace card={c} />
+        </motion.div>
+      ))}
+      <div className="ml-1 text-xs text-white/90 bg-black/50 px-2 py-1 rounded">
+        {hand.isBusted ? 'BUST' : hand.hasBlackjack ? 'BLACKJACK' : `Total: ${hand.handValue}`}
+      </div>
+    </div>
+  )
 }
 
 // Componente de chip de apuesta
@@ -47,27 +121,27 @@ const BettingChip: React.FC<{
   )
 }
 
-// Componente de asiento de jugador
+// Asiento de jugador
 const PlayerSeat: React.FC<{
   player: Player | null
   position: number
   isCurrentTurn: boolean
   onJoinSeat: (position: number) => void
+  onLeaveSeat: (position: number) => void
   currentUser: any
   gameStatus: string
-}> = ({ player, position, isCurrentTurn, onJoinSeat, currentUser, gameStatus }) => {
+}> = ({ player, position, isCurrentTurn, onJoinSeat, onLeaveSeat, currentUser, gameStatus }) => {
   const isEmpty = !player
   const isCurrentUser = player?.id === currentUser?.id
 
   const getPositionClasses = (pos: number) => {
-    // Posiciones alrededor de una mesa ovalada (6 asientos)
     const positions = [
-      'absolute bottom-16 left-1/2 transform -translate-x-1/2', // Posición 0
-      'absolute bottom-24 left-16', // Posición 1
-      'absolute bottom-32 left-4', // Posición 2
-      'absolute top-32 left-4', // Posición 3
-      'absolute bottom-32 right-4', // Posición 4
-      'absolute bottom-24 right-16', // Posición 5
+      'absolute bottom-16 left-1/2 transform -translate-x-1/2', // 0
+      'absolute bottom-24 left-16',                              // 1
+      'absolute bottom-32 left-4',                               // 2
+      'absolute top-32 left-4',                                  // 3
+      'absolute bottom-32 right-4',                              // 4
+      'absolute bottom-24 right-16',                             // 5
     ]
     return positions[pos] || positions[0]
   }
@@ -80,7 +154,9 @@ const PlayerSeat: React.FC<{
             ? 'border-yellow-400 bg-yellow-100 shadow-xl' 
             : isEmpty 
               ? 'border-gray-600 bg-gray-800 border-dashed opacity-60 hover:opacity-100 hover:border-green-400'
-              : 'border-green-600 bg-green-100'
+              : isCurrentUser
+                ? 'border-blue-600 bg-blue-100'
+                : 'border-green-600 bg-green-100'
         } flex items-center justify-center transition-all duration-300 cursor-pointer relative`}
         whileHover={isEmpty && gameStatus === 'WaitingForPlayers' ? { 
           scale: 1.05, 
@@ -118,12 +194,31 @@ const PlayerSeat: React.FC<{
               {isCurrentUser && <div className="text-[10px]">(Tú)</div>}
             </div>
             <div className="text-[10px] text-gray-600">${player.balance}</div>
+            <div className="text-[8px] text-gray-500">Pos: {player.position}</div>
           </div>
+        )}
+
+        {/* Botón para salir del asiento */}
+        {player && isCurrentUser && gameStatus === 'WaitingForPlayers' && (
+          <motion.button
+            onClick={(e) => {
+              e.stopPropagation()
+              onLeaveSeat(position)
+            }}
+            className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 hover:bg-red-600 
+                       text-white text-xs rounded-full flex items-center justify-center
+                       border-2 border-white shadow-lg z-10"
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.9 }}
+            title="Salir del asiento"
+          >
+            ×
+          </motion.button>
         )}
 
         {/* Indicador de estado del jugador */}
         {player && (
-          <div className="absolute -top-2 -right-2">
+          <div className="absolute -top-2 -left-2">
             <div className={`w-4 h-4 rounded-full ${
               isCurrentTurn ? 'bg-green-500 animate-pulse' :
               player.isActive ? 'bg-blue-500' :
@@ -132,6 +227,13 @@ const PlayerSeat: React.FC<{
           </div>
         )}
       </motion.div>
+
+      {/* Mano del jugador bajo el asiento */}
+      {player && player.hand && (
+        <div className="flex justify-center">
+          <PlayerHand player={player} />
+        </div>
+      )}
 
       {/* Apuesta del jugador */}
       {player && player.currentBet && player.currentBet > 0 && (
@@ -151,7 +253,6 @@ const PlayerSeat: React.FC<{
   )
 }
 
-// Componente principal de la mesa
 const BlackjackTable: React.FC<BlackjackTableProps> = ({ 
   gameState, 
   onGameAction 
@@ -159,40 +260,48 @@ const BlackjackTable: React.FC<BlackjackTableProps> = ({
   const currentUser = authService.getCurrentUser()
   const [selectedBetAmount, setSelectedBetAmount] = useState(10)
 
-  // Encontrar el jugador actual
-  const currentPlayer = gameState.players?.find((p: Player) => p.id === currentUser?.id)
-  const isCurrentPlayerTurn = false // Simplificado por ahora
+  // DEBUG: Log del estado actual
+  console.log('🔍 [BlackJackTable] Estado actual:', {
+    gameState,
+    playersLength: gameState.players?.length,
+    status: gameState.status
+  })
 
-  // Opciones de apuesta disponibles
+  // Jugador actual
+  const currentPlayer = gameState.players?.find((p: Player) => p.id === currentUser?.id) || null
+  const isCurrentPlayerTurn = false // (si el backend expone seat activo, puedes habilitarlo aquí)
+
+  // Opciones de apuesta
   const minBet = gameState.minBet || 10
   const maxBet = gameState.maxBet || 500
   const userBalance = currentUser?.balance || 5000
   
   const betOptions = [5, 10, 25, 50, 100, 250].filter(amount => 
-    amount >= minBet && 
-    amount <= maxBet && 
-    amount <= userBalance
+    amount >= minBet && amount <= maxBet && amount <= userBalance
   )
 
-  // Handlers para acciones del juego
+  // Handlers de juego
   const handleJoinSeat = useCallback(async (position: number) => {
     try {
-      console.log(`🎮 Intentando unirse al asiento ${position}`)
-      console.log('🔍 Datos de la mesa:', { tableId: gameState.id, position, currentUser: currentUser?.id })
-      
-      const result = await signalRService.joinSeat(gameState.id, position)
-      console.log('✅ Resultado joinSeat:', result)
-      
+      console.log(`🎮 Intentando unirse al asiento ${position}`, { tableId: gameState.id })
+      await signalRService.joinSeat(gameState.id, position)
       onGameAction?.('joinSeat', { position })
     } catch (error) {
-      console.error('❌ Error detallado joining seat:', error)
-      console.error('🔍 Error type:', typeof error)
-      console.error('🔍 Error message:', (error as any)?.message)
-      
-      const errorMessage = (error as any)?.message || 'Error desconocido'
-      alert(`Error al unirse al asiento ${position + 1}: ${errorMessage}`)
+      console.error('❌ Error joining seat:', error)
+      alert(`Error al unirse al asiento ${position + 1}: ${(error as any)?.message || 'Error'}`)
     }
-  }, [gameState.id, onGameAction, currentUser])
+  }, [gameState.id, onGameAction])
+
+  const handleLeaveSeat = useCallback(async (position: number) => {
+    try {
+      console.log(`🚪 Intentando salir del asiento ${position}`)
+      await signalRService.leaveSeat(gameState.id)
+      onGameAction?.('leaveSeat', { position })
+    } catch (error) {
+      console.error('Error leaving seat:', error)
+      alert(`Error al salir del asiento: ${(error as any)?.message}`)
+    }
+  }, [gameState.id, onGameAction])
 
   const handlePlaceBet = useCallback(async () => {
     try {
@@ -204,6 +313,27 @@ const BlackjackTable: React.FC<BlackjackTableProps> = ({
       alert(`Error al apostar: ${(error as any)?.message}`)
     }
   }, [gameState.id, selectedBetAmount, onGameAction])
+
+  const handleStartRound = useCallback(async () => {
+    try {
+      console.log(`🎲 Intentando iniciar partida`)
+      await signalRService.startRound(gameState.id)
+      onGameAction?.('startRound')
+    } catch (error) {
+      console.error('Error starting round:', error)
+      alert(`Error al iniciar partida: ${(error as any)?.message}`)
+    }
+  }, [gameState.id, onGameAction])
+
+  const handleDebugActions = useCallback(() => {
+    console.group('🔧 DEBUG: Estado actual detallado')
+    console.log('GameState completo:', gameState)
+    console.log('Jugadores:', gameState.players)
+    console.log('Usuario actual:', currentUser)
+    console.log('Jugador found:', currentPlayer)
+    console.log('SignalR conectado:', signalRService.isGameConnected)
+    console.groupEnd()
+  }, [gameState, currentUser, currentPlayer])
 
   return (
     <div className="relative w-full max-w-5xl mx-auto px-4">
@@ -217,25 +347,55 @@ const BlackjackTable: React.FC<BlackjackTableProps> = ({
         </div>
       </div>
 
+      {/* DEBUG INFO */}
+      <div className="text-center mb-4">
+        <div className="bg-red-900/50 backdrop-blur-sm rounded-lg p-2 inline-block">
+          <div className="text-white text-xs">
+            DEBUG: Players: <span className="font-bold">{gameState.players?.length || 0}</span> · 
+            UserID: <span className="font-bold">{currentUser?.id}</span>
+          </div>
+        </div>
+      </div>
+
       {/* Área del dealer */}
       <div className="text-center mb-8">
-        <div className="inline-flex items-center gap-2 mb-4">
+        <div className="inline-flex items-center gap-2 mb-3">
           <div className="w-10 h-10 bg-gradient-to-br from-gray-700 to-gray-900 rounded-full flex items-center justify-center text-xl border-2 border-yellow-500">
             🎩
           </div>
           <h3 className="text-xl font-bold text-white">Dealer</h3>
         </div>
-        
-        <div className="flex justify-center space-x-2 mb-4 min-h-[80px]">
-          <div className="text-gray-500 text-sm flex items-center">
-            Esperando cartas...
-          </div>
+
+        <div className="flex justify-center gap-2 mb-2 min-h-[80px]">
+          {gameState?.dealer?.hand && gameState.dealer.hand.length > 0 ? (
+            gameState.dealer.hand.map((c, idx) => (
+              <motion.div key={idx} initial={{ y: -6, opacity: 0 }} animate={{ y: 0, opacity: 1 }}>
+                <CardFace card={c as Card} />
+              </motion.div>
+            ))
+          ) : (
+            <div className="text-gray-400 text-sm flex items-center">
+              Esperando cartas...
+            </div>
+          )}
         </div>
+
+        {gameState?.dealer?.hand && (
+          <div className="text-xs text-gray-200">
+            {gameState.dealer.isBusted
+              ? 'BUST'
+              : gameState.dealer.hasBlackjack
+              ? 'BLACKJACK'
+              : (typeof gameState.dealer.handValue === 'number'
+                  ? `Total: ${gameState.dealer.handValue}`
+                  : null)}
+          </div>
+        )}
       </div>
 
       {/* Mesa de juego */}
       <div className="relative mx-auto w-full max-w-4xl h-[450px] mb-8">
-        {/* Superficie de la mesa */}
+        {/* Superficie */}
         <motion.div 
           className="absolute inset-0 bg-gradient-to-br from-green-600 via-green-700 to-green-800 
                      rounded-full border-8 border-yellow-600 shadow-2xl"
@@ -243,33 +403,25 @@ const BlackjackTable: React.FC<BlackjackTableProps> = ({
           animate={{ scale: 1, opacity: 1 }}
           transition={{ duration: 0.8, type: "spring" }}
         />
-        
-        {/* Patrón de fieltro */}
         <div className="absolute inset-12 rounded-full border-4 border-yellow-500 border-dashed opacity-30" />
-        
-        {/* Texto central de la mesa */}
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-yellow-400 font-bold text-2xl opacity-40 transform -rotate-12">
             BLACKJACK
           </div>
         </div>
-        
-        {/* Información del pot */}
+
+        {/* Pot */}
         <div className="absolute top-4 left-1/2 transform -translate-x-1/2">
-          <div className="bg-black/60 text-white px-4 py-2 rounded-lg text-sm">
-            <div className="text-center">
-              <div className="text-yellow-400 font-bold">Pot Total</div>
-              <div className="text-2xl">${gameState.pot || 0}</div>
-              <div className="text-xs text-gray-300">
-                Min: ${minBet} - Max: ${maxBet}
-              </div>
-            </div>
+          <div className="bg-black/60 text-white px-4 py-2 rounded-lg text-sm text-center">
+            <div className="text-yellow-400 font-bold">Pot Total</div>
+            <div className="text-2xl">${gameState.pot || 0}</div>
+            <div className="text-xs text-gray-300">Min: ${minBet} - Max: ${maxBet}</div>
           </div>
         </div>
-        
-        {/* Asientos de jugadores */}
+
+        {/* Asientos */}
         {Array.from({ length: 6 }, (_, i) => {
-          const player = gameState.players?.find((p: Player) => p.position === i) || null
+          const player = (gameState.players?.find((p: any) => p.position === i) || null) as Player | null
           return (
             <PlayerSeat
               key={i}
@@ -277,6 +429,7 @@ const BlackjackTable: React.FC<BlackjackTableProps> = ({
               position={i}
               isCurrentTurn={isCurrentPlayerTurn && currentPlayer?.position === i}
               onJoinSeat={handleJoinSeat}
+              onLeaveSeat={handleLeaveSeat}
               currentUser={currentUser}
               gameStatus={gameState.status || 'WaitingForPlayers'}
             />
@@ -293,23 +446,62 @@ const BlackjackTable: React.FC<BlackjackTableProps> = ({
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
           >
-            <h4 className="text-xl font-bold text-white mb-3">
-              Esperando jugadores...
-            </h4>
+            <h4 className="text-xl font-bold text-white mb-3">Esperando jugadores...</h4>
             <p className="text-gray-300 text-sm mb-4">
               {currentPlayer ? 
                 'Esperando que se unan más jugadores para comenzar' : 
-                'Haz clic en un asiento vacío para unirte a la mesa'
-              }
+                'Haz clic en un asiento vacío para unirte a la mesa'}
             </p>
             <div className="text-sm text-gray-400 mb-4">
               <div>Jugadores conectados: {gameState.players?.length || 0}/6</div>
               <div>Mínimo para jugar: 2 jugadores</div>
             </div>
-            {currentPlayer && (
-              <div className="text-xs bg-green-800/50 text-green-300 p-3 rounded">
-                Ya estás sentado en el asiento {(currentPlayer.position || 0) + 1}
+
+            {/* Botones Debug */}
+            <div className="mb-4 space-y-2">
+              <div className="flex gap-2 justify-center">
+                <button
+                  onClick={async () => {
+                    try {
+                      console.log('🚨 Emergencia: salir del asiento')
+                      await signalRService.leaveSeat(gameState.id)
+                    } catch (error) {
+                      console.error('Error botón emergencia:', error)
+                      alert(`Error: ${(error as any)?.message}`)
+                    }
+                  }}
+                  className="bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-white text-sm font-medium transition-colors"
+                >
+                  🚨 Salir del Asiento
+                </button>
+                <button
+                  onClick={handleDebugActions}
+                  className="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-white text-sm font-medium transition-colors"
+                >
+                  🔍 Debug Info
+                </button>
+                <button
+                  onClick={() => window.location.reload()}
+                  className="bg-purple-600 hover:bg-purple-700 px-3 py-1 rounded text-white text-sm font-medium transition-colors"
+                >
+                  🔄 Reload Page
+                </button>
               </div>
+              <div className="text-xs text-gray-500">Herramientas de debug para el problema de asientos</div>
+            </div>
+
+            {/* Iniciar Partida */}
+            {(gameState.players?.length || 0) >= 2 && (
+              <motion.button
+                onClick={handleStartRound}
+                className="bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 
+                           px-8 py-3 rounded-lg font-bold text-lg shadow-lg transition-all duration-200 text-white
+                           border-2 border-green-500 hover:border-green-400"
+                whileHover={{ scale: 1.05, boxShadow: '0 0 20px rgba(34, 197, 94, 0.5)' }}
+                whileTap={{ scale: 0.95 }}
+              >
+                🎲 Iniciar Partida
+              </motion.button>
             )}
           </motion.div>
         )}
@@ -321,11 +513,7 @@ const BlackjackTable: React.FC<BlackjackTableProps> = ({
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
           >
-            <h4 className="text-xl font-bold text-white mb-4">
-              Haz tu apuesta
-            </h4>
-            
-            {/* Chips de apuesta */}
+            <h4 className="text-xl font-bold text-white mb-4">Haz tu apuesta</h4>
             <div className="flex justify-center gap-3 mb-6 flex-wrap">
               {betOptions.map((amount) => (
                 <BettingChip
@@ -336,25 +524,20 @@ const BlackjackTable: React.FC<BlackjackTableProps> = ({
                 />
               ))}
             </div>
-            
             <div className="text-center mb-6 space-y-2">
               <div className="text-white text-lg">
-                Apuesta seleccionada: 
-                <span className="text-yellow-400 font-bold ml-2">${selectedBetAmount}</span>
+                Apuesta seleccionada: <span className="text-yellow-400 font-bold ml-2">${selectedBetAmount}</span>
               </div>
               <div className="text-sm text-gray-400">
                 Tu balance: <span className="text-green-400 font-bold">${currentUser?.balance || 5000}</span>
               </div>
-              <div className="text-xs text-gray-500">
-                Rango: ${minBet} - ${maxBet}
-              </div>
+              <div className="text-xs text-gray-500">Rango: ${minBet} - ${maxBet}</div>
             </div>
-            
             <motion.button
               onClick={handlePlaceBet}
               className="bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 
-                       px-8 py-4 rounded-lg font-bold text-lg shadow-lg transition-all duration-200 text-white
-                       disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed"
+                         px-8 py-3 rounded-lg font-bold text-lg shadow-lg transition-all duration-200 text-white
+                         disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed"
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               disabled={selectedBetAmount > (currentUser?.balance || 5000)}
@@ -364,7 +547,7 @@ const BlackjackTable: React.FC<BlackjackTableProps> = ({
           </motion.div>
         )}
 
-        {/* Estado por defecto */}
+        {/* Otros estados pueden ampliarse luego (Dealing, PlayerTurn, DealerTurn, Payout...) */}
         {!gameState.status && (
           <motion.div 
             className="bg-gray-800/90 backdrop-blur-sm p-6 rounded-xl max-w-md mx-auto"
@@ -372,9 +555,7 @@ const BlackjackTable: React.FC<BlackjackTableProps> = ({
             animate={{ opacity: 1 }}
           >
             <h4 className="text-xl font-bold text-white mb-4">Conectando...</h4>
-            <p className="text-gray-300 text-sm">
-              Cargando estado del juego...
-            </p>
+            <p className="text-gray-300 text-sm">Cargando estado del juego...</p>
             <div className="flex justify-center mt-4">
               <div className="animate-spin w-6 h-6 border-2 border-white border-t-transparent rounded-full"></div>
             </div>

@@ -30,7 +30,6 @@ namespace BlackJack.Domain.Models.Game
         {
             if (Balance.IsLessThan(bet.Amount))
                 throw new InvalidOperationException("Insufficient funds");
-
             CurrentBet = bet;
             Balance = Balance.Subtract(bet.Amount);
             UpdateTimestamp();
@@ -45,6 +44,13 @@ namespace BlackJack.Domain.Models.Game
         public void WinBet(Money winnings)
         {
             Balance = Balance.Add(winnings);
+            UpdateTimestamp();
+        }
+
+        /// <summary>Limpia todas las manos del jugador.</summary>
+        public void ClearHands()
+        {
+            Hands.Clear(); // CORREGIDO: usar Hands en lugar de _hands
             UpdateTimestamp();
         }
 

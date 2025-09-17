@@ -55,48 +55,67 @@ export function useSignalR() {
     }
   }, [])
 
-  // Proxies
+  // Proxies para métodos de lobby
   const joinTable = useCallback(async (tableId: string) => {
     await signalRService.joinTable(tableId)
   }, [])
+  
   const createTable = useCallback(async (tableData: any) => {
     await signalRService.createTable(tableData)
   }, [])
+
+  // Proxies para métodos de juego
   const joinSeat = useCallback(async (tableId: string, position: number) => {
     await signalRService.joinSeat(tableId, position)
   }, [])
+
+  // NUEVO: Método para iniciar partida
+  const startRound = useCallback(async (tableId: string) => {
+    await signalRService.startRound(tableId)
+  }, [])
+
   const placeBet = useCallback(async (tableId: string, amount: number) => {
     await signalRService.placeBet(tableId, amount)
   }, [])
+
   const hit = useCallback(async (tableId: string) => {
     await signalRService.hit(tableId)
   }, [])
+
   const stand = useCallback(async (tableId: string) => {
     await signalRService.stand(tableId)
   }, [])
+
   const doubleDown = useCallback(async (tableId: string) => {
     await signalRService.doubleDown(tableId)
   }, [])
+
   const split = useCallback(async (tableId: string) => {
     await signalRService.split(tableId)
   }, [])
+
   const sendChatMessage = useCallback(async (tableId: string, message: string) => {
     await signalRService.sendChatMessage(tableId, message)
   }, [])
 
   return {
+    // Estados de conexión
     connectionState,
     isConnected: connectionState === 'Connected',
     isConnecting: isConnecting || connectionState === 'Connecting',
     isReconnecting: connectionState === 'Reconnecting',
 
+    // Métodos de conexión
     connect,
     disconnect,
+
+    // Métodos de lobby
     joinTable,
     createTable,
 
-    // juego
+    // Métodos de juego
     joinSeat,
+    startRound, // ✅ NUEVO
     placeBet,
     hit,
     stand,
@@ -104,6 +123,7 @@ export function useSignalR() {
     split,
     sendChatMessage,
 
+    // Estados de hubs específicos
     isLobbyConnected: signalRService.isLobbyConnected,
     isGameConnected: signalRService.isGameConnected,
   }
