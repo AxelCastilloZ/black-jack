@@ -1,9 +1,22 @@
-// src/pages/LobbyPage.tsx - MEJORADO Y SIMPLIFICADO
+// src/pages/LobbyPage.tsx - Versión de Producción
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { signalRService, type LobbyTable } from '../services/signalr'
+import { signalRService } from '../services/signalr'
 import { authService } from '../services/auth'
-import { formatMoney } from '../utils/format'
+
+interface LobbyTable {
+  id: string
+  name: string
+  playerCount: number
+  maxPlayers: number
+  minBet: number
+  maxBet: number
+  status: string
+}
+
+function formatMoney(amount: number): string {
+  return `$${amount.toLocaleString()}`
+}
 
 export default function LobbyPage() {
   const navigate = useNavigate()
@@ -13,12 +26,24 @@ export default function LobbyPage() {
   const [nameQuery, setNameQuery] = useState('')
   const [minBet, setMinBet] = useState(0)
   const [maxBet, setMaxBet] = useState(10000)
-
   const [creating, setCreating] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [isConnected, setIsConnected] = useState(false)
 
-  // Cargar snapshot inicial y configurar listeners
+  // Verificar conexión SignalR
+  useEffect(() => {
+    const checkConnection = () => {
+      setIsConnected(signalRService.isLobbyConnected)
+    }
+    
+    checkConnection()
+    const interval = setInterval(checkConnection, 3000)
+    
+    return () => clearInterval(interval)
+  }, [])
+
+  // Cargar lobby
   useEffect(() => {
     let isMounted = true
     
@@ -27,18 +52,23 @@ export default function LobbyPage() {
         setLoading(true)
         setError(null)
         
-        console.log('🔄 Cargando lobby...')
-        const tables = await signalRService.getLobbySnapshot()
+        // Conectar SignalR si no está conectado
+        if (!signalRService.isLobbyConnected) {
+          await signalRService.startConnections()
+        }
+
+        // Cargar mesas desde API
+        const tables = await loadTablesFromAPI()
         
-        if (!isMounted) return
-        
-        console.log('✅ Lobby cargado:', tables.length, 'mesas')
-        setAllTables(tables)
+        if (isMounted) {
+          setAllTables(tables)
+        }
         
       } catch (e: any) {
-        if (!isMounted) return
-        console.error('❌ Error cargando lobby:', e)
-        setError(e?.message ?? 'No se pudo cargar el lobby')
+        if (isMounted) {
+          console.error('Error loading lobby:', e)
+          setError(e?.message ?? 'No se pudo cargar el lobby')
+        }
       } finally {
         if (isMounted) {
           setLoading(false)
@@ -46,38 +76,96 @@ export default function LobbyPage() {
       }
     }
 
-    // Suscripciones a eventos SignalR
-    const unsubscribeNew = signalRService.onNewTable(({ table }) => {
-      console.log('🆕 Nueva mesa:', table)
-      setAllTables(prev => {
-        // Evitar duplicados
-        if (prev.some(t => t.id === table.id)) return prev
-        return [table, ...prev]
-      })
-    })
-
-    const unsubscribeUpdate = signalRService.onLobbyUpdate((update) => {
-      console.log('📊 Actualización de mesa:', update)
-      setAllTables(prev =>
-        prev.map(table =>
-          table.id === update.tableId
-            ? { ...table, playerCount: update.playerCount, status: update.status }
-            : table
-        )
-      )
-    })
-
-    // Cargar datos iniciales
     loadLobby()
-
+    
     return () => {
       isMounted = false
-      unsubscribeNew()
-      unsubscribeUpdate()
     }
   }, [])
 
-  // Filtros de mesas
+  // Cargar mesas desde API
+  const loadTablesFromAPI = async (): Promise<LobbyTable[]> => {
+    try {
+      const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:7102'
+      const token = authService.getToken()
+
+      console.log('[LOBBY] Loading tables from API...')
+      console.log('[LOBBY] API_BASE:', API_BASE)
+      console.log('[LOBBY] Token exists:', !!token)
+      console.log('[LOBBY] User authenticated:', authService.isAuthenticated())
+
+      if (!token || !authService.isAuthenticated()) {
+        console.error('[LOBBY] No authentication token available')
+        throw new Error('No hay token de autenticación válido')
+      }
+
+      // Limpiar token para asegurar formato correcto
+      const cleanToken = token.replace(/^Bearer\s+/i, '').trim()
+      
+      const response = await fetch(`${API_BASE}/api/gameroom`, {
+        headers: {
+          'Authorization': `Bearer ${cleanToken}`,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      console.log('[LOBBY] API Response status:', response.status)
+
+      if (response.status === 401 || response.status === 403) {
+        console.error('[LOBBY] Authentication failed - redirecting to login')
+        authService.logout()
+        navigate({ to: '/' }) // Redirigir a login
+        throw new Error('Sesión expirada')
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('[LOBBY] API Error:', response.status, errorText)
+        throw new Error(`Error ${response.status}: ${response.statusText}`)
+      }
+
+      const data = await response.json()
+      console.log('[LOBBY] API Response data:', data)
+
+      // Mapear datos del GameRoomController (ActiveRoomResponse)
+      const tables: LobbyTable[] = Array.isArray(data) ? data.map((room: any) => ({
+        id: room.roomCode || room.id,
+        name: room.name || 'Mesa Sin Nombre',
+        playerCount: room.playerCount || 0,
+        maxPlayers: room.maxPlayers || 6,
+        minBet: 10, // Default values - puedes ajustar según tu backend
+        maxBet: 1000,
+        status: room.status || 'WaitingForPlayers'
+      })) : []
+
+      console.log('[LOBBY] Parsed tables:', tables)
+      return tables
+
+    } catch (error: any) {
+      console.error('[LOBBY] Error loading from API:', error)
+      
+      // Si es error de autenticación, no usar fallback
+      if (error.message?.includes('autenticación') || error.message?.includes('Sesión expirada')) {
+        throw error
+      }
+      
+      // Para otros errores, usar datos de respaldo
+      console.warn('[LOBBY] Using fallback data due to error')
+      return [
+        {
+          id: 'b9162ab8-0972-491e-b1eb-a4831410e720',
+          name: 'Mesa de Prueba (Offline)',
+          playerCount: 0,
+          maxPlayers: 6,
+          minBet: 10,
+          maxBet: 1000,
+          status: 'WaitingForPlayers'
+        }
+      ]
+    }
+  }
+
+  // Filtrar mesas
   const filteredTables = useMemo(() => {
     const query = nameQuery.trim().toLowerCase()
     return allTables.filter(table => {
@@ -97,19 +185,62 @@ export default function LobbyPage() {
       setCreating(true)
       setError(null)
       
-      console.log('🆕 Creando mesa:', name)
-      const newTable = await signalRService.createTable({ name: name.trim() })
-      
-      console.log('✅ Mesa creada exitosamente:', newTable)
-      
-      // Navegar inmediatamente a la nueva mesa
+      const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:7102'
+      const token = authService.getToken()
+
+      if (!token || !authService.isAuthenticated()) {
+        throw new Error('No hay token de autenticación válido')
+      }
+
+      const cleanToken = token.replace(/^Bearer\s+/i, '').trim()
+
+      // Usar el formato correcto del GameRoomController
+      const response = await fetch(`${API_BASE}/api/gameroom`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${cleanToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ 
+          RoomName: name.trim(),  // Nota: GameRoomController espera "RoomName"
+          MaxPlayers: 6 
+        })
+      })
+
+      if (response.status === 401 || response.status === 403) {
+        console.error('[LOBBY] Authentication failed creating room')
+        authService.logout()
+        navigate({ to: '/' })
+        throw new Error('Sesión expirada')
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('[LOBBY] Error creating room:', errorText)
+        throw new Error(`Error ${response.status}: ${errorText}`)
+      }
+
+      const newRoom = await response.json()
+      console.log('[LOBBY] Room created:', newRoom)
+
+      // Mapear respuesta del GameRoomController (RoomInfoResponse)
+      const newTable: LobbyTable = {
+        id: newRoom.roomCode,
+        name: newRoom.name,
+        playerCount: newRoom.playerCount || 0,
+        maxPlayers: newRoom.maxPlayers || 6,
+        minBet: 10,
+        maxBet: 1000,
+        status: newRoom.status || 'WaitingForPlayers'
+      }
+
+      setAllTables(prev => [newTable, ...prev])
       navigate({ to: `/game/${newTable.id}` })
       
     } catch (e: any) {
-      console.error('❌ Error creando mesa:', e)
       const errorMessage = e?.message || 'No se pudo crear la mesa'
+      console.error('[LOBBY] Error creating table:', errorMessage)
       setError(errorMessage)
-      alert(`Error: ${errorMessage}`)
     } finally {
       setCreating(false)
     }
@@ -117,23 +248,29 @@ export default function LobbyPage() {
 
   // Navegar a mesa
   const handleJoinTable = (tableId: string) => {
-    console.log('🎯 Navegando a mesa:', tableId)
     navigate({ to: `/game/${tableId}` })
   }
 
-  // Recargar mesas manualmente
+  // Recargar mesas
   const handleRefresh = async () => {
     setError(null)
     setLoading(true)
     
     try {
-      const tables = await signalRService.getLobbySnapshot()
+      const tables = await loadTablesFromAPI()
       setAllTables(tables)
     } catch (e: any) {
       setError(e?.message ?? 'Error al recargar')
     } finally {
       setLoading(false)
     }
+  }
+
+  // Logout
+  const handleLogout = () => {
+    signalRService.stopConnections()
+    authService.logout()
+    navigate({ to: '/' })
   }
 
   return (
@@ -164,11 +301,19 @@ export default function LobbyPage() {
             {/* User info */}
             <div className="text-right">
               <div className="text-white font-semibold">
-                {currentUser?.displayName}
+                {currentUser?.displayName || 'Usuario'}
               </div>
               <div className="text-emerald-400 font-bold">
-                ${currentUser?.balance?.toLocaleString()}
+                {formatMoney(currentUser?.balance || 0)}
               </div>
+            </div>
+
+            {/* Connection status */}
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-yellow-400'}`}></div>
+              <span className="text-sm text-slate-300">
+                {isConnected ? 'Conectado' : 'Conectando...'}
+              </span>
             </div>
 
             {/* Actions */}
@@ -177,7 +322,7 @@ export default function LobbyPage() {
               disabled={loading}
               className="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-sm transition-colors disabled:opacity-50"
             >
-              {loading ? '🔄' : '↻ Actualizar'}
+              {loading ? '🔄' : '↻'}
             </button>
             
             <button
@@ -189,7 +334,7 @@ export default function LobbyPage() {
             </button>
             
             <button
-              onClick={() => authService.logout()}
+              onClick={handleLogout}
               className="text-red-400 hover:text-red-300 text-sm transition-colors"
             >
               Salir
@@ -204,8 +349,7 @@ export default function LobbyPage() {
           <aside className="col-span-12 lg:col-span-3">
             <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
               <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
-                <span>🔍</span>
-                Filtros
+                🔍 Filtros
               </h3>
 
               <div className="space-y-4">
@@ -285,7 +429,7 @@ export default function LobbyPage() {
             </div>
           </aside>
 
-          {/* Main Content - Lista de Mesas */}
+          {/* Main Content */}
           <section className="col-span-12 lg:col-span-9">
             <div className="mb-6">
               <h2 className="text-2xl font-bold mb-2">Mesas Disponibles</h2>
@@ -340,7 +484,7 @@ export default function LobbyPage() {
               </div>
             )}
 
-            {/* Tables Grid */}
+            {/* Tables List */}
             {!loading && filteredTables.length > 0 && (
               <div className="space-y-4">
                 {filteredTables.map((table) => (
@@ -359,7 +503,7 @@ export default function LobbyPage() {
   )
 }
 
-// Componente optimizado para cada mesa
+// Componente para cada mesa
 function TableCard({ table, onJoin }: { table: LobbyTable; onJoin: () => void }) {
   const getStatusConfig = (status: string) => {
     switch (status.toLowerCase()) {
@@ -375,11 +519,17 @@ function TableCard({ table, onJoin }: { table: LobbyTable; onJoin: () => void })
           className: 'bg-yellow-600 text-black',
           canJoin: false 
         }
+      case 'finished':
+        return { 
+          text: 'Finalizada', 
+          className: 'bg-gray-600 text-white',
+          canJoin: true 
+        }
       default:
         return { 
           text: status, 
           className: 'bg-gray-600 text-white',
-          canJoin: false 
+          canJoin: true 
         }
     }
   }
@@ -418,8 +568,8 @@ function TableCard({ table, onJoin }: { table: LobbyTable; onJoin: () => void })
             </div>
             
             <div className="flex items-center gap-1">
-              <span>⚡</span>
-              <span>Tiempo real</span>
+              <span>🎯</span>
+              <span>ID: {table.id.slice(0, 8)}...</span>
             </div>
           </div>
         </div>

@@ -1,10 +1,10 @@
-// src/services/auth.ts
-import { apiService } from '../api/apiService'
+// src/services/auth.ts - PUERTO CORREGIDO 7102
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:7102'
 
 export interface AuthUser {
   id: string
   displayName: string
-  email?: string
+  email: string
   balance: number
 }
 
@@ -13,52 +13,8 @@ interface LoginResponse {
   user: AuthUser
 }
 
-const TOKEN_KEY = 'auth_token'
-const USER_KEY = 'user'
-
-/* ===== Utils: decodificar JWT y extraer playerId ===== */
-function base64UrlDecode(input: string) {
-  const pad = (s: string) => s + '='.repeat((4 - (s.length % 4)) % 4)
-  const b64 = pad(input.replace(/-/g, '+').replace(/_/g, '/'))
-  const bin = atob(b64)
-  try {
-    return decodeURIComponent(
-      bin
-        .split('')
-        .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-        .join(''),
-    )
-  } catch {
-    return bin
-  }
-}
-
-function decodeJwt(token: string): Record<string, any> | null {
-  try {
-    const [, payload] = token.split('.')
-    if (!payload) return null
-    return JSON.parse(base64UrlDecode(payload))
-  } catch {
-    return null
-  }
-}
-
-function pickPlayerIdFromClaims(claims: Record<string, any> | null): string | null {
-  if (!claims) return null
-  const keys = [
-    'playerId',
-    'PlayerId',
-    'sub',
-    'nameid',
-    'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier',
-  ]
-  for (const k of keys) {
-    const v = claims[k]
-    if (typeof v === 'string' && v.length >= 16) return v
-  }
-  return null
-}
-/* ===================================================== */
+const TOKEN_KEY = 'blackjack_token'
+const USER_KEY = 'blackjack_user'
 
 class AuthService {
   private currentUser: AuthUser | null = null
@@ -67,203 +23,154 @@ class AuthService {
     this.loadPersistedAuth()
   }
 
-  // ------- Persistencia -------
+  // Cargar datos persistidos
   private loadPersistedAuth() {
     try {
       const token = localStorage.getItem(TOKEN_KEY)
       const userJson = localStorage.getItem(USER_KEY)
       if (token && userJson) {
-        this.currentUser = JSON.parse(userJson) as AuthUser
-        apiService.setToken(token)
+        this.currentUser = JSON.parse(userJson)
+        console.log('[AUTH] Loaded persisted auth:', this.currentUser?.displayName)
       }
-    } catch {
+    } catch (error) {
+      console.error('[AUTH] Error loading persisted auth:', error)
       this.clearAuth()
     }
   }
 
-  // --------- PERFIL (intenta varios endpoints comunes) ----------
-  private async fetchProfileWithFallback(): Promise<Partial<AuthUser> | null> {
-    const candidates = ['/auth/me', '/users/me', '/players/me', '/me']
-    for (const url of candidates) {
-      try {
-        const data = await apiService.get<any>(url)
-        if (!data) continue
-        // intenta mapear campos habituales
-        const id =
-          data.id ??
-          data.playerId ??
-          data.userId ??
-          data.user?.id ??
-          data.user?.playerId ??
-          null
-        const displayName =
-          data.displayName ?? data.name ?? data.username ?? data.user?.displayName
-        const email = data.email ?? data.user?.email
-        const balance = Number(data.balance ?? data.user?.balance ?? 5000)
-
-        if (id || displayName || email) {
-          return { id: String(id ?? ''), displayName, email, balance }
-        }
-      } catch {
-        // probar siguiente
-      }
-    }
-    return null
-  }
-  // ---------------------------------------------------------------
-
-  // ------- LOGIN -------
+  // LOGIN
   async login(email: string, password: string): Promise<AuthUser> {
-    console.log('🔑 Intentando login...', { email })
-    const data = await apiService.post<any>('/auth/login', { email, password })
-
-    if (typeof data === 'string') {
-      // token plano
-      return this.finishAuthWithToken(data, email)
-    } else {
-      // JSON: { token, user? , displayName?, playerId? }
-      const token: string = data.token
-
-      // 1) intenta claims del JWT
-      const claims = decodeJwt(token)
-      const playerIdFromToken = pickPlayerIdFromClaims(claims)
-
-      // 2) si no hay user, crea uno provisional
-      let user: AuthUser =
-        data.user ??
-        ({
-          id: playerIdFromToken ?? data.playerId ?? `temp-${Date.now()}`,
-          displayName: data.displayName ?? email.split('@')[0],
-          email,
-          balance: 5000,
-        } as AuthUser)
-
-      // guarda provisional para poder pegarle al /me
-      this.finishAuth({ token, user })
-
-      // 3) intenta completar/normalizar con /me
-      const profile = await this.fetchProfileWithFallback()
-      if (profile) {
-        user = {
-          id: (profile.id && profile.id.length ? profile.id : user.id)!,
-          displayName: profile.displayName ?? user.displayName,
-          email: profile.email ?? user.email,
-          balance: profile.balance ?? user.balance,
-        }
-        localStorage.setItem(USER_KEY, JSON.stringify(user))
-        this.currentUser = user
-      }
-
-      console.log('✅ Auth OK:', {
-        tokenLength: token.length,
-        user: user.displayName,
-        playerId: user.id,
-      })
-      return user
-    }
-  }
-
-  // ------- REGISTER - CORREGIDO -------
-  async register(displayName: string, email: string, password: string): Promise<AuthUser> {
-    console.log('📝 Intentando registro...', { displayName, email })
+    console.log('[AUTH] Login attempt:', email)
     
     try {
-      // 1. Hacer el registro (el backend solo devuelve UserProfile, no token)
-      const registerResponse = await apiService.post<any>('/auth/register', { 
-        displayName, 
-        email, 
-        password 
+      const response = await fetch(`${API_BASE}/api/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ email, password })
       })
-      console.log('✅ Registro exitoso:', registerResponse)
-      
-      // 2. Hacer login inmediatamente después del registro exitoso
-      console.log('🔑 Haciendo login automático después del registro...')
-      const user = await this.login(email, password)
-      
-      // 3. Asegurar que el displayName se mantenga correcto
-      if (!user.displayName || user.displayName !== displayName) {
-        user.displayName = displayName
-        localStorage.setItem(USER_KEY, JSON.stringify(user))
-        this.currentUser = user
+
+      console.log('[AUTH] Login response status:', response.status)
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('[AUTH] Login failed:', errorText)
+        throw new Error(`Error ${response.status}: ${errorText}`)
       }
-      
-      console.log('✅ Registro y login completados para:', user.displayName)
+
+      const data = await response.text()
+      console.log('[AUTH] Raw login response:', data)
+
+      let parsedData
+      try {
+        parsedData = JSON.parse(data)
+      } catch {
+        // Si es solo un token string
+        parsedData = { token: data }
+      }
+
+      if (!parsedData.token) {
+        throw new Error('No token received from server')
+      }
+
+      // Decodificar token para extraer info
+      const tokenPayload = this.decodeJWT(parsedData.token)
+      console.log('[AUTH] Token payload:', tokenPayload)
+
+      // Crear usuario con datos disponibles
+      const user: AuthUser = {
+        id: tokenPayload?.playerId || tokenPayload?.sub || tokenPayload?.nameid || Date.now().toString(),
+        displayName: parsedData.user?.displayName || tokenPayload?.name || email.split('@')[0],
+        email: parsedData.user?.email || tokenPayload?.email || email,
+        balance: parsedData.user?.balance || 5000
+      }
+
+      // Guardar datos
+      localStorage.setItem(TOKEN_KEY, parsedData.token)
+      localStorage.setItem(USER_KEY, JSON.stringify(user))
+      this.currentUser = user
+
+      console.log('[AUTH] Login successful:', user)
       return user
-      
+
     } catch (error: any) {
-      console.error('❌ Error en registro:', error)
-      
-      // Manejar errores específicos del backend
-      if (error.response?.status === 400) {
-        const errorData = error.response?.data
-        let errorMessage = 'Error en los datos proporcionados'
+      console.error('[AUTH] Login error:', error)
+      this.clearAuth()
+      throw new Error(error.message || 'Error al iniciar sesión')
+    }
+  }
+
+  // REGISTER
+  async register(displayName: string, email: string, password: string): Promise<AuthUser> {
+    console.log('[AUTH] Register attempt:', { displayName, email })
+    
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ displayName, email, password })
+      })
+
+      console.log('[AUTH] Register response status:', response.status)
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('[AUTH] Register failed:', errorText)
         
-        // Intentar extraer el mensaje de error del backend
-        if (typeof errorData === 'string') {
-          errorMessage = errorData
-        } else if (errorData?.message) {
-          errorMessage = errorData.message
-        } else if (errorData?.error) {
-          errorMessage = errorData.error
-        } else if (errorData?.errors && Array.isArray(errorData.errors)) {
-          errorMessage = errorData.errors.join(', ')
+        if (response.status === 400) {
+          throw new Error('Datos inválidos. Verifica email y contraseña.')
+        } else if (response.status === 409) {
+          throw new Error('El email ya está registrado.')
         }
         
-        throw new Error(errorMessage)
-      } else if (error.response?.status === 409) {
-        throw new Error('El email ya está registrado')
-      } else if (error.response?.status === 500) {
-        throw new Error('Error interno del servidor. Intenta de nuevo.')
-      } else {
-        throw new Error(error?.message || 'Error al crear cuenta')
+        throw new Error(`Error ${response.status}: ${errorText}`)
       }
+
+      const data = await response.text()
+      console.log('[AUTH] Register successful, now logging in...')
+
+      // Después del registro exitoso, hacer login automático
+      return await this.login(email, password)
+
+    } catch (error: any) {
+      console.error('[AUTH] Register error:', error)
+      throw new Error(error.message || 'Error al registrarse')
     }
   }
 
-  // ------- Helpers de auth -------
-  private finishAuth(res: LoginResponse) {
-    localStorage.setItem(TOKEN_KEY, res.token)
-    localStorage.setItem(USER_KEY, JSON.stringify(res.user))
-    apiService.setToken(res.token)
-    this.currentUser = res.user
-  }
-
-  private finishAuthWithToken(token: string, email: string, displayName?: string): AuthUser {
-    const claims = decodeJwt(token)
-    const playerIdFromToken = pickPlayerIdFromClaims(claims)
-
-    const tempUser: AuthUser = {
-      id: playerIdFromToken ?? `temp-${Date.now()}`,
-      displayName: displayName ?? email.split('@')[0] ?? 'Usuario',
-      email,
-      balance: 5000,
-    }
-    localStorage.setItem(TOKEN_KEY, token)
-    localStorage.setItem(USER_KEY, JSON.stringify(tempUser))
-    apiService.setToken(token)
-    this.currentUser = tempUser
-    console.log('✅ Auth (token plano):', {
-      tokenLength: token.length,
-      user: tempUser.displayName,
-      playerId: tempUser.id,
-      claims,
-    })
-    return tempUser
-  }
-
+  // LOGOUT
   logout() {
+    console.log('[AUTH] Logging out...')
     this.clearAuth()
-    // Redirigir a la página de autenticación
-    window.location.href = '/auth'
   }
 
+  // Limpiar datos de auth
   private clearAuth() {
     localStorage.removeItem(TOKEN_KEY)
     localStorage.removeItem(USER_KEY)
-    apiService.clearToken()
     this.currentUser = null
+    console.log('[AUTH] Auth data cleared')
   }
 
+  // Decodificar JWT
+  private decodeJWT(token: string): any | null {
+    try {
+      const parts = token.split('.')
+      if (parts.length !== 3) return null
+      
+      const payload = parts[1]
+      const decoded = atob(payload.replace(/-/g, '+').replace(/_/g, '/'))
+      return JSON.parse(decoded)
+    } catch (error) {
+      console.error('[AUTH] Error decoding JWT:', error)
+      return null
+    }
+  }
+
+  // Getters
   getCurrentUser(): AuthUser | null {
     return this.currentUser
   }
@@ -273,35 +180,19 @@ class AuthService {
   }
 
   isAuthenticated(): boolean {
-    return !!this.getToken() && !!this.currentUser
+    return !!(this.getToken() && this.currentUser)
   }
 
-  // ------- utilidades de juego -------
-  updateUserBalance(newBalance: number) {
-    if (this.currentUser) {
-      this.currentUser.balance = newBalance
-      localStorage.setItem(USER_KEY, JSON.stringify(this.currentUser))
-      console.log('💰 Balance actualizado:', newBalance)
-    }
-  }
-
-  spendMoney(amount: number): boolean {
-    if (!this.currentUser) return false
-    if (this.currentUser.balance >= amount) {
-      this.currentUser.balance -= amount
-      localStorage.setItem(USER_KEY, JSON.stringify(this.currentUser))
-      console.log('💸 Gastado:', amount, 'Restante:', this.currentUser.balance)
-      return true
-    }
-    console.warn('💸 Fondos insuficientes:', amount)
-    return false
-  }
-
-  addMoney(amount: number) {
-    if (this.currentUser) {
-      this.currentUser.balance += amount
-      localStorage.setItem(USER_KEY, JSON.stringify(this.currentUser))
-      console.log('💰 Ganado:', amount, 'Actual:', this.currentUser.balance)
+  // Debug
+  debugAuthState() {
+    console.log('[AUTH] === DEBUG STATE ===')
+    console.log('Token:', this.getToken())
+    console.log('User:', this.currentUser)
+    console.log('Authenticated:', this.isAuthenticated())
+    
+    const token = this.getToken()
+    if (token) {
+      console.log('Token payload:', this.decodeJWT(token))
     }
   }
 }

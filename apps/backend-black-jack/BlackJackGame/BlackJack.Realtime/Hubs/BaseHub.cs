@@ -1,4 +1,4 @@
-﻿// BaseHub.cs - En BlackJack.Realtime/Hubs/
+﻿// BaseHub.cs - VERSIÓN CON MANEJO DE CLAIMS MEJORADO
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using System.Security.Claims;
@@ -20,21 +20,73 @@ public abstract class BaseHub : Hub
     {
         try
         {
-            var playerIdClaim = Context.User?.FindFirst("playerId")?.Value;
+            // DEBUG: Mostrar información completa del contexto
+            _logger.LogInformation("[BaseHub] ===== DEBUGGING USER CONTEXT =====");
+            _logger.LogInformation("[BaseHub] Connection ID: {ConnectionId}", Context.ConnectionId);
+            _logger.LogInformation("[BaseHub] User exists: {UserExists}", Context.User != null);
+            _logger.LogInformation("[BaseHub] User Identity exists: {IdentityExists}", Context.User?.Identity != null);
+            _logger.LogInformation("[BaseHub] Is authenticated: {IsAuthenticated}", Context.User?.Identity?.IsAuthenticated);
+
+            if (Context.User?.Claims != null)
+            {
+                var allClaims = Context.User.Claims.Select(c => $"{c.Type}={c.Value}").ToList();
+                _logger.LogInformation("[BaseHub] All available claims: {Claims}", string.Join(", ", allClaims));
+            }
+            else
+            {
+                _logger.LogWarning("[BaseHub] No claims found in user context");
+            }
+
+            // Intentar múltiples nombres de claims comunes para playerId
+            var playerIdClaim = Context.User?.FindFirst("playerId")?.Value ??
+                               Context.User?.FindFirst("player_id")?.Value ??
+                               Context.User?.FindFirst("PlayerId")?.Value ??
+                               Context.User?.FindFirst("userId")?.Value ??
+                               Context.User?.FindFirst("user_id")?.Value ??
+                               Context.User?.FindFirst("UserId")?.Value ??
+                               Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value ??
+                               Context.User?.FindFirst("sub")?.Value; // "sub" es estándar JWT para subject/user ID
+
             if (string.IsNullOrEmpty(playerIdClaim))
             {
                 _logger.LogWarning("[BaseHub] No playerId claim found for connection {ConnectionId}", Context.ConnectionId);
+
+                // TEMPORAL: Si no hay claim, usar un ID basado en el email o nombre de usuario
+                var emailClaim = Context.User?.FindFirst("email")?.Value ?? Context.User?.FindFirst(ClaimTypes.Email)?.Value;
+                var nameClaim = Context.User?.FindFirst("name")?.Value ?? Context.User?.FindFirst(ClaimTypes.Name)?.Value;
+
+                if (!string.IsNullOrEmpty(emailClaim))
+                {
+                    // Generar un GUID determinista basado en el email
+                    var emailGuid = GenerateDeterministicGuid(emailClaim);
+                    _logger.LogInformation("[BaseHub] Using email-based GUID: {EmailGuid} from email: {Email}", emailGuid, emailClaim);
+                    return PlayerId.From(emailGuid);
+                }
+
+                if (!string.IsNullOrEmpty(nameClaim))
+                {
+                    // Generar un GUID determinista basado en el nombre
+                    var nameGuid = GenerateDeterministicGuid(nameClaim);
+                    _logger.LogInformation("[BaseHub] Using name-based GUID: {NameGuid} from name: {Name}", nameGuid, nameClaim);
+                    return PlayerId.From(nameGuid);
+                }
+
                 return null;
             }
 
             if (Guid.TryParse(playerIdClaim, out var playerId))
             {
+                _logger.LogInformation("[BaseHub] Successfully parsed playerId: {PlayerId} for connection {ConnectionId}",
+                    playerId, Context.ConnectionId);
                 return PlayerId.From(playerId);
             }
 
-            _logger.LogWarning("[BaseHub] Invalid playerId format: {PlayerId} for connection {ConnectionId}",
-                playerIdClaim, Context.ConnectionId);
-            return null;
+            // Si no es un GUID válido, intentar generar uno determinista
+            _logger.LogWarning("[BaseHub] Invalid playerId format: {PlayerId}, generating deterministic GUID", playerIdClaim);
+            var deterministicGuid = GenerateDeterministicGuid(playerIdClaim);
+            _logger.LogInformation("[BaseHub] Generated deterministic GUID: {GUID} from claim: {Claim}", deterministicGuid, playerIdClaim);
+            return PlayerId.From(deterministicGuid);
+
         }
         catch (Exception ex)
         {
@@ -44,13 +96,26 @@ public abstract class BaseHub : Hub
         }
     }
 
+    // Método para generar GUID determinista (siempre el mismo para el mismo input)
+    private Guid GenerateDeterministicGuid(string input)
+    {
+        using var md5 = System.Security.Cryptography.MD5.Create();
+        var hash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(input));
+        return new Guid(hash);
+    }
+
     // Obtener el nombre del usuario actual
     protected string? GetCurrentUserName()
     {
         try
         {
             return Context.User?.FindFirst("name")?.Value ??
+                   Context.User?.FindFirst("username")?.Value ??
+                   Context.User?.FindFirst("userName")?.Value ??
                    Context.User?.FindFirst(ClaimTypes.Name)?.Value ??
+                   Context.User?.FindFirst("preferred_username")?.Value ??
+                   Context.User?.FindFirst("email")?.Value ??
+                   Context.User?.FindFirst(ClaimTypes.Email)?.Value ??
                    $"User-{Context.ConnectionId[..8]}";
         }
         catch (Exception ex)
@@ -68,6 +133,10 @@ public abstract class BaseHub : Hub
         if (!isAuthenticated)
         {
             _logger.LogWarning("[BaseHub] Unauthenticated connection attempt: {ConnectionId}", Context.ConnectionId);
+
+            // DEBUG: Si no está autenticado, mostrar información del contexto
+            _logger.LogWarning("[BaseHub] User object: {User}", Context.User != null ? "EXISTS" : "NULL");
+            _logger.LogWarning("[BaseHub] Identity object: {Identity}", Context.User?.Identity != null ? "EXISTS" : "NULL");
         }
         return isAuthenticated;
     }

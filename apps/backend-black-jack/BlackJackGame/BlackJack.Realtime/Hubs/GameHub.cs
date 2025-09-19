@@ -11,7 +11,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Internal;
 using Microsoft.Extensions.Logging;
 
 namespace BlackJack.Realtime.Hubs;
-[Authorize]
+
 public class GameHub : BaseHub
 {
     private readonly IGameRoomService _gameRoomService;
@@ -136,6 +136,11 @@ public class GameHub : BaseHub
     {
         try
         {
+            Console.WriteLine($"[DEBUG] JoinRoom called");
+            Console.WriteLine($"[DEBUG] Context.User is null: {Context.User == null}");
+            Console.WriteLine($"[DEBUG] IsAuthenticated: {Context.User?.Identity?.IsAuthenticated ?? false}");
+            Console.WriteLine($"[DEBUG] Claims count: {Context.User?.Claims?.Count() ?? 0}");
+
             if (!IsAuthenticated())
             {
                 await SendErrorAsync("Debes estar autenticado para unirte a una sala");

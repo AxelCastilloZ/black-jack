@@ -7,7 +7,7 @@ using BlackJack.Realtime.Services;
 using Microsoft.AspNetCore.Authorization;
 
 namespace BlackJack.Realtime.Hubs;
-[Authorize]
+
 public class LobbyHub : BaseHub
 {
     private readonly IGameRoomService _gameRoomService;

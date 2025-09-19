@@ -5,6 +5,9 @@ using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
+Console.WriteLine($"[STARTUP-DEBUG] Starting BlackJack application...");
+Console.WriteLine($"[STARTUP-DEBUG] Environment: {builder.Environment.EnvironmentName}");
+
 // MVC + Swagger
 builder.Services.AddControllers();
 builder.Services.AddHttpContextAccessor();
@@ -28,9 +31,11 @@ builder.Services.AddSwaggerGen(o =>
 // Health + CORS
 builder.Services.AddHealthChecks();
 
+Console.WriteLine($"[STARTUP-DEBUG] Adding application services...");
 // SIMPLIFICADO: Solo llamar AddApplicationServices (ya incluye JWT)
 builder.Services.AddApplicationServices(builder.Configuration);
 
+Console.WriteLine($"[STARTUP-DEBUG] Adding SignalR services...");
 // SignalR según el entorno (esto debe estar FUERA de AddApplicationServices)
 if (builder.Environment.IsDevelopment())
 {
@@ -62,9 +67,12 @@ builder.Services.AddCors(opt =>
 
 var app = builder.Build();
 
+Console.WriteLine($"[STARTUP-DEBUG] Application built, configuring pipeline...");
+
 // Migración automática en desarrollo
 if (app.Environment.IsDevelopment())
 {
+    Console.WriteLine($"[STARTUP-DEBUG] Development environment - initializing databases...");
     using (var scope = app.Services.CreateScope())
     {
         try
@@ -72,34 +80,49 @@ if (app.Environment.IsDevelopment())
             var identityContext = scope.ServiceProvider.GetRequiredService<BlackJack.Data.Identity.IdentityDbContext>();
             var appContext = scope.ServiceProvider.GetRequiredService<BlackJack.Data.Context.ApplicationDbContext>();
 
+            Console.WriteLine($"[STARTUP-DEBUG] Ensuring identity database created...");
             await identityContext.Database.EnsureCreatedAsync();
+            Console.WriteLine($"[STARTUP-DEBUG] Identity database ready");
+
+            Console.WriteLine($"[STARTUP-DEBUG] Ensuring application database created...");
             await appContext.Database.EnsureCreatedAsync();
+            Console.WriteLine($"[STARTUP-DEBUG] Application database ready");
         }
         catch (Exception ex)
         {
             var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-            logger.LogError(ex, "Error initializing database");
+            logger.LogError(ex, "[STARTUP-DEBUG] Error initializing database");
+            Console.WriteLine($"[STARTUP-DEBUG] Database initialization failed: {ex.Message}");
         }
     }
 
+    Console.WriteLine($"[STARTUP-DEBUG] Adding Swagger...");
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
+Console.WriteLine($"[STARTUP-DEBUG] Configuring middleware pipeline...");
+
 app.UseHttpsRedirection();
 app.UseCors("DevCors");
 
+Console.WriteLine($"[STARTUP-DEBUG] Adding Authentication middleware...");
 // ORDEN CRÍTICO: Authentication antes que Authorization
 app.UseAuthentication();
+
+Console.WriteLine($"[STARTUP-DEBUG] Adding Authorization middleware...");
 app.UseAuthorization();
 
+Console.WriteLine($"[STARTUP-DEBUG] Mapping controllers...");
 app.MapControllers();
 app.MapHealthChecks("/api/health").AllowAnonymous();
 
+Console.WriteLine($"[STARTUP-DEBUG] Mapping SignalR hubs...");
 // Mapear hubs CON autorización
 app.MapHub<GameHub>("/hubs/game");
 app.MapHub<LobbyHub>("/hubs/lobby");
 
+Console.WriteLine($"[STARTUP-DEBUG] Adding utility endpoints...");
 // Endpoints de utilidad
 app.MapGet("/api/ping", () => Results.Ok(new
 {
@@ -118,8 +141,11 @@ app.MapGet("/api/version", () =>
 // Endpoints de debug para desarrollo
 if (app.Environment.IsDevelopment())
 {
+    Console.WriteLine($"[STARTUP-DEBUG] Adding debug endpoints...");
+
     app.MapGet("/api/debug/services", (IServiceProvider services) =>
     {
+        Console.WriteLine($"[DEBUG-ENDPOINT] Services check requested");
         var registeredServices = new
         {
             TableService = services.GetService<BlackJack.Services.Table.ITableService>() != null,
@@ -130,16 +156,26 @@ if (app.Environment.IsDevelopment())
             EventDispatcher = services.GetService<BlackJack.Services.Common.IDomainEventDispatcher>() != null,
             Timestamp = DateTime.UtcNow
         };
+        Console.WriteLine($"[DEBUG-ENDPOINT] Services status: {System.Text.Json.JsonSerializer.Serialize(registeredServices)}");
         return Results.Ok(registeredServices);
     }).AllowAnonymous();
 
     app.MapGet("/api/debug/jwt-test", (HttpContext context) =>
     {
+        Console.WriteLine($"[DEBUG-ENDPOINT] JWT test requested");
+        Console.WriteLine($"[DEBUG-ENDPOINT] Path: {context.Request.Path}");
+        Console.WriteLine($"[DEBUG-ENDPOINT] Method: {context.Request.Method}");
+
         var authHeader = context.Request.Headers["Authorization"].FirstOrDefault()?.Replace("Bearer ", "");
         var queryToken = context.Request.Query["access_token"].FirstOrDefault();
         var claims = context.User?.Claims?.Select(c => $"{c.Type}: {c.Value}").ToArray() ?? Array.Empty<string>();
 
-        return Results.Ok(new
+        Console.WriteLine($"[DEBUG-ENDPOINT] Auth header present: {!string.IsNullOrEmpty(authHeader)}");
+        Console.WriteLine($"[DEBUG-ENDPOINT] Query token present: {!string.IsNullOrEmpty(queryToken)}");
+        Console.WriteLine($"[DEBUG-ENDPOINT] Is authenticated: {context.User?.Identity?.IsAuthenticated ?? false}");
+        Console.WriteLine($"[DEBUG-ENDPOINT] Claims count: {claims.Length}");
+
+        var result = new
         {
             HasAuthHeader = !string.IsNullOrEmpty(authHeader),
             HasQueryToken = !string.IsNullOrEmpty(queryToken),
@@ -149,8 +185,41 @@ if (app.Environment.IsDevelopment())
             Path = context.Request.Path.Value,
             Method = context.Request.Method,
             Timestamp = DateTime.UtcNow
-        });
+        };
+
+        Console.WriteLine($"[DEBUG-ENDPOINT] Response: {System.Text.Json.JsonSerializer.Serialize(result)}");
+        return Results.Ok(result);
     }).RequireAuthorization();
+
+    // Test específico para SignalR auth
+    app.MapGet("/api/debug/signalr-token", (HttpContext context) =>
+    {
+        Console.WriteLine($"[DEBUG-SIGNALR] SignalR token test called");
+        var queryToken = context.Request.Query["access_token"].FirstOrDefault();
+        var authHeader = context.Request.Headers["Authorization"].FirstOrDefault();
+
+        Console.WriteLine($"[DEBUG-SIGNALR] Query token: {(!string.IsNullOrEmpty(queryToken) ? $"Present (length: {queryToken.Length})" : "Not present")}");
+        Console.WriteLine($"[DEBUG-SIGNALR] Auth header: {(!string.IsNullOrEmpty(authHeader) ? "Present" : "Not present")}");
+        Console.WriteLine($"[DEBUG-SIGNALR] Is authenticated: {context.User?.Identity?.IsAuthenticated ?? false}");
+
+        if (!string.IsNullOrEmpty(queryToken))
+        {
+            Console.WriteLine($"[DEBUG-SIGNALR] Token preview: {queryToken.Substring(0, Math.Min(50, queryToken.Length))}...");
+        }
+
+        var result = new
+        {
+            QueryTokenPresent = !string.IsNullOrEmpty(queryToken),
+            QueryTokenLength = queryToken?.Length ?? 0,
+            AuthHeaderPresent = !string.IsNullOrEmpty(authHeader),
+            IsAuthenticated = context.User?.Identity?.IsAuthenticated ?? false,
+            UserName = context.User?.Identity?.Name,
+            Timestamp = DateTime.UtcNow
+        };
+
+        return Results.Ok(result);
+    }).AllowAnonymous();
 }
 
+Console.WriteLine($"[STARTUP-DEBUG] Application configured, starting...");
 app.Run();
