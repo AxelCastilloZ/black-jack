@@ -8,6 +8,11 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\BlackJack.Data\BlackJack.Data.csproj" />
+		
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Folder Include="Cards\" />
 	</ItemGroup>
 
 

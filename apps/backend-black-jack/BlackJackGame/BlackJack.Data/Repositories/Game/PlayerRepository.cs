@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿// BlackJack.Data.Repositories.Game/PlayerRepository.cs - CORREGIDO CON GUID
+using Microsoft.EntityFrameworkCore;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Data.Context;
@@ -15,17 +16,23 @@ public class PlayerRepository : Repository<Player>, IPlayerRepository
     public async Task<Player?> GetByPlayerIdAsync(PlayerId playerId)
     {
         return await _dbSet
-            .Include(p => p.Hands)
             .FirstOrDefaultAsync(p => p.PlayerId == playerId);
     }
 
-    public async Task<List<Player>> GetPlayersByTableAsync(TableId tableId)
+    public async Task<List<Player>> GetPlayersByTableAsync(Guid tableId)
     {
-        return await _context.Seats
-            .Where(s => s.IsOccupied)
-            .Include(s => s.Player)
-            .ThenInclude(p => p!.Hands)
+        // Como Seat no tiene BlackjackTableId directo, necesitamos hacer el query desde BlackjackTable
+        var table = await _context.Set<BlackjackTable>()
+            .Include(t => t.Seats)
+            .ThenInclude(s => s.Player)
+            .FirstOrDefaultAsync(t => t.Id == tableId);
+
+        if (table == null)
+            return new List<Player>();
+
+        return table.Seats
+            .Where(s => s.IsOccupied && s.Player != null)
             .Select(s => s.Player!)
-            .ToListAsync();
+            .ToList();
     }
 }

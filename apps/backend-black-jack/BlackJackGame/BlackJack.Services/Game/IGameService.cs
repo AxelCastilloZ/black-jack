@@ -1,4 +1,4 @@
-﻿// Services/Game/IGameService.cs
+﻿// Services/Game/IGameService.cs - CORREGIDO CON GUID
 using System.Threading.Tasks;
 using BlackJack.Domain.Enums;
 using BlackJack.Domain.Models.Betting;
@@ -10,18 +10,30 @@ namespace BlackJack.Services.Game;
 
 public interface IGameService
 {
+    // Métodos de mesa
     Task<Result<BlackjackTable>> CreateTableAsync(string name, Money minBet, Money maxBet);
-    Task<Result<BlackjackTable>> GetTableAsync(TableId tableId);
+    Task<Result<BlackjackTable>> GetTableAsync(Guid tableId);
 
-    Task<Result> JoinTableAsync(TableId tableId, PlayerId playerId, int seatPosition);
-    Task<Result> LeaveTableAsync(TableId tableId, PlayerId playerId);
+    // Métodos de jugadores
+    Task<Result> JoinTableAsync(Guid tableId, PlayerId playerId, int seatPosition);
+    Task<Result> LeaveTableAsync(Guid tableId, PlayerId playerId);
 
-    Task<Result> PlaceBetAsync(TableId tableId, PlayerId playerId, Bet bet);
+    // Métodos de apuestas
+    Task<Result> PlaceBetAsync(Guid tableId, PlayerId playerId, Bet bet);
 
-    Task<Result> StartRoundAsync(TableId tableId);
-    Task<Result> PlayerActionAsync(TableId tableId, PlayerId playerId, PlayerAction action);
-    Task<Result> EndRoundAsync(TableId tableId);
+    // Métodos de juego
+    Task<Result> StartRoundAsync(Guid tableId);
+    Task<Result> PlayerActionAsync(Guid tableId, PlayerId playerId, PlayerAction action);
+    Task<Result> EndRoundAsync(Guid tableId);
 
-    // Necesario para GameHub.ResetTable
-    Task<Result> ResetTableAsync(TableId tableId);
+    // Métodos de administración
+    Task<Result> ResetTableAsync(Guid tableId);
+    Task<Result> PauseTableAsync(Guid tableId);
+    Task<Result> ResumeTableAsync(Guid tableId);
+
+    // Métodos de consulta adicionales
+    Task<Result<List<BlackjackTable>>> GetAvailableTablesAsync();
+    Task<Result<BlackjackTable>> GetTableDetailsAsync(Guid tableId);
+    Task<Result<bool>> IsPlayerSeatedAsync(Guid tableId, PlayerId playerId);
+    Task<Result<int?>> GetPlayerSeatPositionAsync(Guid tableId, PlayerId playerId);
 }

@@ -163,16 +163,61 @@ class AuthService {
     }
   }
 
-  // ------- REGISTER -------
+  // ------- REGISTER - CORREGIDO -------
   async register(displayName: string, email: string, password: string): Promise<AuthUser> {
-    await apiService.post<any>('/auth/register', { displayName, email, password })
-    const user = await this.login(email, password)
-    if (!user.displayName) {
-      user.displayName = displayName
-      localStorage.setItem(USER_KEY, JSON.stringify(user))
-      this.currentUser = user
+    console.log('📝 Intentando registro...', { displayName, email })
+    
+    try {
+      // 1. Hacer el registro (el backend solo devuelve UserProfile, no token)
+      const registerResponse = await apiService.post<any>('/auth/register', { 
+        displayName, 
+        email, 
+        password 
+      })
+      console.log('✅ Registro exitoso:', registerResponse)
+      
+      // 2. Hacer login inmediatamente después del registro exitoso
+      console.log('🔑 Haciendo login automático después del registro...')
+      const user = await this.login(email, password)
+      
+      // 3. Asegurar que el displayName se mantenga correcto
+      if (!user.displayName || user.displayName !== displayName) {
+        user.displayName = displayName
+        localStorage.setItem(USER_KEY, JSON.stringify(user))
+        this.currentUser = user
+      }
+      
+      console.log('✅ Registro y login completados para:', user.displayName)
+      return user
+      
+    } catch (error: any) {
+      console.error('❌ Error en registro:', error)
+      
+      // Manejar errores específicos del backend
+      if (error.response?.status === 400) {
+        const errorData = error.response?.data
+        let errorMessage = 'Error en los datos proporcionados'
+        
+        // Intentar extraer el mensaje de error del backend
+        if (typeof errorData === 'string') {
+          errorMessage = errorData
+        } else if (errorData?.message) {
+          errorMessage = errorData.message
+        } else if (errorData?.error) {
+          errorMessage = errorData.error
+        } else if (errorData?.errors && Array.isArray(errorData.errors)) {
+          errorMessage = errorData.errors.join(', ')
+        }
+        
+        throw new Error(errorMessage)
+      } else if (error.response?.status === 409) {
+        throw new Error('El email ya está registrado')
+      } else if (error.response?.status === 500) {
+        throw new Error('Error interno del servidor. Intenta de nuevo.')
+      } else {
+        throw new Error(error?.message || 'Error al crear cuenta')
+      }
     }
-    return user
   }
 
   // ------- Helpers de auth -------
@@ -208,6 +253,8 @@ class AuthService {
 
   logout() {
     this.clearAuth()
+    // Redirigir a la página de autenticación
+    window.location.href = '/auth'
   }
 
   private clearAuth() {

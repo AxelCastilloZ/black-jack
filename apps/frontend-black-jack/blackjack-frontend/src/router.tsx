@@ -1,4 +1,4 @@
-// src/router.tsx
+// src/router.tsx - Flujo completo CORREGIDO
 import React from 'react'
 import {
   createRootRoute,
@@ -6,40 +6,59 @@ import {
   createRouter,
   redirect,
   useNavigate,
+  Outlet,
 } from '@tanstack/react-router'
 
-import App from './App'
 import AuthPage from './components/auth/AuthPage'
+import HomePage from './pages/HomePage'
 import LobbyPage from './pages/LobbyPage'
 import ProfilePage from './pages/ProfilePage'
 import GamePage from './pages/GamePage'
 import { authService } from './services/auth'
 
-// ----- Guard simple -----
+// Guard para rutas protegidas
 function requireAuth() {
   if (!authService.isAuthenticated()) {
-    // si no hay sesión, redirige al root (/)
-    throw redirect({ to: '/' })
+    throw redirect({ to: '/auth' })
   }
 }
 
-// Wrapper para la pantalla de Auth que navega al lobby al terminar
-function IndexScreen() {
+// Wrapper para la pantalla de Auth - CORREGIDO
+function AuthScreen() {
   const navigate = useNavigate()
-  return <AuthPage onAuthSuccess={() => navigate({ to: '/lobby' })} />
+  
+  const handleAuthSuccess = () => {
+    navigate({ to: '/home' })
+  }
+
+  return <AuthPage onAuthSuccess={handleAuthSuccess} />
 }
 
-// ----- Rutas -----
+// Root route limpio
 const rootRoute = createRootRoute({
-  component: App,
+  component: () => (
+    <div className="min-h-screen">
+      <Outlet />
+    </div>
+  ),
 })
 
-const indexRoute = createRoute({
+// 1. PRIMERA PANTALLA: Autenticación
+const authRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/',
-  component: IndexScreen,
+  path: '/auth',
+  component: AuthScreen,
 })
 
+// 2. SEGUNDA PANTALLA: Home (después de autenticarse)
+const homeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/home',
+  beforeLoad: () => requireAuth(),
+  component: HomePage,
+})
+
+// 3. TERCERA PANTALLA: Lobby (cuando hace clic en "Jugar Ahora")
 const lobbyRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/lobby',
@@ -47,14 +66,7 @@ const lobbyRoute = createRoute({
   component: LobbyPage,
 })
 
-const profileRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/perfil',
-  beforeLoad: () => requireAuth(),
-  component: ProfilePage,
-})
-
-// Nueva ruta para el juego con parámetro tableId
+// 4. CUARTA PANTALLA: Game (cuando selecciona una mesa)
 const gameRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/game/$tableId',
@@ -62,17 +74,54 @@ const gameRoute = createRoute({
   component: GamePage,
 })
 
-// Árbol de rutas y router
+// Pantalla de perfil (acceso desde cualquier lugar)
+const profileRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/perfil',
+  beforeLoad: () => requireAuth(),
+  component: ProfilePage,
+})
+
+// Ruta raíz redirige a auth si no está autenticado, o a home si lo está
+const indexRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/',
+  component: () => {
+    const navigate = useNavigate()
+    
+    React.useEffect(() => {
+      if (authService.isAuthenticated()) {
+        navigate({ to: '/home' })
+      } else {
+        navigate({ to: '/auth' })
+      }
+    }, [navigate])
+    
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="text-white">Redirigiendo...</div>
+      </div>
+    )
+  },
+})
+
+// Árbol de rutas
 const routeTree = rootRoute.addChildren([
-  indexRoute, 
-  lobbyRoute, 
+  indexRoute,
+  authRoute,
+  homeRoute,
+  lobbyRoute,
+  gameRoute,
   profileRoute,
-  gameRoute
 ])
 
-export const router = createRouter({ routeTree })
+// Router
+export const router = createRouter({
+  routeTree,
+  defaultPreload: 'intent',
+})
 
-// Augment de tipos para TanStack Router
+// Tipos para TypeScript
 declare module '@tanstack/react-router' {
   interface Register {
     router: typeof router

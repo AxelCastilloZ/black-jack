@@ -1,444 +1,511 @@
-// src/pages/GamePage.tsx
-import React, { useState, useEffect, useRef, useMemo } from 'react'
+// src/pages/GamePage.tsx - CORREGIDO TODOS LOS ERRORES DE TYPESCRIPT
+import React, { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
 import { signalRService, type GameState, type ChatMessage } from '../services/signalr'
 import { authService } from '../services/auth'
-import BlackjackTable from '../components/game/BlackJackTable'
-
-type BannerKind = 'info' | 'success' | 'warning'
-interface Banner {
-  id: string
-  kind: BannerKind
-  text: string
-}
+import { useSignalR } from '../hooks/useSignalR'
 
 export default function GamePage() {
   const { tableId } = useParams({ strict: false }) as { tableId: string }
   const navigate = useNavigate()
-
+  const { isConnected } = useSignalR()
+  
   const [gameState, setGameState] = useState<GameState | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatInput, setChatInput] = useState('')
-
-  const [banners, setBanners] = useState<Banner[]>([])
-
-  // Refs / estado interno
-  const isInitializedRef = useRef(false)
-  const cleanupRef = useRef<(() => void) | null>(null)
-  const prevStatusRef = useRef<string | null>(null)
-
+  const [isJoining, setIsJoining] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  
   const currentUser = authService.getCurrentUser()
+  const currentPlayer = gameState?.players?.find(p => p.id === currentUser?.id)
 
-  // Helpers banner
-  const pushBanner = (kind: BannerKind, text: string, ttlMs = 4000) => {
-    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
-    const banner: Banner = { id, kind, text }
-    setBanners(prev => [...prev, banner])
-    setTimeout(() => {
-      setBanners(prev => prev.filter(b => b.id !== id))
-    }, ttlMs)
-  }
-
-  // Derivados de UI
-  const mySeat = useMemo(() => {
-    if (!gameState || !currentUser) return null
-    return gameState.players?.find(p => p.id === currentUser.id) ?? null
-  }, [gameState, currentUser])
-
-  const isBetting = gameState?.status === 'Betting'
-  const isWaiting = gameState?.status === 'WaitingForPlayers'
-  const isInProgress = gameState?.status === 'InProgress'
-  const isMyTurn = Boolean(mySeat?.isActive && isInProgress)
-
+  // Configurar callbacks de SignalR
   useEffect(() => {
-    if (isInitializedRef.current) return
-
-    let timeoutId: NodeJS.Timeout | null = null
-
-    const initializeGame = async () => {
-      if (!currentUser) {
-        setError('No estás autenticado')
-        setLoading(false)
-        return
-      }
-
-      if (!tableId) {
-        setError('ID de mesa inválido')
-        setLoading(false)
-        return
-      }
-
-      try {
-        setLoading(true)
-        setError(null)
-
-        console.log('🎮 Inicializando juego...', { tableId, userId: currentUser.id })
-
-        // Timeout de seguridad para primer paint
-        timeoutId = setTimeout(() => {
-          console.log('⏰ Timeout - estado por defecto')
-          setGameState({
-            id: tableId,
-            status: 'WaitingForPlayers',
-            players: [],
-            minBet: 10,
-            maxBet: 500,
-          })
-          setLoading(false)
-        }, 3000)
-
-        // Handler principal de estado
-        const handleGameStateUpdate = (state: GameState) => {
-          console.group('📊 [GamePage] GameStateUpdated')
-          console.log('Estado nuevo:', state)
-          console.log('Jugadores:', state.players?.length || 0)
-          console.log('Status:', state.status)
-
-          // Detectar cambios de estado para banners
-          const prev = prevStatusRef.current
-          const next = state.status
-
-          if (prev !== next) {
-            if ((next === 'InProgress') && prev !== 'InProgress') {
-              pushBanner('success', '🎲 ¡Ronda iniciada! Repartiendo cartas…')
-            }
-            if (prev === 'InProgress' && (next === 'Betting' || next === 'WaitingForPlayers')) {
-              // Resumen si viene en el estado (por si el backend lo agrega luego)
-              const summary =
-                (state as any).lastRoundSummary ||
-                (state as any).results?.map((r: any) => `${r.name ?? r.seatIndex}: ${r.delta > 0 ? '+' : ''}${r.delta}`).join(' · ')
-              pushBanner('info', summary ? `🏁 Ronda finalizada — ${summary}` : '🏁 Ronda finalizada')
-            }
-            prevStatusRef.current = next ?? null
-          }
-
-          // Actualizar estado (sin flicker)
-          setGameState(state)
-          setLoading(false)
-          console.groupEnd()
-
-          if (timeoutId) {
-            clearTimeout(timeoutId)
-            timeoutId = null
-          }
-        }
-
-        const handleChatMessage = (message: ChatMessage) => {
-          setChatMessages(prev => {
-            const exists = prev.some(m => m.id === message.id)
-            if (exists) return prev
-            return [...prev.slice(-49), message]
-          })
-        }
-
-        const handlePlayerJoined = (data: any) => {
-          console.log('👥 Player joined:', data)
-        }
-
-        const handlePlayerLeft = (data: any) => {
-          console.log('👋 Player left:', data)
-        }
-
-        // Limpiar handlers previos
-        signalRService.onGameStateUpdate = undefined
-        signalRService.onChatMessage = undefined  
-        signalRService.onPlayerJoined = undefined
-        signalRService.onPlayerLeft = undefined
-
-        // Asignar handlers
-        signalRService.onGameStateUpdate = handleGameStateUpdate
-        signalRService.onChatMessage = handleChatMessage
-        signalRService.onPlayerJoined = handlePlayerJoined
-        signalRService.onPlayerLeft = handlePlayerLeft
-
-        // Conectar si hace falta
-        if (!signalRService.isGameConnected) {
-          console.log('🔌 Conectando a SignalR…')
-          const connected = await signalRService.startConnections()
-          if (!connected) throw new Error('No se pudo conectar al servidor de juego')
-        }
-
-        // Unirse a la mesa
-        console.log('🚪 Uniéndose a la mesa…', tableId)
-        await signalRService.joinTable(tableId)
-        isInitializedRef.current = true
-        console.log('✅ Inicialización completa')
-      } catch (err) {
-        console.error('❌ Error initializing game:', err)
-        setError(err instanceof Error ? err.message : 'Error desconocido al conectar')
-        setLoading(false)
-        if (timeoutId) {
-          clearTimeout(timeoutId)
-          timeoutId = null
-        }
-      }
+    signalRService.onGameStateUpdate = (state: GameState) => {
+      console.log('🎮 Game state actualizado:', state)
+      setGameState(state)
     }
 
-    // Cleanup consolidado
-    cleanupRef.current = () => {
-      console.log('🧹 Cleanup GamePage…')
-      if (timeoutId) {
-        clearTimeout(timeoutId)
-        timeoutId = null
-      }
+    signalRService.onChatMessage = (message: ChatMessage) => {
+      setChatMessages(prev => [...prev.slice(-9), message])
+    }
 
+    return () => {
       signalRService.onGameStateUpdate = undefined
       signalRService.onChatMessage = undefined
-      signalRService.onPlayerJoined = undefined
-      signalRService.onPlayerLeft = undefined
-
-      if (isInitializedRef.current && tableId) {
-        signalRService.leaveTable(tableId).catch(err =>
-          console.warn('Error leaving table during cleanup:', err),
-        )
-      }
-
-      setGameState(null)
-      setLoading(true)
-      setError(null)
-      prevStatusRef.current = null
-      isInitializedRef.current = false
-      console.log('✅ Cleanup done')
     }
-
-    void initializeGame()
-    return () => {
-      cleanupRef.current?.()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handleSendChat = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!chatInput.trim() || !tableId) return
-    try {
-      await signalRService.sendMessage(tableId, chatInput.trim())
-      setChatInput('')
-    } catch (error) {
-      console.error('Error sending chat:', error)
-    }
-  }
-
-  const handleCancelConnection = () => {
-    cleanupRef.current?.()
-    navigate({ to: '/lobby' })
-  }
-
-  const handleRestartConnection = async () => {
-    try {
-      console.log('🔄 Reiniciando conexión…')
-      setLoading(true)
+  // Conectar y unirse a la mesa
+  useEffect(() => {
+    let isMounted = true
+    
+    const connectToTable = async () => {
+      if (!tableId || !isConnected) return
+      
+      setIsJoining(true)
       setError(null)
-      setGameState(null)
-
-      cleanupRef.current?.()
-      await new Promise(resolve => setTimeout(resolve, 300))
-
-      // Reuso: hard refresh si hubiera estados raros
-      window.location.reload()
-    } catch (err) {
-      console.error('Error restarting:', err)
-      setError('Error al reiniciar conexión')
-      setLoading(false)
+      
+      try {
+        console.log('🎯 Uniéndose a mesa:', tableId)
+        await signalRService.joinTable(tableId)
+        console.log('✅ Conectado a mesa exitosamente')
+      } catch (e: any) {
+        if (isMounted) {
+          console.error('❌ Error conectando:', e)
+          setError(e?.message || 'Error conectando a la mesa')
+        }
+      } finally {
+        if (isMounted) {
+          setIsJoining(false)
+        }
+      }
     }
-  }
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-green-900 flex items-center justify-center">
-        <div className="bg-gray-800/90 backdrop-blur-sm p-8 rounded-xl text-center max-w-md">
-          <div className="animate-spin w-12 h-12 border-4 border-white border-t-transparent rounded-full mx-auto mb-4"></div>
-          <h3 className="text-xl font-bold text-white mb-2">Conectando a la mesa…</h3>
-          <p className="text-gray-300 text-sm mb-4">Mesa #{tableId?.slice(0, 8)}…</p>
-          <p className="text-gray-400 text-xs mb-6">
-            Estado SignalR: {signalRService.connectionState}
-          </p>
-          <button
-            onClick={handleCancelConnection}
-            className="bg-red-600 hover:bg-red-700 px-6 py-2 rounded-lg text-white font-medium transition-colors"
-          >
-            Cancelar
-          </button>
-        </div>
-      </div>
-    )
-  }
+    connectToTable()
+    
+    return () => {
+      isMounted = false
+    }
+  }, [tableId, isConnected])
 
-  if (error) {
+  // Cleanup al salir
+  useEffect(() => {
+    return () => {
+      if (tableId) {
+        signalRService.leaveTable(tableId).catch(console.warn)
+      }
+    }
+  }, [tableId])
+
+  // Handlers para acciones de juego
+  const handleJoinSeat = useCallback(async (position: number) => {
+    if (!isConnected) return
+    try {
+      setError(null)
+      await signalRService.joinSeat(tableId, position)
+    } catch (e: any) {
+      setError(e?.message || 'Error al unirse al asiento')
+    }
+  }, [isConnected, tableId])
+
+  const handleLeaveSeat = useCallback(async () => {
+    if (!isConnected) return
+    try {
+      setError(null)
+      await signalRService.leaveSeat(tableId)
+    } catch (e: any) {
+      setError(e?.message || 'Error al dejar el asiento')
+    }
+  }, [isConnected, tableId])
+
+  const handlePlaceBet = useCallback(async (amount: number) => {
+    if (!isConnected) return
+    try {
+      setError(null)
+      await signalRService.placeBet(tableId, amount)
+    } catch (e: any) {
+      setError(e?.message || 'Error al apostar')
+    }
+  }, [isConnected, tableId])
+
+  const handleStartRound = useCallback(async () => {
+    if (!isConnected) return
+    try {
+      setError(null)
+      await signalRService.startRound(tableId)
+    } catch (e: any) {
+      setError(e?.message || 'Error al iniciar ronda')
+    }
+  }, [isConnected, tableId])
+
+  const handleSendMessage = useCallback(async () => {
+    if (!chatInput.trim() || !isConnected) return
+    try {
+      await signalRService.sendChatMessage(tableId, chatInput.trim())
+      setChatInput('')
+    } catch (e: any) {
+      console.warn('Error sending message:', e)
+    }
+  }, [chatInput, isConnected, tableId])
+
+  const handleGameAction = useCallback(async (action: 'hit' | 'stand' | 'double') => {
+    if (!isConnected) return
+    try {
+      setError(null)
+      switch (action) {
+        case 'hit':
+          await signalRService.hit(tableId)
+          break
+        case 'stand':
+          await signalRService.stand(tableId)
+          break
+        case 'double':
+          await signalRService.doubleDown(tableId)
+          break
+      }
+    } catch (e: any) {
+      setError(e?.message || `Error al ${action}`)
+    }
+  }, [isConnected, tableId])
+
+  // Loading state
+  if (isJoining || !gameState) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-red-900 to-gray-900 flex items-center justify-center">
-        <div className="bg-gray-800/90 backdrop-blur-sm p-8 rounded-xl text-center max-w-md">
-          <div className="text-red-500 text-6xl mb-4">⚠️</div>
-          <h3 className="text-xl font-bold text-white mb-2">Error de conexión</h3>
-          <p className="text-gray-300 text-sm mb-6">{error}</p>
-          <div className="space-y-3">
-            <button
-              onClick={handleRestartConnection}
-              className="w-full bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg text-white font-medium transition-colors"
-            >
-              Reintentar Conexión
-            </button>
-            <button
-              onClick={handleCancelConnection}
-              className="w-full bg-gray-600 hover:bg-gray-700 px-6 py-2 rounded-lg text-white font-medium transition-colors"
-            >
-              Volver al Lobby
-            </button>
+      <div className="fixed inset-0 bg-gradient-to-br from-emerald-900 to-emerald-800 flex items-center justify-center">
+        <div className="bg-black/80 rounded-xl p-8 text-center">
+          <div className="w-8 h-8 border-2 border-white border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <div className="text-white text-lg">
+            {isJoining ? 'Conectando a la mesa...' : 'Cargando juego...'}
           </div>
         </div>
       </div>
     )
   }
 
-  if (!gameState) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-green-900 flex items-center justify-center">
-        <div className="bg-gray-800/90 backdrop-blur-sm p-8 rounded-xl text-center">
-          <h3 className="text-xl font-bold text-white mb-4">Cargando mesa…</h3>
-          <div className="animate-pulse w-16 h-16 bg-gray-600 rounded-full mx-auto"></div>
-          <p className="text-gray-400 text-sm mt-4">Procesando estado del juego…</p>
-        </div>
-      </div>
-    )
-  }
+  // Variables calculadas con tipos seguros
+  const isMyTurn = Boolean(currentPlayer?.isActive && gameState.status === 'InProgress')
+  const canStartGame = gameState.status === 'WaitingForPlayers' && gameState.players.length >= 2
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-green-900 to-gray-800">
-      {/* Banners superiores */}
-      <div className="fixed top-2 left-0 right-0 z-50 flex flex-col items-center gap-2">
-        {banners.map(b => (
-          <div
-            key={b.id}
-            className={`px-4 py-2 rounded-md text-sm shadow-lg ${
-              b.kind === 'success'
-                ? 'bg-green-600 text-white'
-                : b.kind === 'warning'
-                ? 'bg-yellow-500 text-black'
-                : 'bg-blue-600 text-white'
-            }`}
+    <div className="fixed inset-0 bg-gradient-to-br from-emerald-900 to-emerald-800 overflow-hidden">
+      
+      {/* Header */}
+      <header className="absolute top-0 left-0 right-0 bg-black/60 px-6 py-3 flex justify-between items-center text-white z-10">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => navigate({ to: '/lobby' })}
+            className="hover:text-gray-300 transition-colors"
           >
-            {b.text}
+            ← Lobby
+          </button>
+          <h1 className="text-xl font-bold">Mesa de BlackJack</h1>
+        </div>
+        
+        <div className="flex items-center gap-4 text-sm">
+          <span>{gameState.players.length}/6 jugadores</span>
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'}`}></div>
+            <span>{isConnected ? 'Conectado' : 'Desconectado'}</span>
           </div>
-        ))}
+        </div>
+      </header>
+
+      {/* Error Banner */}
+      {error && (
+        <div className="absolute top-16 left-1/2 transform -translate-x-1/2 bg-red-600/90 text-white px-6 py-3 rounded-lg shadow-lg z-20">
+          <div className="flex items-center gap-2">
+            <span>⚠️</span>
+            <span>{error}</span>
+            <button 
+              onClick={() => setError(null)}
+              className="ml-2 text-red-200 hover:text-white"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Dealer Area */}
+      <div className="absolute top-20 left-1/2 transform -translate-x-1/2 text-center z-10">
+        <div className="w-16 h-16 rounded-full bg-amber-400 flex items-center justify-center text-black text-2xl font-bold mx-auto mb-2">
+          D
+        </div>
+        <div className="text-amber-400 font-bold">Dealer</div>
+        
+        {gameState.dealer?.hand && gameState.dealer.hand.length > 0 && (
+          <div className="mt-2 bg-black/50 rounded px-3 py-2 text-white text-sm">
+            <div>Cartas: {gameState.dealer.hand.length}</div>
+            {gameState.dealer.handValue !== undefined && (
+              <div>Valor: {gameState.dealer.handValue}</div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Header */}
-      <div className="bg-gray-800/80 backdrop-blur-sm border-b border-gray-700">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-          <button
-            onClick={handleCancelConnection}
-            className="flex items-center gap-2 text-gray-300 hover:text-white transition-colors"
-          >
-            <span className="text-lg">←</span>
-            Volver al Lobby
-          </button>
+      {/* Game Status Banner */}
+      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10">
+        <GameStatusBanner 
+          gameState={gameState}
+          isMyTurn={isMyTurn}
+          canStartGame={canStartGame}
+          onStartRound={handleStartRound}
+          onGameAction={handleGameAction}
+        />
+      </div>
 
-          <div className="flex items-center gap-3">
-            <span
-              className={`px-2 py-1 rounded text-xs ${
-                isWaiting
-                  ? 'bg-gray-700 text-gray-200'
-                  : isBetting
-                  ? 'bg-blue-700 text-white'
-                  : isInProgress
-                  ? 'bg-green-700 text-white'
-                  : 'bg-gray-700 text-gray-200'
-              }`}
-              title="Estado de la mesa"
-            >
-              {gameState.status}
-            </span>
-            {isMyTurn && (
-              <span className="px-2 py-1 rounded text-xs bg-yellow-500 text-black font-semibold" title="Es tu turno">
-                ✋ Tu turno
-              </span>
-            )}
-            <h1 className="text-xl font-bold text-white">
-              Mesa #{gameState.id.slice(0, 8)}
-            </h1>
-          </div>
-
-          <div className="text-right">
-            <div className="text-sm text-gray-300">{currentUser?.displayName}</div>
-            <div className="text-lg font-bold text-green-400">
-              ${currentUser?.balance ?? 5000}
-            </div>
-          </div>
+      {/* Player Positions */}
+      <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2">
+        <div className="flex justify-center items-end gap-8" style={{ width: '800px' }}>
+          {[1, 2, 3, 4, 5].map(position => {
+            const playerAtPosition = gameState.players.find(p => p.position === position)
+            return (
+              <PlayerSeat
+                key={position}
+                position={position}
+                player={playerAtPosition}
+                isCurrentUser={Boolean(playerAtPosition?.id === currentUser?.id)}
+                isCurrentUserSeated={Boolean(currentPlayer)}
+                gameStatus={gameState.status}
+                onJoinSeat={() => handleJoinSeat(position)}
+                onLeaveSeat={handleLeaveSeat}
+                onPlaceBet={handlePlaceBet}
+              />
+            )
+          })}
         </div>
       </div>
 
-      {/* Main */}
-      <div className="flex-1 p-6">
-        <div className="max-w-7xl mx-auto flex gap-6">
-          {/* Game Table */}
-          <div className="flex-1">
-            <BlackjackTable 
-              gameState={gameState} 
-              onGameAction={() => {
-                // El propio GameStateUpdated re-renderiza la UI.
-              }}
-              key={`table-${gameState.id}-${gameState.players?.length || 0}-${gameState.status}`}
-            />
+      {/* Chat */}
+      <div className="absolute bottom-4 right-4 bg-black/80 rounded-lg p-4 w-80 text-white z-10">
+        <div className="text-amber-400 font-bold text-sm mb-2">Chat de Mesa</div>
+        
+        <div className="h-32 overflow-y-auto mb-3 text-sm">
+          {chatMessages.length === 0 ? (
+            <div className="text-gray-400">Sin mensajes...</div>
+          ) : (
+            chatMessages.slice(-10).map((msg, idx) => (
+              <div key={idx} className="mb-1">
+                <span className="text-amber-300 font-semibold">{msg.playerName}:</span>
+                <span className="ml-2">{msg.text}</span>
+              </div>
+            ))
+          )}
+        </div>
+        
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={chatInput}
+            onChange={e => setChatInput(e.target.value)}
+            onKeyPress={e => e.key === 'Enter' && handleSendMessage()}
+            placeholder="Escribe un mensaje..."
+            className="flex-1 px-3 py-2 text-sm bg-slate-700 border border-slate-600 rounded text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500"
+            maxLength={100}
+          />
+          <button
+            onClick={handleSendMessage}
+            className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 rounded text-sm font-semibold transition-colors"
+          >
+            →
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Componente para el banner central del estado del juego
+function GameStatusBanner({ 
+  gameState, 
+  isMyTurn, 
+  canStartGame, 
+  onStartRound, 
+  onGameAction 
+}: {
+  gameState: GameState
+  isMyTurn: boolean
+  canStartGame: boolean
+  onStartRound: () => void
+  onGameAction: (action: 'hit' | 'stand' | 'double') => void
+}) {
+  // Estado de espera
+  if (gameState.status === 'WaitingForPlayers') {
+    return (
+      <div className="bg-blue-600/90 backdrop-blur-sm border-2 border-blue-400 rounded-xl p-6 text-center shadow-xl text-white">
+        <div className="text-2xl font-bold mb-2">Esperando Jugadores</div>
+        <div className="mb-4">
+          {gameState.players.length}/6 jugadores en la mesa
+        </div>
+        {canStartGame ? (
+          <button
+            onClick={onStartRound}
+            className="px-6 py-3 rounded-lg bg-green-600 hover:bg-green-700 font-bold shadow-lg transition-all"
+          >
+            🎲 Iniciar Partida
+          </button>
+        ) : (
+          <div className="text-blue-200">Se necesitan mínimo 2 jugadores</div>
+        )}
+      </div>
+    )
+  }
+
+  // Turno del jugador
+  if (isMyTurn) {
+    return (
+      <div className="bg-yellow-600/90 backdrop-blur-sm border-2 border-yellow-400 rounded-xl p-6 text-center shadow-xl text-black">
+        <div className="text-2xl font-bold mb-4">¡ES TU TURNO!</div>
+        <div className="flex justify-center gap-3">
+          <button
+            onClick={() => onGameAction('hit')}
+            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold transition-all"
+          >
+            Pedir Carta
+          </button>
+          <button
+            onClick={() => onGameAction('stand')}
+            className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold transition-all"
+          >
+            Plantarse
+          </button>
+          <button
+            onClick={() => onGameAction('double')}
+            className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-bold transition-all"
+          >
+            Doblar
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // Partida en curso
+  if (gameState.status === 'InProgress') {
+    return (
+      <div className="bg-green-600/90 backdrop-blur-sm border-2 border-green-400 rounded-xl p-4 text-center shadow-xl text-white">
+        <div className="text-xl font-bold">Partida en Curso</div>
+        <div className="text-green-200">Esperando jugadores...</div>
+      </div>
+    )
+  }
+
+  return null
+}
+
+// Componente para cada posición de jugador
+function PlayerSeat({ 
+  position, 
+  player, 
+  isCurrentUser,
+  isCurrentUserSeated,
+  gameStatus,
+  onJoinSeat, 
+  onLeaveSeat,
+  onPlaceBet
+}: {
+  position: number
+  player?: any
+  isCurrentUser: boolean
+  isCurrentUserSeated: boolean
+  gameStatus: string
+  onJoinSeat: () => void
+  onLeaveSeat: () => void
+  onPlaceBet: (amount: number) => void
+}) {
+  const [showBetButtons, setShowBetButtons] = useState(false)
+
+  // Asiento vacío
+  if (!player) {
+    return (
+      <div className="flex flex-col items-center">
+        <button
+          onClick={onJoinSeat}
+          disabled={isCurrentUserSeated}
+          className={`w-16 h-16 rounded-full border-2 border-dashed flex items-center justify-center mb-2 transition-all ${
+            isCurrentUserSeated 
+              ? 'border-gray-500 text-gray-500 cursor-not-allowed' 
+              : 'border-green-400 text-green-400 hover:bg-green-400/20'
+          }`}
+        >
+          {isCurrentUserSeated ? position : '+'}
+        </button>
+        <div className="text-sm text-gray-400">
+          {isCurrentUserSeated ? 'Ocupado' : 'Unirse'}
+        </div>
+      </div>
+    )
+  }
+
+  // Jugador sentado
+  return (
+    <div className="flex flex-col items-center">
+      {/* Avatar del jugador */}
+      <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-2 border-2 relative ${
+        player.isActive ? 'border-yellow-400 bg-yellow-900/40 shadow-lg' : 
+        isCurrentUser ? 'border-blue-400 bg-blue-900/40' : 
+        'border-green-400 bg-green-800/40'
+      }`}>
+        <div className="w-12 h-12 rounded-full bg-white flex items-center justify-center">
+          <span className="text-sm font-bold text-gray-800">
+            {isCurrentUser ? 'TÚ' : player.displayName.slice(0, 2).toUpperCase()}
+          </span>
+        </div>
+        
+        {/* Indicador de turno */}
+        {player.isActive && (
+          <div className="absolute -top-1 -right-1 w-4 h-4 bg-yellow-400 rounded-full animate-pulse"></div>
+        )}
+      </div>
+
+      {/* Info del jugador */}
+      <div className="text-center text-white">
+        <div className={`font-bold text-sm ${isCurrentUser ? 'text-blue-300' : 'text-white'}`}>
+          {isCurrentUser ? 'Tú' : player.displayName}
+        </div>
+        <div className="text-xs text-green-300">
+          ${player.balance?.toLocaleString()}
+        </div>
+        
+        {/* Apuesta actual */}
+        {player.currentBet > 0 && (
+          <div className="mt-1 px-2 py-1 bg-yellow-600 rounded text-xs font-bold text-black">
+            ${player.currentBet}
           </div>
+        )}
+      </div>
 
-          {/* Chat Sidebar */}
-          <div className="w-80 bg-gray-800/80 backdrop-blur-sm rounded-lg border border-gray-700 flex flex-col">
-            <div className="p-4 border-b border-gray-700">
-              <h3 className="font-bold text-white">Chat de Mesa</h3>
-            </div>
+      {/* Cartas */}
+      {player.hand?.cards && player.hand.cards.length > 0 && (
+        <div className="mt-2 text-center">
+          <div className="text-xs text-white mb-1">
+            Valor: {player.hand.handValue}
+          </div>
+          {player.hand.isBusted && (
+            <div className="text-xs text-red-400 font-bold">BUST!</div>
+          )}
+          {player.hand.hasBlackjack && (
+            <div className="text-xs text-yellow-400 font-bold">BLACKJACK!</div>
+          )}
+        </div>
+      )}
 
-            <div className="flex-1 p-4 overflow-y-auto max-h-96">
-              {chatMessages.length === 0 ? (
-                <p className="text-gray-400 text-sm text-center py-8">
-                  No hay mensajes aún…
-                </p>
+      {/* Acciones del usuario actual */}
+      {isCurrentUser && (
+        <div className="mt-2 space-y-2">
+          {/* Botones de apuesta */}
+          {gameStatus === 'WaitingForPlayers' && !player.currentBet && (
+            <div>
+              {!showBetButtons ? (
+                <button
+                  onClick={() => setShowBetButtons(true)}
+                  className="px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold"
+                >
+                  Apostar
+                </button>
               ) : (
-                <div className="space-y-2">
-                  {chatMessages.map(msg => (
-                    <div key={msg.id} className="text-sm">
-                      <span className="text-blue-400 font-medium">{msg.playerName}:</span>
-                      <span className="text-gray-300 ml-2">{msg.text}</span>
-                    </div>
-                  ))}
+                <div className="flex gap-1">
+                  <button onClick={() => onPlaceBet(25)} className="px-2 py-1 rounded bg-green-600 hover:bg-green-700 text-white text-xs">$25</button>
+                  <button onClick={() => onPlaceBet(50)} className="px-2 py-1 rounded bg-green-600 hover:bg-green-700 text-white text-xs">$50</button>
+                  <button onClick={() => onPlaceBet(100)} className="px-2 py-1 rounded bg-green-600 hover:bg-green-700 text-white text-xs">$100</button>
+                  <button onClick={() => setShowBetButtons(false)} className="px-2 py-1 rounded bg-gray-600 hover:bg-gray-700 text-white text-xs">×</button>
                 </div>
               )}
             </div>
-
-            {/* Debug Info */}
-            <div className="p-2 border-t border-gray-700 bg-gray-900/50">
-              <div className="text-xs text-gray-500">
-                <div>SignalR: {signalRService.connectionState}</div>
-                <div>Players: {gameState.players?.length || 0}</div>
-                <div>Status: {gameState.status}</div>
-                <div>My Turn: {isMyTurn ? 'Sí' : 'No'}</div>
-                <div>Updated: {new Date().toLocaleTimeString()}</div>
-              </div>
-            </div>
-
-            <form onSubmit={handleSendChat} className="p-4 border-t border-gray-700">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={chatInput}
-                  onChange={e => setChatInput(e.target.value)}
-                  placeholder="Escribe un mensaje…"
-                  className="flex-1 bg-gray-700 text-white px-3 py-2 rounded border border-gray-600 focus:border-blue-500 focus:outline-none text-sm"
-                  maxLength={200}
-                />
-                <button
-                  type="submit"
-                  disabled={!chatInput.trim()}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 px-4 py-2 rounded text-white text-sm font-medium transition-colors"
-                >
-                  Enviar
-                </button>
-              </div>
-            </form>
-          </div>
+          )}
+          
+          {/* Botón de salir */}
+          {gameStatus !== 'InProgress' && (
+            <button
+              onClick={onLeaveSeat}
+              className="px-3 py-1 rounded bg-red-600 hover:bg-red-700 text-white text-xs font-semibold"
+            >
+              Salir
+            </button>
+          )}
         </div>
-      </div>
+      )}
     </div>
   )
 }

@@ -1,8 +1,7 @@
 ﻿namespace BlackJack.Domain.Enums;
 
-public enum Rank
+public enum CardRank
 {
-    Ace = 1,
     Two = 2,
     Three = 3,
     Four = 4,
@@ -14,5 +13,14 @@ public enum Rank
     Ten = 10,
     Jack = 11,
     Queen = 12,
-    King = 13
+    King = 13,
+    Ace = 14
+}
+
+public enum CardSuit
+{
+    Hearts,
+    Diamonds,
+    Clubs,
+    Spades
 }

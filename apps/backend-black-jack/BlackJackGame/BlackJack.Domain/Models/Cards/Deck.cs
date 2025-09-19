@@ -1,48 +1,99 @@
-﻿using BlackJack.Domain.Enums;
+﻿using BlackJack.Domain.Models.Cards;
+using BlackJack.Domain.Enums;
 
 namespace BlackJack.Domain.Models.Cards;
 
 public class Deck
 {
-    private Queue<Card> _cards = new();
+    private readonly List<Card> _cards;
+    private readonly Random _random;
 
-    public int CardsRemaining => _cards.Count;
-    public bool IsEmpty => !_cards.Any();
-
-    private Deck(IEnumerable<Card> cards)
+    public Deck()
     {
-        foreach (var card in cards)
-        {
-            _cards.Enqueue(card);
-        }
+        _cards = new List<Card>();
+        _random = new Random();
+        InitializeDeck();
+        Shuffle();
     }
 
-    public static Deck CreateShuffled()
-    {
-        var allCards = new List<Card>();
+    public int Count => _cards.Count;
+    public bool IsEmpty => _cards.Count == 0;
 
-        foreach (Suit suit in Enum.GetValues<Suit>())
+    private void InitializeDeck()
+    {
+        _cards.Clear();
+
+        // CORREGIDO: Usar los enums correctos
+        foreach (CardSuit suit in Enum.GetValues<CardSuit>())
         {
-            foreach (Rank rank in Enum.GetValues<Rank>())
+            foreach (CardRank rank in Enum.GetValues<CardRank>())
             {
-                allCards.Add(new Card(suit, rank));
+                _cards.Add(new Card(suit, rank));
             }
         }
-
-        var shuffled = allCards.OrderBy(x => Random.Shared.Next()).ToList();
-        return new Deck(shuffled);
     }
 
-    public Card DealCard()
+    public void Shuffle()
     {
-        if (IsEmpty)
-            throw new InvalidOperationException("Cannot deal from empty deck");
-
-        return _cards.Dequeue();
+        for (int i = _cards.Count - 1; i > 0; i--)
+        {
+            int j = _random.Next(i + 1);
+            (_cards[i], _cards[j]) = (_cards[j], _cards[i]);
+        }
     }
 
+    // AGREGADO: Método CreateShuffled estático
+    public static Deck CreateShuffled()
+    {
+        var deck = new Deck();
+        deck.Shuffle();
+        return deck;
+    }
+
+    // AGREGADO: Método ShouldShuffle
     public bool ShouldShuffle()
     {
-        return CardsRemaining < 15; // Reshuffle when less than 15 cards
+        // Normalmente se baraja cuando quedan menos del 25% de cartas
+        return _cards.Count < 13; // 52 * 0.25 = 13
+    }
+
+    // AGREGADO: Método DealCard (alias de DrawCard)
+    public Card DealCard()
+    {
+        return DrawCard();
+    }
+
+    public Card DrawCard()
+    {
+        if (IsEmpty)
+            throw new InvalidOperationException("No se pueden sacar cartas de un mazo vacío");
+
+        var card = _cards[0];
+        _cards.RemoveAt(0);
+        return card;
+    }
+
+    public List<Card> DrawCards(int count)
+    {
+        if (count > _cards.Count)
+            throw new InvalidOperationException($"No hay suficientes cartas. Solicitadas: {count}, Disponibles: {_cards.Count}");
+
+        var drawnCards = new List<Card>();
+        for (int i = 0; i < count; i++)
+        {
+            drawnCards.Add(DrawCard());
+        }
+        return drawnCards;
+    }
+
+    public void Reset()
+    {
+        InitializeDeck();
+        Shuffle();
+    }
+
+    public static Deck Create()
+    {
+        return new Deck();
     }
 }

@@ -1,323 +1,451 @@
-import React, { useState, useEffect } from 'react'
+// src/pages/LobbyPage.tsx - MEJORADO Y SIMPLIFICADO
+import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import { signalRService, type LobbyTable } from '../services/signalr'
 import { authService } from '../services/auth'
-import { useGameTables, useCreateTable, type CreateTableRequest } from '../hooks/useGameApi'
-import { useLobbySignalR } from '../hooks/useSignalR'
+import { formatMoney } from '../utils/format'
 
 export default function LobbyPage() {
-  const user = authService.getCurrentUser()
   const navigate = useNavigate()
+  const currentUser = authService.getCurrentUser()
 
-  // Query hooks
-  const { data: tables, isLoading, error, refetch } = useGameTables()
-  const createTableMutation = useCreateTable()
+  const [allTables, setAllTables] = useState<LobbyTable[]>([])
+  const [nameQuery, setNameQuery] = useState('')
+  const [minBet, setMinBet] = useState(0)
+  const [maxBet, setMaxBet] = useState(10000)
 
-  // SignalR hook
-  const {
-    connectionState,
-    isConnected,
-    isConnecting,
-    isReconnecting,
-    connect,
-    disconnect,
-    joinTable,
-    createTable: createTableSignalR,
-    isLobbyConnected,
-    isGameConnected,
-  } = useLobbySignalR()
+  const [creating, setCreating] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  // Estado local
-  const [selectedTable, setSelectedTable] = useState<string | null>(null)
-  const [showCreateForm, setShowCreateForm] = useState(false)
-  const [createForm, setCreateForm] = useState<CreateTableRequest>({
-    name: '',
-    minBet: 10,
-    maxBet: 100,
-    maxPlayers: 6,
-  })
-
-  // DEBUG: Información para diagnosticar el error 401
+  // Cargar snapshot inicial y configurar listeners
   useEffect(() => {
-    console.log('🔍 Debug Info:')
-    console.log('- API Base URL:', import.meta.env.VITE_API_BASE_URL)
-    console.log('- Auth Token:', authService.getToken())
-    console.log('- User:', authService.getCurrentUser())
-    console.log('- Token length:', authService.getToken()?.length)
+    let isMounted = true
+    
+    const loadLobby = async () => {
+      try {
+        setLoading(true)
+        setError(null)
+        
+        console.log('🔄 Cargando lobby...')
+        const tables = await signalRService.getLobbySnapshot()
+        
+        if (!isMounted) return
+        
+        console.log('✅ Lobby cargado:', tables.length, 'mesas')
+        setAllTables(tables)
+        
+      } catch (e: any) {
+        if (!isMounted) return
+        console.error('❌ Error cargando lobby:', e)
+        setError(e?.message ?? 'No se pudo cargar el lobby')
+      } finally {
+        if (isMounted) {
+          setLoading(false)
+        }
+      }
+    }
+
+    // Suscripciones a eventos SignalR
+    const unsubscribeNew = signalRService.onNewTable(({ table }) => {
+      console.log('🆕 Nueva mesa:', table)
+      setAllTables(prev => {
+        // Evitar duplicados
+        if (prev.some(t => t.id === table.id)) return prev
+        return [table, ...prev]
+      })
+    })
+
+    const unsubscribeUpdate = signalRService.onLobbyUpdate((update) => {
+      console.log('📊 Actualización de mesa:', update)
+      setAllTables(prev =>
+        prev.map(table =>
+          table.id === update.tableId
+            ? { ...table, playerCount: update.playerCount, status: update.status }
+            : table
+        )
+      )
+    })
+
+    // Cargar datos iniciales
+    loadLobby()
+
+    return () => {
+      isMounted = false
+      unsubscribeNew()
+      unsubscribeUpdate()
+    }
   }, [])
 
-  const handleCreateTable = async (e: React.FormEvent) => {
-    e.preventDefault()
+  // Filtros de mesas
+  const filteredTables = useMemo(() => {
+    const query = nameQuery.trim().toLowerCase()
+    return allTables.filter(table => {
+      if (query && !table.name.toLowerCase().includes(query)) return false
+      if (table.minBet < minBet) return false
+      if (table.maxBet > 0 && table.maxBet > maxBet) return false
+      return true
+    })
+  }, [allTables, nameQuery, minBet, maxBet])
+
+  // Crear nueva mesa
+  const handleCreateTable = async () => {
+    const name = prompt('Nombre de la nueva mesa:', 'Mi Mesa VIP')
+    if (!name?.trim()) return
+    
     try {
-      if (isLobbyConnected) {
-        await createTableSignalR(createForm)
-      } else {
-        await createTableMutation.mutateAsync(createForm)
-      }
-      setShowCreateForm(false)
-      setCreateForm({ name: '', minBet: 10, maxBet: 100, maxPlayers: 6 })
-      refetch()
-    } catch (err) {
-      console.error('Error creating table:', err)
+      setCreating(true)
+      setError(null)
+      
+      console.log('🆕 Creando mesa:', name)
+      const newTable = await signalRService.createTable({ name: name.trim() })
+      
+      console.log('✅ Mesa creada exitosamente:', newTable)
+      
+      // Navegar inmediatamente a la nueva mesa
+      navigate({ to: `/game/${newTable.id}` })
+      
+    } catch (e: any) {
+      console.error('❌ Error creando mesa:', e)
+      const errorMessage = e?.message || 'No se pudo crear la mesa'
+      setError(errorMessage)
+      alert(`Error: ${errorMessage}`)
+    } finally {
+      setCreating(false)
     }
   }
 
-  const handleJoinTable = async (tableId: string) => {
+  // Navegar a mesa
+  const handleJoinTable = (tableId: string) => {
+    console.log('🎯 Navegando a mesa:', tableId)
+    navigate({ to: `/game/${tableId}` })
+  }
+
+  // Recargar mesas manualmente
+  const handleRefresh = async () => {
+    setError(null)
+    setLoading(true)
+    
     try {
-      // Navegar directamente a la mesa de juego
-      navigate({ to: '/game/$tableId', params: { tableId } })
-    } catch (err) {
-      console.error('Error joining table:', err)
-      alert('Error al unirse a la mesa')
+      const tables = await signalRService.getLobbySnapshot()
+      setAllTables(tables)
+    } catch (e: any) {
+      setError(e?.message ?? 'Error al recargar')
+    } finally {
+      setLoading(false)
     }
   }
-
-  const handleUpdateForm = (field: keyof CreateTableRequest, value: string | number) => {
-    setCreateForm(prev => ({
-      ...prev,
-      [field]: value
-    }))
-  }
-
-  const getStatusColor = (status: string) =>
-    status === 'InProgress'
-      ? 'bg-red-100 text-red-800'
-      : status === 'Waiting'
-      ? 'bg-green-100 text-green-800'
-      : 'bg-gray-100 text-gray-800'
-
-  const getStatusText = (status: string) =>
-    status === 'InProgress' ? 'En juego'
-    : status === 'Waiting'  ? 'Esperando jugadores'
-    : status === 'Finished' ? 'Terminada'
-    : status
-
-  const getConnectionColor = (state: string) =>
-    state === 'Connected'
-      ? 'text-green-600'
-      : state === 'Connecting' || state === 'Reconnecting'
-      ? 'text-yellow-600'
-      : 'text-red-600'
-
-  const getConnectionIcon = (state: string) =>
-    state === 'Connected' ? '🟢'
-    : state === 'Connecting' || state === 'Reconnecting' ? '🟡'
-    : '🔴'
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="text-center mb-8">
-        <h1 className="text-4xl font-bold text-white mb-2">Lobby del Casino</h1>
-        <p className="text-casino-gold-400 text-lg">
-          Bienvenido de vuelta, {user?.displayName || user?.email}
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Lista de mesas */}
-        <div className="lg:col-span-2">
-          <div className="bg-white rounded-lg shadow-xl p-6">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-semibold text-gray-800">Mesas Disponibles</h2>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => refetch()}
-                  className="bg-gray-500 text-white px-3 py-2 rounded hover:bg-gray-600 transition-colors text-sm"
-                  disabled={isLoading}
-                >
-                  {isLoading ? 'Cargando...' : 'Refrescar'}
-                </button>
-                <button
-                  onClick={() => setShowCreateForm(true)}
-                  className="bg-casino-green-600 text-white px-4 py-2 rounded hover:bg-casino-green-700 transition-colors"
-                >
-                  + Nueva Mesa
-                </button>
+    <div className="min-h-screen bg-slate-900 text-white">
+      {/* Header */}
+      <header className="border-b border-slate-700 bg-slate-800/50 px-4 py-3">
+        <div className="flex items-center justify-between max-w-7xl mx-auto">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => navigate({ to: '/home' })}
+              className="text-slate-300 hover:text-white transition-colors"
+            >
+              ← Inicio
+            </button>
+            
+            <div className="flex items-center gap-2">
+              <div className="flex gap-1">
+                <span className="text-xl">♠</span>
+                <span className="text-xl text-red-500">♥</span>
+                <span className="text-xl text-red-500">♦</span>
+                <span className="text-xl">♣</span>
               </div>
-            </div>
-
-            {/* Estado SignalR */}
-            <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-              <div className="flex justify-between items-center">
-                <div className="flex items-center gap-2">
-                  <span>{getConnectionIcon(connectionState)}</span>
-                  <span className={`text-sm font-medium ${getConnectionColor(connectionState)}`}>
-                    SignalR: {connectionState}
-                  </span>
-                </div>
-                <div className="flex gap-2">
-                  {!isConnected && !isConnecting && (
-                    <button onClick={connect} className="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600">
-                      Conectar
-                    </button>
-                  )}
-                  {isConnected && (
-                    <button onClick={disconnect} className="text-xs bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600">
-                      Desconectar
-                    </button>
-                  )}
-                </div>
-              </div>
-              <div className="text-xs text-gray-600 mt-1">
-                Lobby: {isLobbyConnected ? '✅ Conectado' : '❌ Desconectado'} ·
-                Game: {isGameConnected ? '✅ Conectado' : '❌ Desconectado'}
-              </div>
-            </div>
-
-            {error && <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded">
-              Error al cargar las mesas: {(error as any).message}
-            </div>}
-
-            {isLoading && (
-              <div className="flex justify-center py-8">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-casino-green-600"></div>
-              </div>
-            )}
-
-            {tables && (
-              <div className="space-y-4">
-                {tables.map((table) => (
-                  <div
-                    key={table.id}
-                    className={`border rounded-lg p-4 cursor-pointer transition-colors ${
-                      selectedTable === table.id
-                        ? 'border-casino-green-500 bg-casino-green-50'
-                        : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                    onClick={() => setSelectedTable(table.id)}
-                  >
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <h3 className="font-semibold text-gray-800">{table.name}</h3>
-                        <p className="text-sm text-gray-600">{table.playerCount}/{table.maxPlayers} jugadores</p>
-                        <p className="text-sm text-gray-600">Apuesta: ${table.minBet} - ${table.maxBet}</p>
-                      </div>
-                      <div className="text-right">
-                        <span className={`px-2 py-1 rounded text-xs ${getStatusColor(table.status)}`}>
-                          {getStatusText(table.status)}
-                        </span>
-                      </div>
-                    </div>
-
-                    {selectedTable === table.id && (
-                      <div className="mt-4 pt-4 border-t flex gap-2">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleJoinTable(table.id) }}
-                          disabled={table.playerCount >= table.maxPlayers}
-                          className="bg-casino-green-600 text-white px-4 py-2 rounded hover:bg-casino-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          Unirse
-                        </button>
-                        <button className="bg-gray-200 text-gray-800 px-4 py-2 rounded hover:bg-gray-300 transition-colors">
-                          Observar
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Panel lateral: Perfil */}
-        <div className="space-y-6">
-          <div className="bg-white rounded-lg shadow-xl p-6">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">Tu Perfil</h3>
-            <div className="space-y-3">
-              <div className="flex justify-between"><span className="text-gray-600">Usuario:</span><span className="font-medium">{user?.displayName}</span></div>
-              <div className="flex justify-between"><span className="text-gray-600">Email:</span><span className="font-medium text-sm">{user?.email}</span></div>
-              <div className="flex justify-between"><span className="text-gray-600">Saldo:</span><span className="font-bold text-casino-green-600">$5,000.00</span></div>
+              <h1 className="text-xl font-bold">Lobby de Mesas</h1>
             </div>
           </div>
-        </div>
-      </div>
 
-      {/* Modal crear mesa */}
-      {showCreateForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-md">
-            <h3 className="text-lg font-semibold mb-4">Crear Nueva Mesa</h3>
-            <div>
+          <div className="flex items-center gap-4">
+            {/* User info */}
+            <div className="text-right">
+              <div className="text-white font-semibold">
+                {currentUser?.displayName}
+              </div>
+              <div className="text-emerald-400 font-bold">
+                ${currentUser?.balance?.toLocaleString()}
+              </div>
+            </div>
+
+            {/* Actions */}
+            <button
+              onClick={handleRefresh}
+              disabled={loading}
+              className="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-sm transition-colors disabled:opacity-50"
+            >
+              {loading ? '🔄' : '↻ Actualizar'}
+            </button>
+            
+            <button
+              onClick={handleCreateTable}
+              disabled={creating}
+              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold transition-colors disabled:opacity-50"
+            >
+              {creating ? 'Creando...' : '+ Nueva Mesa'}
+            </button>
+            
+            <button
+              onClick={() => authService.logout()}
+              className="text-red-400 hover:text-red-300 text-sm transition-colors"
+            >
+              Salir
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 py-6">
+        <div className="grid grid-cols-12 gap-6">
+          {/* Sidebar - Filtros */}
+          <aside className="col-span-12 lg:col-span-3">
+            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+              <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
+                <span>🔍</span>
+                Filtros
+              </h3>
+
               <div className="space-y-4">
+                {/* Search */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Nombre de la mesa
+                  <label className="block text-sm text-slate-300 mb-2">
+                    Buscar Mesa
                   </label>
                   <input
                     type="text"
-                    value={createForm.name}
-                    onChange={(e) => handleUpdateForm('name', e.target.value)}
-                    className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900"
-                    placeholder="Mi Mesa de BlackJack"
-                    required
+                    value={nameQuery}
+                    onChange={(e) => setNameQuery(e.target.value)}
+                    placeholder="Nombre de la mesa..."
+                    className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500"
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Apuesta Mínima
-                    </label>
-                    <input
-                      type="number"
-                      value={createForm.minBet}
-                      onChange={(e) => handleUpdateForm('minBet', Number(e.target.value))}
-                      className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900"
-                      min="1"
-                      required
-                    />
+                {/* Min Bet */}
+                <div>
+                  <div className="flex justify-between text-sm text-slate-300 mb-2">
+                    <span>Apuesta Mínima:</span>
+                    <span>{formatMoney(minBet)}</span>
                   </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Apuesta Máxima
-                    </label>
-                    <input
-                      type="number"
-                      value={createForm.maxBet}
-                      onChange={(e) => handleUpdateForm('maxBet', Number(e.target.value))}
-                      className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900"
-                      min={createForm.minBet}
-                      required
-                    />
-                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1000}
+                    step={25}
+                    value={minBet}
+                    onChange={(e) => setMinBet(Number(e.target.value))}
+                    className="w-full accent-emerald-600"
+                  />
                 </div>
 
+                {/* Max Bet */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Máximo de jugadores
-                  </label>
-                  <select
-                    value={createForm.maxPlayers}
-                    onChange={(e) => handleUpdateForm('maxPlayers', Number(e.target.value))}
-                    className="w-full border border-gray-300 rounded px-3 py-2 text-gray-900"
-                  >
-                    <option value={2}>2 jugadores</option>
-                    <option value={4}>4 jugadores</option>
-                    <option value={6}>6 jugadores</option>
-                  </select>
+                  <div className="flex justify-between text-sm text-slate-300 mb-2">
+                    <span>Apuesta Máxima:</span>
+                    <span>{formatMoney(maxBet)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={100}
+                    max={10000}
+                    step={100}
+                    value={maxBet}
+                    onChange={(e) => setMaxBet(Number(e.target.value))}
+                    className="w-full accent-emerald-600"
+                  />
                 </div>
               </div>
 
-              <div className="flex gap-2 mt-6">
+              {/* Stats */}
+              <div className="mt-6 pt-4 border-t border-slate-700">
+                <h4 className="font-semibold mb-3">Estadísticas</h4>
+                <div className="text-sm space-y-2 text-slate-300">
+                  <div className="flex justify-between">
+                    <span>Mesas Activas:</span>
+                    <span className="text-emerald-400 font-semibold">
+                      {allTables.length}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Mesas Disponibles:</span>
+                    <span className="text-emerald-400 font-semibold">
+                      {allTables.filter(t => t.status === 'WaitingForPlayers').length}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Filtradas:</span>
+                    <span className="text-emerald-400 font-semibold">
+                      {filteredTables.length}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </aside>
+
+          {/* Main Content - Lista de Mesas */}
+          <section className="col-span-12 lg:col-span-9">
+            <div className="mb-6">
+              <h2 className="text-2xl font-bold mb-2">Mesas Disponibles</h2>
+              <p className="text-slate-400">
+                Selecciona una mesa y comienza a jugar BlackJack en tiempo real
+              </p>
+            </div>
+
+            {/* Error Message */}
+            {error && (
+              <div className="mb-4 bg-red-900/50 border border-red-700 rounded-xl p-4">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h4 className="text-red-300 font-semibold">Error</h4>
+                    <p className="text-red-400 text-sm">{error}</p>
+                  </div>
+                  <button
+                    onClick={() => setError(null)}
+                    className="text-red-400 hover:text-red-300"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Loading State */}
+            {loading && (
+              <div className="flex items-center justify-center py-12">
+                <div className="flex items-center gap-3 text-slate-300">
+                  <div className="w-6 h-6 border-2 border-slate-600 border-t-emerald-500 rounded-full animate-spin"></div>
+                  Cargando mesas...
+                </div>
+              </div>
+            )}
+
+            {/* Empty State */}
+            {!loading && !error && filteredTables.length === 0 && (
+              <div className="text-center py-12">
+                <div className="text-slate-400 mb-4">
+                  {allTables.length === 0 
+                    ? "No hay mesas activas" 
+                    : "No hay mesas que coincidan con tus filtros"
+                  }
+                </div>
                 <button
                   onClick={handleCreateTable}
-                  disabled={createTableMutation.isPending || !createForm.name.trim()}
-                  className="flex-1 bg-casino-green-600 text-white py-2 rounded hover:bg-casino-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-6 py-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
                 >
-                  {createTableMutation.isPending ? 'Creando...' : 'Crear Mesa'}
-                </button>
-                <button
-                  onClick={() => setShowCreateForm(false)}
-                  className="flex-1 bg-gray-300 text-gray-800 py-2 rounded hover:bg-gray-400 transition-colors"
-                >
-                  Cancelar
+                  Crear Primera Mesa
                 </button>
               </div>
+            )}
+
+            {/* Tables Grid */}
+            {!loading && filteredTables.length > 0 && (
+              <div className="space-y-4">
+                {filteredTables.map((table) => (
+                  <TableCard
+                    key={table.id}
+                    table={table}
+                    onJoin={() => handleJoinTable(table.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      </main>
+    </div>
+  )
+}
+
+// Componente optimizado para cada mesa
+function TableCard({ table, onJoin }: { table: LobbyTable; onJoin: () => void }) {
+  const getStatusConfig = (status: string) => {
+    switch (status.toLowerCase()) {
+      case 'waitingforplayers':
+        return { 
+          text: 'Esperando Jugadores', 
+          className: 'bg-green-600 text-white',
+          canJoin: true 
+        }
+      case 'inprogress':
+        return { 
+          text: 'Partida en Curso', 
+          className: 'bg-yellow-600 text-black',
+          canJoin: false 
+        }
+      default:
+        return { 
+          text: status, 
+          className: 'bg-gray-600 text-white',
+          canJoin: false 
+        }
+    }
+  }
+
+  const statusConfig = getStatusConfig(table.status)
+  const isVip = table.maxBet >= 1000
+
+  return (
+    <div className="bg-gradient-to-r from-slate-800 to-slate-700 border border-slate-600 rounded-xl p-6 hover:border-slate-500 transition-all shadow-lg">
+      <div className="flex items-center justify-between">
+        {/* Mesa Info */}
+        <div className="flex-1">
+          <div className="flex items-center gap-3 mb-3">
+            <h3 className="text-xl font-bold text-white">{table.name}</h3>
+            
+            <span className={`px-3 py-1 rounded-full text-xs font-semibold ${statusConfig.className}`}>
+              {statusConfig.text}
+            </span>
+            
+            {isVip && (
+              <span className="px-2 py-1 rounded-full bg-yellow-600 text-black text-xs font-bold">
+                👑 VIP
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-6 text-sm text-slate-300">
+            <div className="flex items-center gap-1">
+              <span>💵</span>
+              <span>{formatMoney(table.minBet)} - {formatMoney(table.maxBet)}</span>
+            </div>
+            
+            <div className="flex items-center gap-1">
+              <span>👥</span>
+              <span>{table.playerCount}/{table.maxPlayers} jugadores</span>
+            </div>
+            
+            <div className="flex items-center gap-1">
+              <span>⚡</span>
+              <span>Tiempo real</span>
             </div>
           </div>
         </div>
-      )}
+
+        {/* Actions */}
+        <div className="flex items-center gap-4">
+          <div className="text-right text-sm">
+            <div className="text-slate-300">Jugadores</div>
+            <div className="text-white font-bold">
+              {table.playerCount}/{table.maxPlayers}
+            </div>
+          </div>
+
+          <button
+            onClick={onJoin}
+            disabled={!statusConfig.canJoin}
+            className={`px-6 py-3 rounded-lg font-semibold transition-all ${
+              statusConfig.canJoin
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                : 'bg-gray-600 text-gray-400 cursor-not-allowed'
+            }`}
+          >
+            {statusConfig.canJoin ? 'Unirse' : 'Ocupado'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -1,4 +1,5 @@
-﻿using BlackJack.Domain.Models.Betting;
+﻿// PayoutService.cs - CORREGIDO
+using BlackJack.Domain.Models.Betting;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Services.Game;
 

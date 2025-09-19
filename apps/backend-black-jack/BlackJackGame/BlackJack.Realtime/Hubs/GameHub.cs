@@ -1,339 +1,454 @@
-﻿// BlackJack.Realtime.Hubs/GameHub.cs - Versión completa con ResetTable
-using Microsoft.AspNetCore.SignalR;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using BlackJack.Services.Game;
-using BlackJack.Domain.Models.Users;
+﻿// GameHub.cs - En BlackJack.Realtime/Hubs/ - CORREGIDO CON GUID
+using BlackJack.Domain.Enums;
 using BlackJack.Domain.Models.Game;
-using System.Security.Claims;
+using BlackJack.Realtime.Models;
+using BlackJack.Realtime.Services;
+using BlackJack.Services.Common;
+using BlackJack.Services.Game;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore.Metadata.Internal;
+using Microsoft.Extensions.Logging;
 
 namespace BlackJack.Realtime.Hubs;
-
-[Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
-public class GameHub : Hub
+[Authorize]
+public class GameHub : BaseHub
 {
+    private readonly IGameRoomService _gameRoomService;
     private readonly IGameService _gameService;
+    private readonly IConnectionManager _connectionManager;
+    private readonly ISignalRNotificationService _notificationService;
 
-    public GameHub(IGameService gameService)
+    public GameHub(
+        IGameRoomService gameRoomService,
+        IGameService gameService,
+        IConnectionManager connectionManager,
+        ISignalRNotificationService notificationService,
+        ILogger<GameHub> logger) : base(logger)
     {
+        _gameRoomService = gameRoomService;
         _gameService = gameService;
+        _connectionManager = connectionManager;
+        _notificationService = notificationService;
     }
 
-    private PlayerId GetCurrentPlayerId()
+    #region Connection Management
+
+    public override async Task OnConnectedAsync()
     {
-        // Intentar obtener el ID del usuario desde los claims
-        var userIdClaim = Context.User?.FindFirst("sub")?.Value
-                       ?? Context.User?.FindFirst("id")?.Value
-                       ?? Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        await base.OnConnectedAsync();
 
-        if (userIdClaim != null && Guid.TryParse(userIdClaim, out var userId))
+        var playerId = GetCurrentPlayerId();
+        var userName = GetCurrentUserName();
+
+        if (playerId != null && userName != null)
         {
-            return PlayerId.From(userId);
+            await _connectionManager.AddConnectionAsync(Context.ConnectionId, playerId, userName);
+            await SendSuccessAsync("Conectado exitosamente al hub de juego");
         }
-
-        // Fallback: usar un GUID basado en el ConnectionId para consistencia
-        var connectionGuid = Guid.NewGuid();
-        return PlayerId.From(connectionGuid);
-    }
-
-    public async Task JoinTable(string tableId)
-    {
-        try
+        else
         {
-            await Groups.AddToGroupAsync(Context.ConnectionId, $"Table_{tableId}");
-            await Clients.Group($"Table_{tableId}").SendAsync("PlayerJoined", Context.ConnectionId);
-
-            // FORZAR envío de estado después de unirse a la mesa
-            await NotifyGameState(tableId);
-            Console.WriteLine($"[GameHub] JoinTable completed - estado enviado");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[GameHub] Error en JoinTable: {ex.Message}");
-            throw new HubException($"Error al unirse a la mesa: {ex.Message}");
+            await SendErrorAsync("Error de autenticación");
         }
     }
 
-    public async Task LeaveTable(string tableId)
+    public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        try
+        var playerId = GetCurrentPlayerId();
+
+        if (playerId != null)
         {
-            if (!Guid.TryParse(tableId, out var tableGuid))
-                throw new HubException("ID de mesa inválido");
-
-            var playerId = GetCurrentPlayerId();
-            Console.WriteLine($"[GameHub] LeaveTable iniciado por {playerId} para mesa {tableId}");
-
-            // Llamar al GameService para salir de la mesa
-            var result = await _gameService.LeaveTableAsync(TableId.From(tableGuid), playerId);
-
-            if (!result.IsSuccess)
-                throw new HubException(result.Error ?? "No se pudo salir de la mesa");
-
-            // Remover del grupo de la mesa
-            await Groups.RemoveFromGroupAsync(Context.ConnectionId, $"Table_{tableId}");
-
-            // Notificar a todos que el jugador se fue
-            await Clients.Group($"Table_{tableId}").SendAsync("PlayerLeft", Context.ConnectionId, playerId.ToString());
-
-            Console.WriteLine($"[GameHub] LeaveTable exitoso - enviando estado actualizado");
-
-            // FORZAR envío de estado después de salir
-            await NotifyGameState(tableId);
-
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[GameHub] Error en LeaveTable: {ex.Message}");
-            throw new HubException($"Error al salir de la mesa: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Método específico para salir de un asiento (más claro que LeaveTable)
-    /// </summary>
-    public async Task LeaveSeat(string tableId)
-    {
-        try
-        {
-            if (!Guid.TryParse(tableId, out var tableGuid))
-                throw new HubException("ID de mesa inválido");
-
-            var playerId = GetCurrentPlayerId();
-            Console.WriteLine($"[GameHub] LeaveSeat iniciado por {playerId} para mesa {tableId}");
-
-            // Llamar al GameService para salir de la mesa
-            var result = await _gameService.LeaveTableAsync(TableId.From(tableGuid), playerId);
-
-            if (!result.IsSuccess)
-                throw new HubException(result.Error ?? "No se pudo liberar el asiento");
-
-            // Notificar a todos que el jugador liberó su asiento
-            await Clients.Group($"Table_{tableId}").SendAsync("PlayerLeftSeat", Context.ConnectionId, playerId.ToString());
-
-            Console.WriteLine($"[GameHub] LeaveSeat exitoso - enviando estado actualizado");
-
-            // FORZAR envío de estado después de liberar asiento
-            await Task.Delay(100); // Pequeño delay para asegurar que el backend procese
-            await NotifyGameState(tableId);
-
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[GameHub] Error en LeaveSeat: {ex.Message}");
-            throw new HubException($"Error al liberar asiento: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Método para resetear una mesa que está atascada en InProgress
-    /// </summary>
-    public async Task ResetTable(string tableId)
-    {
-        try
-        {
-            if (!Guid.TryParse(tableId, out var tableGuid))
-                throw new HubException("ID de mesa inválido");
-
-            var playerId = GetCurrentPlayerId();
-            Console.WriteLine($"[GameHub] ResetTable iniciado por {playerId} para mesa {tableId}");
-
-            // Llamar al GameService para resetear la mesa
-            var result = await _gameService.ResetTableAsync(TableId.From(tableGuid));
-
-            if (!result.IsSuccess)
-                throw new HubException(result.Error ?? "No se pudo resetear la mesa");
-
-            // Notificar a todos que la mesa se reseteo
-            await Clients.Group($"Table_{tableId}").SendAsync("TableReset", new
+            // Buscar la sala actual del jugador
+            var currentRoomResult = await _gameRoomService.GetPlayerCurrentRoomCodeAsync(playerId);
+            if (currentRoomResult.IsSuccess && !string.IsNullOrEmpty(currentRoomResult.Value))
             {
-                tableId = tableId,
-                resetBy = playerId.ToString(),
-                timestamp = DateTime.UtcNow,
-                message = "Mesa reseteada - lista para nueva partida"
-            });
+                // Opcional: manejar desconexión temporal vs permanente
+                _logger.LogInformation("[GameHub] Player {PlayerId} disconnected from room {RoomCode}",
+                    playerId, currentRoomResult.Value);
 
-            Console.WriteLine($"[GameHub] ResetTable exitoso - enviando estado actualizado");
+                // En una implementación completa, podrías implementar un timeout
+                // antes de remover al jugador automáticamente
+            }
 
-            // Enviar estado actualizado
-            await Task.Delay(100);
-            await NotifyGameState(tableId);
-
+            await _connectionManager.RemoveConnectionAsync(Context.ConnectionId);
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[GameHub] Error en ResetTable: {ex.Message}");
-            throw new HubException($"Error al resetear mesa: {ex.Message}");
-        }
+
+        await base.OnDisconnectedAsync(exception);
     }
 
-    public async Task SendMessage(string tableId, string message)
-    {
-        await Clients.Group($"Table_{tableId}").SendAsync("ReceiveMessage", Context.ConnectionId, message);
-    }
+    #endregion
 
-    // Método para unirse a un asiento específico
-    public async Task JoinSeat(string tableId, int seatPosition)
+    #region Room Management
+
+    public async Task CreateRoom(CreateRoomRequest request)
     {
         try
         {
-            if (!Guid.TryParse(tableId, out var tableGuid))
-                throw new HubException("ID de mesa inválido");
-
-            if (seatPosition < 0 || seatPosition >= 6)
-                throw new HubException("Posición de asiento inválida (0-5)");
+            if (!IsAuthenticated())
+            {
+                await SendErrorAsync("Debes estar autenticado para crear una sala");
+                return;
+            }
 
             var playerId = GetCurrentPlayerId();
-            Console.WriteLine($"[GameHub] JoinSeat iniciado: mesa={tableId}, posición={seatPosition}, jugador={playerId}");
-
-            var result = await _gameService.JoinTableAsync(TableId.From(tableGuid), playerId, seatPosition);
-
-            if (!result.IsSuccess)
-                throw new HubException(result.Error ?? "No se pudo unir al asiento");
-
-            // Asegurar que está en el grupo de la mesa
-            await Groups.AddToGroupAsync(Context.ConnectionId, $"Table_{tableId}");
-
-            // Notificar que se unió al asiento específico
-            await Clients.Group($"Table_{tableId}").SendAsync("PlayerJoinedSeat", Context.ConnectionId, seatPosition, playerId.ToString());
-
-            Console.WriteLine($"[GameHub] JoinSeat exitoso - enviando estado actualizado");
-
-            // FORZAR envío de estado después de unirse al asiento
-            await Task.Delay(100); // Pequeño delay para asegurar que el backend procese
-            await NotifyGameState(tableId);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[GameHub] Error en JoinSeat: {ex.Message}");
-            throw new HubException($"Error al unirse al asiento: {ex.Message}");
-        }
-    }
-
-    // Método para iniciar partida usando el GameService real
-    public async Task StartRound(string tableId)
-    {
-        try
-        {
-            if (!Guid.TryParse(tableId, out var tableGuid))
-                throw new HubException("ID de mesa inválido");
-
-            var playerId = GetCurrentPlayerId();
-            Console.WriteLine($"[GameHub] StartRound iniciado por {playerId} para mesa {tableId}");
-
-            // Llamar al GameService para iniciar la ronda (solo necesita TableId)
-            var result = await _gameService.StartRoundAsync(TableId.From(tableGuid));
-
-            if (!result.IsSuccess)
-                throw new HubException(result.Error ?? "No se pudo iniciar la partida");
-
-            // Asegurar que el iniciador está en el grupo
-            await Groups.AddToGroupAsync(Context.ConnectionId, $"Table_{tableId}");
-
-            // Notificar a todos en la mesa que la partida comenzó
-            await Clients.Group($"Table_{tableId}").SendAsync("RoundStarted", new
+            if (playerId == null)
             {
-                tableId = tableId,
-                startedBy = playerId.ToString(),
-                timestamp = DateTime.UtcNow,
-                message = "¡La partida ha comenzado! Cartas repartidas."
-            });
+                await SendErrorAsync("Error de autenticación");
+                return;
+            }
 
-            Console.WriteLine($"[GameHub] StartRound exitoso - enviando estado actualizado");
-
-            // FORZAR envío de estado después de iniciar ronda
-            await Task.Delay(100);
-            await NotifyGameState(tableId);
-
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[GameHub] Error en StartRound: {ex.Message}");
-            throw new HubException($"Error al iniciar partida: {ex.Message}");
-        }
-    }
-
-    // Método para enviar el estado del juego (incluye cartas) - MEJORADO
-    private async Task NotifyGameState(string tableId)
-    {
-        try
-        {
-            Console.WriteLine($"[GameHub] NotifyGameState iniciado para mesa {tableId}");
-
-            var tableResult = await _gameService.GetTableAsync(TableId.From(Guid.Parse(tableId)));
-            if (tableResult.IsSuccess)
+            if (!ValidateInput(request.RoomName, nameof(request.RoomName), 50))
             {
-                var table = tableResult.Value;
+                await SendErrorAsync("Nombre de sala inválido");
+                return;
+            }
 
-                // Log detallado del estado
-                Console.WriteLine($"[GameHub] Estado de la mesa: {table.Status}");
-                Console.WriteLine($"[GameHub] Jugadores en asientos: {table.Seats.Count(s => s.IsOccupied)}");
+            _logger.LogInformation("[GameHub] Creating room {RoomName} for player {PlayerId}",
+                request.RoomName, playerId);
 
-                var gameState = new
-                {
-                    id = table.Id.ToString(),
-                    status = table.Status.ToString(),
-                    roundNumber = table.RoundNumber,
-                    players = table.Seats.Where(s => s.IsOccupied && s.Player != null)
-                                        .Select(s => new
-                                        {
-                                            id = s.Player.PlayerId.ToString(),
-                                            displayName = s.Player.Name,
-                                            balance = s.Player.Balance.Amount,
-                                            currentBet = s.Player.CurrentBet?.Amount.Amount ?? 0,
-                                            position = s.Position,
-                                            isActive = s.Player.IsActive,
-                                            // Incluir cartas de la mano del jugador
-                                            hand = s.Player.Hands.FirstOrDefault() != null ? new
-                                            {
-                                                cards = s.Player.Hands.First().Cards.Select(c => new
-                                                {
-                                                    suit = c.Suit.ToString(),
-                                                    rank = c.Rank.ToString(),
-                                                    value = c.GetValue(),
-                                                    isHidden = false
-                                                }).ToArray(),
-                                                handValue = s.Player.Hands.First().Value,
-                                                isBusted = s.Player.Hands.First().Status.ToString() == "Bust",
-                                                hasBlackjack = s.Player.Hands.First().Status.ToString() == "Blackjack"
-                                            } : null
-                                        }).ToArray(),
-                    minBet = table.MinBet.Amount,
-                    maxBet = table.MaxBet.Amount,
-                    pot = table.Seats.Where(s => s.IsOccupied && s.Player?.CurrentBet != null)
-                                   .Sum(s => s.Player.CurrentBet.Amount.Amount),
-                    // Incluir cartas del dealer
-                    dealer = new
-                    {
-                        hand = table.DealerHand.Cards.Select((c, index) => new
-                        {
-                            suit = c.Suit.ToString(),
-                            rank = c.Rank.ToString(),
-                            value = c.GetValue(),
-                            // La primera carta del dealer visible, la segunda oculta hasta el final
-                            isHidden = index == 1 && table.Status.ToString() == "InProgress"
-                        }).ToArray(),
-                        handValue = table.Status.ToString() == "InProgress" ?
-                            table.DealerHand.Cards.Take(1).Sum(c => c.GetValue()) : // Solo mostrar valor de carta visible
-                            table.DealerHand.Value, // Mostrar valor completo cuando termine la ronda
-                        isBusted = table.DealerHand.Status.ToString() == "Bust",
-                        hasBlackjack = table.DealerHand.Status.ToString() == "Blackjack"
-                    }
-                };
+            var result = await _gameRoomService.CreateRoomAsync(request.RoomName, playerId);
 
-                Console.WriteLine($"[GameHub] Enviando GameStateUpdated - {gameState.players.Length} jugadores");
-                await Clients.Group($"Table_{tableId}").SendAsync("GameStateUpdated", gameState);
-                Console.WriteLine($"[GameHub] GameStateUpdated enviado exitosamente");
+            if (result.IsSuccess)
+            {
+                var room = result.Value!;
+
+                // Unirse al grupo de la sala
+                await JoinGroupAsync(HubMethodNames.Groups.GetRoomGroup(room.RoomCode));
+
+                var roomInfo = MapToRoomInfo(room);
+                await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomCreated,
+                    SignalRResponse<RoomInfoModel>.Ok(roomInfo));
+
+                _logger.LogInformation("[GameHub] Room {RoomCode} created successfully", room.RoomCode);
             }
             else
             {
-                Console.WriteLine($"[GameHub] Error obteniendo estado de mesa: {tableResult.Error}");
+                await SendErrorAsync(result.Error);
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[GameHub] Error enviando estado del juego: {ex.Message}");
-            Console.WriteLine($"[GameHub] Stack trace: {ex.StackTrace}");
+            await HandleExceptionAsync(ex, "CreateRoom");
         }
     }
+
+    public async Task JoinRoom(JoinRoomRequest request)
+    {
+        try
+        {
+            if (!IsAuthenticated())
+            {
+                await SendErrorAsync("Debes estar autenticado para unirte a una sala");
+                return;
+            }
+
+            var playerId = GetCurrentPlayerId();
+            if (playerId == null)
+            {
+                await SendErrorAsync("Error de autenticación");
+                return;
+            }
+
+            if (!ValidateInput(request.RoomCode, nameof(request.RoomCode)) ||
+                !ValidateInput(request.PlayerName, nameof(request.PlayerName), 30))
+            {
+                await SendErrorAsync("Datos de entrada inválidos");
+                return;
+            }
+
+            _logger.LogInformation("[GameHub] Player {PlayerId} joining room {RoomCode}",
+                playerId, request.RoomCode);
+
+            // Verificar que la sala existe
+            var roomResult = await _gameRoomService.GetRoomAsync(request.RoomCode);
+            if (!roomResult.IsSuccess)
+            {
+                await SendErrorAsync("Sala no encontrada");
+                return;
+            }
+
+            // Unirse al grupo antes de la lógica de negocio
+            await JoinGroupAsync(HubMethodNames.Groups.GetRoomGroup(request.RoomCode));
+
+            // Lógica de negocio
+            var joinResult = await _gameRoomService.JoinRoomAsync(request.RoomCode, playerId, request.PlayerName);
+
+            if (joinResult.IsSuccess)
+            {
+                // Obtener estado actualizado de la sala
+                var updatedRoomResult = await _gameRoomService.GetRoomAsync(request.RoomCode);
+                if (updatedRoomResult.IsSuccess)
+                {
+                    var roomInfo = MapToRoomInfo(updatedRoomResult.Value!);
+                    await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomJoined,
+                        SignalRResponse<RoomInfoModel>.Ok(roomInfo));
+                }
+
+                _logger.LogInformation("[GameHub] Player {PlayerId} joined room {RoomCode} successfully",
+                    playerId, request.RoomCode);
+            }
+            else
+            {
+                // Salir del grupo si falló
+                await LeaveGroupAsync(HubMethodNames.Groups.GetRoomGroup(request.RoomCode));
+                await SendErrorAsync(joinResult.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            await HandleExceptionAsync(ex, "JoinRoom");
+        }
+    }
+
+    public async Task LeaveRoom(string roomCode)
+    {
+        try
+        {
+            var playerId = GetCurrentPlayerId();
+            if (playerId == null)
+            {
+                await SendErrorAsync("Error de autenticación");
+                return;
+            }
+
+            if (!ValidateInput(roomCode, nameof(roomCode)))
+            {
+                await SendErrorAsync("Código de sala inválido");
+                return;
+            }
+
+            _logger.LogInformation("[GameHub] Player {PlayerId} leaving room {RoomCode}",
+                playerId, roomCode);
+
+            // Salir del grupo
+            await LeaveGroupAsync(HubMethodNames.Groups.GetRoomGroup(roomCode));
+
+            // Lógica de negocio
+            var result = await _gameRoomService.LeaveRoomAsync(roomCode, playerId);
+
+            if (result.IsSuccess)
+            {
+                await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomLeft,
+                    SignalRResponse.Ok("Has salido de la sala exitosamente"));
+
+                _logger.LogInformation("[GameHub] Player {PlayerId} left room {RoomCode} successfully",
+                    playerId, roomCode);
+            }
+            else
+            {
+                await SendErrorAsync(result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            await HandleExceptionAsync(ex, "LeaveRoom");
+        }
+    }
+
+    public async Task GetRoomInfo(string roomCode)
+    {
+        try
+        {
+            if (!ValidateInput(roomCode, nameof(roomCode)))
+            {
+                await SendErrorAsync("Código de sala inválido");
+                return;
+            }
+
+            var result = await _gameRoomService.GetRoomAsync(roomCode);
+
+            if (result.IsSuccess)
+            {
+                var roomInfo = MapToRoomInfo(result.Value!);
+                await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomInfo,
+                    SignalRResponse<RoomInfoModel>.Ok(roomInfo));
+            }
+            else
+            {
+                await SendErrorAsync(result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            await HandleExceptionAsync(ex, "GetRoomInfo");
+        }
+    }
+
+    #endregion
+
+    #region Game Control
+
+    public async Task StartGame(string roomCode)
+    {
+        try
+        {
+            var playerId = GetCurrentPlayerId();
+            if (playerId == null)
+            {
+                await SendErrorAsync("Error de autenticación");
+                return;
+            }
+
+            if (!ValidateInput(roomCode, nameof(roomCode)))
+            {
+                await SendErrorAsync("Código de sala inválido");
+                return;
+            }
+
+            _logger.LogInformation("[GameHub] Starting game in room {RoomCode} by player {PlayerId}",
+                roomCode, playerId);
+
+            var result = await _gameRoomService.StartGameAsync(roomCode, playerId);
+
+            if (result.IsSuccess)
+            {
+                // El evento GameStarted se enviará automáticamente por el event handler
+                _logger.LogInformation("[GameHub] Game started successfully in room {RoomCode}", roomCode);
+            }
+            else
+            {
+                await SendErrorAsync(result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            await HandleExceptionAsync(ex, "StartGame");
+        }
+    }
+
+    public async Task PlaceBet(PlaceBetRequest request)
+    {
+        try
+        {
+            var playerId = GetCurrentPlayerId();
+            if (playerId == null)
+            {
+                await SendErrorAsync("Error de autenticación");
+                return;
+            }
+
+            if (!ValidateInput(request.RoomCode, nameof(request.RoomCode)) || request.Amount <= 0)
+            {
+                await SendErrorAsync("Datos de apuesta inválidos");
+                return;
+            }
+
+            _logger.LogInformation("[GameHub] Player {PlayerId} placing bet {Amount} in room {RoomCode}",
+                playerId, request.Amount, request.RoomCode);
+
+            // Obtener la sala para verificar la mesa asociada
+            var roomResult = await _gameRoomService.GetRoomAsync(request.RoomCode);
+            if (!roomResult.IsSuccess || !roomResult.Value!.BlackjackTableId.HasValue)
+            {
+                await SendErrorAsync("Sala o mesa no encontrada");
+                return;
+            }
+
+            var tableId = roomResult.Value.BlackjackTableId.Value;
+            var bet = BlackJack.Domain.Models.Betting.Bet.Create(request.Amount);
+
+            var result = await _gameService.PlaceBetAsync(tableId, playerId, bet);
+
+            if (result.IsSuccess)
+            {
+                _logger.LogInformation("[GameHub] Bet placed successfully by {PlayerId}", playerId);
+            }
+            else
+            {
+                await SendErrorAsync(result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            await HandleExceptionAsync(ex, "PlaceBet");
+        }
+    }
+
+    public async Task PlayerAction(PlayerActionRequest request)
+    {
+        try
+        {
+            var playerId = GetCurrentPlayerId();
+            if (playerId == null)
+            {
+                await SendErrorAsync("Error de autenticación");
+                return;
+            }
+
+            if (!ValidateInput(request.RoomCode, nameof(request.RoomCode)) ||
+                !ValidateInput(request.Action, nameof(request.Action)))
+            {
+                await SendErrorAsync("Datos de acción inválidos");
+                return;
+            }
+
+            if (!Enum.TryParse<PlayerAction>(request.Action, true, out var playerAction))
+            {
+                await SendErrorAsync("Acción no válida");
+                return;
+            }
+
+            _logger.LogInformation("[GameHub] Player {PlayerId} performing action {Action} in room {RoomCode}",
+                playerId, request.Action, request.RoomCode);
+
+            // Obtener la sala para verificar la mesa asociada
+            var roomResult = await _gameRoomService.GetRoomAsync(request.RoomCode);
+            if (!roomResult.IsSuccess || !roomResult.Value!.BlackjackTableId.HasValue)
+            {
+                await SendErrorAsync("Sala o mesa no encontrada");
+                return;
+            }
+
+            var tableId = roomResult.Value.BlackjackTableId.Value;
+
+            var result = await _gameService.PlayerActionAsync(tableId, playerId, playerAction);
+
+            if (result.IsSuccess)
+            {
+                _logger.LogInformation("[GameHub] Action {Action} performed successfully by {PlayerId}",
+                    request.Action, playerId);
+            }
+            else
+            {
+                await SendErrorAsync(result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            await HandleExceptionAsync(ex, "PlayerAction");
+        }
+    }
+
+    #endregion
+
+    #region Utility Methods
+
+    private static RoomInfoModel MapToRoomInfo(BlackJack.Domain.Models.Game.GameRoom room)
+    {
+        return new RoomInfoModel(
+            RoomCode: room.RoomCode,
+            Name: room.Name,
+            Status: room.Status.ToString(),
+            PlayerCount: room.PlayerCount,
+            MaxPlayers: room.MaxPlayers,
+            Players: room.Players.Select(p => new RoomPlayerModel(
+                PlayerId: p.PlayerId.Value,
+                Name: p.Name,
+                Position: p.Position,
+                IsReady: p.IsReady,
+                IsHost: room.HostPlayerId == p.PlayerId,
+                HasPlayedTurn: p.HasPlayedTurn
+            )).ToList(),
+            Spectators: room.Spectators.Select(s => new SpectatorModel(
+                PlayerId: s.PlayerId.Value,
+                Name: s.Name,
+                JoinedAt: s.JoinedAt
+            )).ToList(),
+            CurrentPlayerTurn: room.CurrentPlayer?.Name,
+            CanStart: room.CanStart,
+            CreatedAt: room.CreatedAt
+        );
+    }
+
+    #endregion
 }

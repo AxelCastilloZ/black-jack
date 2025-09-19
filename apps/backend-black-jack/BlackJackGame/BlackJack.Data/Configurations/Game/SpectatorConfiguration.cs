@@ -1,23 +1,33 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using BlackJack.Domain.Models.Game;
+using BlackJack.Domain.Models.Users;
 
-namespace BlackJack.Data.Configurations.Game
+namespace BlackJack.Data.Configurations.Users;
+
+public class SpectatorConfiguration : IEntityTypeConfiguration<Spectator>
 {
-    public class SpectatorConfiguration : IEntityTypeConfiguration<Spectator>
+    public void Configure(EntityTypeBuilder<Spectator> builder)
     {
-        public void Configure(EntityTypeBuilder<Spectator> builder)
+        builder.HasKey(s => s.Id);
+
+        // CORREGIDO: PlayerId como owned type
+        builder.OwnsOne(s => s.PlayerId, playerId =>
         {
-            builder.HasKey(x => x.Id);
+            playerId.Property(pid => pid.Value)
+                .HasColumnName("PlayerId")
+                .HasColumnType("uniqueidentifier")
+                .IsRequired();
+        });
 
-            builder.OwnsOne(x => x.PlayerId, pid =>
-            {
-                pid.Property(p => p.Value)
-                   .HasColumnName("PlayerId")
-                   .IsRequired();
-            });
+        builder.Property(s => s.Name)
+            .IsRequired()
+            .HasMaxLength(100);
 
-            // otras props/relaciones si aplican...
-        }
+        builder.Property(s => s.JoinedAt)
+            .IsRequired();
+
+        // Índices simples
+        builder.HasIndex(s => s.Name);
+        builder.HasIndex(s => s.JoinedAt);
     }
 }

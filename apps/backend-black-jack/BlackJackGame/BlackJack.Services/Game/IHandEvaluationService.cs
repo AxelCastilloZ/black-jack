@@ -11,10 +11,3 @@ public interface IHandEvaluationService
     int GetHandValue(Hand hand);
 }
 
-public enum HandResult
-{
-    PlayerWins,
-    DealerWins,
-    Push,
-    PlayerBlackjack
-}

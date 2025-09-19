@@ -1,4 +1,4 @@
-// src/api/apiService.ts
+// src/api/apiService.ts - Solo funciones HTTP básicas
 import axios, {
   AxiosError,
   type AxiosInstance,
@@ -19,8 +19,7 @@ export class ApiService {
   private api: AxiosInstance
 
   constructor() {
-    // Lee la URL base desde .env. Ej:
-    // VITE_API_BASE_URL=https://localhost:7102
+    // Lee la URL base desde .env
     const env = import.meta.env as any
     const apiRoot = env.VITE_API_BASE_URL ?? env.VITE_API_URL ?? ''
 
@@ -30,7 +29,6 @@ export class ApiService {
     this.api = axios.create({
       baseURL,
       timeout: 15000,
-      // Usamos JWT por Authorization header, no cookies:
       withCredentials: false,
       headers: {
         'Content-Type': 'application/json',
@@ -46,7 +44,6 @@ export class ApiService {
 
     // Log útil en dev
     if (env.DEV) {
-      // eslint-disable-next-line no-console
       console.log('[ApiService] baseURL:', baseURL)
     }
   }
@@ -74,12 +71,10 @@ export class ApiService {
         const cfg = error.config
         const fullUrl = joinUrl(String(cfg?.baseURL ?? ''), String(cfg?.url ?? ''))
 
-        // eslint-disable-next-line no-console
         console.error('API Error:', status, fullUrl, error.message)
 
         if (status === 401) {
           this.clearToken()
-          // Notifica a la app para redirigir a login, etc.
           window.dispatchEvent(new CustomEvent('auth:unauthorized'))
         }
         return Promise.reject(error)
@@ -87,7 +82,7 @@ export class ApiService {
     )
   }
 
-  // ---- HTTP helpers ----
+  // ---- HTTP helpers genéricos ----
   async get<T>(url: string, params?: unknown, config?: AxiosRequestConfig): Promise<T> {
     const res = await this.api.get<T>(url, { params, ...(config ?? {}) })
     return res.data

@@ -9,7 +9,6 @@ using BlackJack.Data.Identity;
 using BlackJack.Services.Game;
 using BlackJack.Services.User;
 using BlackJack.Services.Betting;
-using BlackJack.Services.Cards;
 using BlackJack.Services.Table;
 using BlackJack.Services.Common;
 using BlackJack.Data.Repositories.Game;
@@ -40,7 +39,7 @@ public static class ServiceCollectionExtensions
         .AddEntityFrameworkStores<IdentityDbContext>()
         .AddDefaultTokenProviders();
 
-        // ===== JWT Bearer =====
+        // JWT Bearer - CORREGIDO para SignalR
         var jwtKey = configuration["JwtSettings:Key"] ?? "default-key-for-development-only-not-secure";
         services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(options =>
@@ -54,27 +53,46 @@ public static class ServiceCollectionExtensions
                     ClockSkew = TimeSpan.Zero
                 };
 
+                // CORREGIDO: Configuración para SignalR
                 options.Events = new JwtBearerEvents
                 {
-                    OnMessageReceived = ctx =>
+                    OnMessageReceived = context =>
                     {
-                        // 1) SignalR: ?access_token=... en /hubs/*
-                        var accessToken = ctx.Request.Query["access_token"];
-                        var path = ctx.HttpContext.Request.Path;
-                        if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                        var accessToken = context.Request.Query["access_token"];
+                        var path = context.HttpContext.Request.Path;
+
+                        // Para SignalR, obtener token del query string
+                        if (!string.IsNullOrEmpty(accessToken) &&
+                            (path.StartsWithSegments("/hubs") || path.StartsWithSegments("/hub")))
                         {
-                            ctx.Token = accessToken!;
-                            return Task.CompletedTask;
+                            context.Token = accessToken;
                         }
 
-                        // 2) Cookie "auth" (opcional)
-                        if (string.IsNullOrEmpty(ctx.Token) &&
-                            ctx.Request.Cookies.TryGetValue("auth", out var cookieToken) &&
+                        // Para requests normales, también intentar cookies como fallback
+                        if (string.IsNullOrEmpty(context.Token) &&
+                            context.Request.Cookies.TryGetValue("auth", out var cookieToken) &&
                             !string.IsNullOrWhiteSpace(cookieToken))
                         {
-                            ctx.Token = cookieToken;
+                            context.Token = cookieToken;
                         }
 
+                        return Task.CompletedTask;
+                    },
+
+                    OnAuthenticationFailed = context =>
+                    {
+                        Console.WriteLine($"JWT Authentication failed: {context.Exception?.Message}");
+                        if (context.Request.Path.StartsWithSegments("/hubs"))
+                        {
+                            Console.WriteLine($"SignalR auth failed for path: {context.Request.Path}");
+                            Console.WriteLine($"Query token present: {!string.IsNullOrEmpty(context.Request.Query["access_token"])}");
+                        }
+                        return Task.CompletedTask;
+                    },
+
+                    OnTokenValidated = context =>
+                    {
+                        Console.WriteLine($"JWT Token validated for: {context.Principal?.Identity?.Name}");
                         return Task.CompletedTask;
                     }
                 };
@@ -83,33 +101,57 @@ public static class ServiceCollectionExtensions
         services.AddAuthorization();
         services.AddHttpContextAccessor();
 
-        // Services
+        // Game Services
         services.AddScoped<IGameService, GameService>();
+        services.AddScoped<IGameRoomService, GameRoomService>();
         services.AddScoped<IDealerService, DealerService>();
         services.AddScoped<IHandEvaluationService, HandEvaluationService>();
+
+        // User Services
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IAuthService, AuthService>();
+
+        // Betting Services
         services.AddScoped<IBettingService, BettingService>();
         services.AddScoped<IPayoutService, PayoutService>();
-        services.AddScoped<IShuffleService, ShuffleService>();
+
+        // Table Services
         services.AddScoped<ITableService, TableService>();
+
+        // Common Services
+        services.AddScoped<IDomainEventDispatcher, DomainEventDispatcher>();
 
         // Repositories
         services.AddScoped<ITableRepository, TableRepository>();
         services.AddScoped<IPlayerRepository, PlayerRepository>();
+        services.AddScoped<IGameRoomRepository, GameRoomRepository>();
+        services.AddScoped<IRoomPlayerRepository, RoomPlayerRepository>();
+        services.AddScoped<IHandRepository, HandRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
 
-        // Common
+        // Utility Services
         services.AddScoped<IDateTime, DateTimeService>();
         services.AddScoped<ICurrentUser, CurrentUserService>();
-
-        // SignalR
-        services.AddSignalR();
 
         return services;
     }
 }
 
+// Interfaces de utilidad
+public interface IDateTime
+{
+    DateTime UtcNow { get; }
+    DateTime Now { get; }
+}
+
+public interface ICurrentUser
+{
+    BlackJack.Domain.Models.Users.PlayerId? UserId { get; }
+    string? UserName { get; }
+    bool IsAuthenticated { get; }
+}
+
+// Implementaciones de utilidad
 public class DateTimeService : IDateTime
 {
     public DateTime UtcNow => DateTime.UtcNow;
@@ -128,9 +170,20 @@ public class CurrentUserService : ICurrentUser
         {
             var p = _http.HttpContext?.User;
             var playerIdClaim = p?.FindFirst("playerId")?.Value ?? p?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            return playerIdClaim != null && Guid.TryParse(playerIdClaim, out var g)
-                ? BlackJack.Domain.Models.Users.PlayerId.From(g)
-                : null;
+
+            if (string.IsNullOrEmpty(playerIdClaim) || !Guid.TryParse(playerIdClaim, out var guidValue))
+            {
+                return null;
+            }
+
+            try
+            {
+                return BlackJack.Domain.Models.Users.PlayerId.From(guidValue);
+            }
+            catch
+            {
+                return null;
+            }
         }
     }
 

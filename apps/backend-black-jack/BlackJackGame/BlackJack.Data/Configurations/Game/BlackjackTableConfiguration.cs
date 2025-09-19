@@ -1,6 +1,8 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿// BlackjackTableConfiguration.cs - CORREGIDA
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using BlackJack.Domain.Models.Game;
+using BlackJack.Domain.Models.Users;
 
 namespace BlackJack.Data.Configurations.Game;
 
@@ -15,10 +17,13 @@ public class BlackjackTableConfiguration : IEntityTypeConfiguration<BlackjackTab
             .HasMaxLength(100);
 
         builder.Property(t => t.Status)
-            .HasConversion<string>()   // enum a string
+            .HasConversion<string>()
             .HasMaxLength(50);
 
-        // --- Money (Value Objects) ---
+        builder.Property(t => t.RoundNumber)
+            .IsRequired();
+
+        // Money Value Objects  
         builder.OwnsOne(t => t.MinBet, money =>
         {
             money.Property(m => m.Amount)
@@ -35,7 +40,15 @@ public class BlackjackTableConfiguration : IEntityTypeConfiguration<BlackjackTab
                  .IsRequired();
         });
 
-        // --- Relaciones ---
+        // El Deck se maneja en memoria, no se persiste
+        builder.Ignore(t => t.Deck);
+
+        // CORREGIDO: DealerHandId como Guid nullable
+        builder.Property(t => t.DealerHandId)
+            .HasColumnName("DealerHandId")
+            .IsRequired(false);
+
+        // Relaciones
         builder.HasMany(t => t.Seats)
             .WithOne()
             .HasForeignKey("TableId")
@@ -46,8 +59,8 @@ public class BlackjackTableConfiguration : IEntityTypeConfiguration<BlackjackTab
             .HasForeignKey("TableId")
             .OnDelete(DeleteBehavior.Cascade);
 
-        // --- Propiedades complejas (no mapeadas por ahora) ---
-        builder.Ignore(t => t.Deck);
-        builder.Ignore(t => t.DealerHand);
+        // Índices para performance
+        builder.HasIndex(t => t.Status);
+        builder.HasIndex(t => t.Name);
     }
 }

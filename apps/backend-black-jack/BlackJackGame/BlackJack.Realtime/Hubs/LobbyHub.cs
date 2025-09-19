@@ -1,211 +1,349 @@
-﻿// BlackJack.Realtime.Hubs/LobbyHub.cs - Versión corregida
+﻿// LobbyHub.cs - En BlackJack.Realtime/Hubs/
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Logging;
+using BlackJack.Services.Game;
+using BlackJack.Realtime.Models;
+using BlackJack.Realtime.Services;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using BlackJack.Services.Table;
-using System.Security.Claims;
 
 namespace BlackJack.Realtime.Hubs;
-
-[Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
-public class LobbyHub : Hub
+[Authorize]
+public class LobbyHub : BaseHub
 {
-    private readonly ITableService _tableService;
+    private readonly IGameRoomService _gameRoomService;
+    private readonly IConnectionManager _connectionManager;
+    private readonly ISignalRNotificationService _notificationService;
 
-    public LobbyHub(ITableService tableService)
+    public LobbyHub(
+        IGameRoomService gameRoomService,
+        IConnectionManager connectionManager,
+        ISignalRNotificationService notificationService,
+        ILogger<LobbyHub> logger) : base(logger)
     {
-        _tableService = tableService;
+        _gameRoomService = gameRoomService;
+        _connectionManager = connectionManager;
+        _notificationService = notificationService;
     }
 
-    // Método helper para obtener el ID del usuario actual
-    private string GetCurrentUserId()
-    {
-        var userIdClaim = Context.User?.FindFirst("sub")?.Value
-                       ?? Context.User?.FindFirst("id")?.Value
-                       ?? Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+    #region Connection Management
 
-        return userIdClaim ?? Context.ConnectionId; // Fallback a ConnectionId
-    }
-
-    // ==== EVENTOS DE CONEXIÓN ====
     public override async Task OnConnectedAsync()
     {
-        try
+        await base.OnConnectedAsync();
+
+        var playerId = GetCurrentPlayerId();
+        var userName = GetCurrentUserName();
+
+        if (playerId != null && userName != null)
         {
-            var userId = GetCurrentUserId();
-            Console.WriteLine($"[LobbyHub] Usuario {userId} conectado. ConnectionId: {Context.ConnectionId}");
-            await base.OnConnectedAsync();
+            // Agregar al grupo del lobby automáticamente
+            await JoinGroupAsync(HubMethodNames.Groups.LobbyGroup);
+            await _connectionManager.AddToGroupAsync(Context.ConnectionId, HubMethodNames.Groups.LobbyGroup);
+
+            await SendSuccessAsync("Conectado al lobby exitosamente");
+
+            // Enviar lista de salas activas inmediatamente
+            await SendActiveRoomsToClient();
         }
-        catch (Exception ex)
+        else
         {
-            Console.WriteLine($"[LobbyHub] Error en OnConnectedAsync: {ex.Message}");
+            await SendErrorAsync("Error de autenticación");
         }
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        try
-        {
-            var userId = GetCurrentUserId();
-            Console.WriteLine($"[LobbyHub] Usuario {userId} desconectado. Razón: {exception?.Message ?? "Normal"}");
-            await base.OnDisconnectedAsync(exception);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[LobbyHub] Error en OnDisconnectedAsync: {ex.Message}");
-        }
+        // Remover del grupo del lobby
+        await LeaveGroupAsync(HubMethodNames.Groups.LobbyGroup);
+        await _connectionManager.RemoveFromGroupAsync(Context.ConnectionId, HubMethodNames.Groups.LobbyGroup);
+
+        await base.OnDisconnectedAsync(exception);
     }
 
-    // ==== MÉTODOS INVOCADOS POR EL CLIENTE ====
+    #endregion
 
-    /// <summary>
-    /// Unir usuario al grupo del lobby
-    /// </summary>
+    #region Lobby Methods
+
     public async Task JoinLobby()
     {
         try
         {
-            await Groups.AddToGroupAsync(Context.ConnectionId, "lobby");
-            await Clients.Caller.SendAsync("JoinedLobby");
+            if (!IsAuthenticated())
+            {
+                await SendErrorAsync("Debes estar autenticado para unirte al lobby");
+                return;
+            }
 
-            Console.WriteLine($"[LobbyHub] Usuario {Context.ConnectionId} se unió al lobby");
+            var playerId = GetCurrentPlayerId();
+            if (playerId == null)
+            {
+                await SendErrorAsync("Error de autenticación");
+                return;
+            }
+
+            _logger.LogInformation("[LobbyHub] Player {PlayerId} joining lobby", playerId);
+
+            await JoinGroupAsync(HubMethodNames.Groups.LobbyGroup);
+            await _connectionManager.AddToGroupAsync(Context.ConnectionId, HubMethodNames.Groups.LobbyGroup);
+
+            await SendSuccessAsync("Te has unido al lobby");
+            await SendActiveRoomsToClient();
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[LobbyHub] Error en JoinLobby: {ex.Message}");
-            throw new HubException($"Error al unirse al lobby: {ex.Message}");
+            await HandleExceptionAsync(ex, "JoinLobby");
         }
     }
 
-    /// <summary>
-    /// Remover usuario del grupo del lobby
-    /// </summary>
     public async Task LeaveLobby()
     {
         try
         {
-            await Groups.RemoveFromGroupAsync(Context.ConnectionId, "lobby");
-            Console.WriteLine($"[LobbyHub] Usuario {Context.ConnectionId} dejó el lobby");
+            var playerId = GetCurrentPlayerId();
+            _logger.LogInformation("[LobbyHub] Player {PlayerId} leaving lobby", playerId);
+
+            await LeaveGroupAsync(HubMethodNames.Groups.LobbyGroup);
+            await _connectionManager.RemoveFromGroupAsync(Context.ConnectionId, HubMethodNames.Groups.LobbyGroup);
+
+            await SendSuccessAsync("Has salido del lobby");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[LobbyHub] Error en LeaveLobby: {ex.Message}");
-            // No throw porque leave es menos crítico
+            await HandleExceptionAsync(ex, "LeaveLobby");
         }
     }
 
-    /// <summary>
-    /// Crear nueva mesa de juego
-    /// </summary>
-    public async Task CreateTable(CreateTableRequest req)
+    public async Task GetActiveRooms()
     {
         try
         {
-            // Validaciones básicas
-            if (string.IsNullOrWhiteSpace(req.Name))
-                throw new HubException("El nombre de la mesa es requerido");
+            await SendActiveRoomsToClient();
+        }
+        catch (Exception ex)
+        {
+            await HandleExceptionAsync(ex, "GetActiveRooms");
+        }
+    }
 
-            if (req.Name.Length > 50)
-                throw new HubException("El nombre de la mesa no puede exceder 50 caracteres");
+    public async Task RefreshRooms()
+    {
+        try
+        {
+            _logger.LogInformation("[LobbyHub] Refreshing room list for connection {ConnectionId}", Context.ConnectionId);
+            await SendActiveRoomsToClient();
+        }
+        catch (Exception ex)
+        {
+            await HandleExceptionAsync(ex, "RefreshRooms");
+        }
+    }
 
-            var userId = GetCurrentUserId();
-            Console.WriteLine($"[LobbyHub] Usuario {userId} creando mesa: {req.Name}");
+    #endregion
 
-            // Llamar al servicio de tabla
-            var result = await _tableService.CreateTableAsync(req.Name);
+    #region Quick Join Methods
 
-            if (!result.IsSuccess)
-                throw new HubException(result.Error ?? "No se pudo crear la mesa");
-
-            var table = result.Value;
-
-            // Preparar data para enviar al frontend
-            var tableData = new
+    public async Task QuickJoin(string? preferredRoomCode = null)
+    {
+        try
+        {
+            if (!IsAuthenticated())
             {
-                table = new
+                await SendErrorAsync("Debes estar autenticado para unirte a una sala");
+                return;
+            }
+
+            var playerId = GetCurrentPlayerId();
+            var userName = GetCurrentUserName();
+
+            if (playerId == null || userName == null)
+            {
+                await SendErrorAsync("Error de autenticación");
+                return;
+            }
+
+            _logger.LogInformation("[LobbyHub] Player {PlayerId} attempting quick join", playerId);
+
+            // Verificar si ya está en una sala
+            var currentRoomResult = await _gameRoomService.GetPlayerCurrentRoomCodeAsync(playerId);
+            if (currentRoomResult.IsSuccess && !string.IsNullOrEmpty(currentRoomResult.Value))
+            {
+                await SendErrorAsync("Ya estás en una sala. Sal de esa sala primero.");
+                return;
+            }
+
+            // Intentar unirse a la sala preferida si se especifica
+            if (!string.IsNullOrEmpty(preferredRoomCode))
+            {
+                var preferredRoomResult = await _gameRoomService.GetRoomAsync(preferredRoomCode);
+                if (preferredRoomResult.IsSuccess && !preferredRoomResult.Value!.IsFull)
                 {
-                    id = table.Id.ToString(),
-                    name = table.Name,
-                    playerCount = table.Seats.Count(s => s.IsOccupied),
-                    maxPlayers = table.Seats.Count, // Normalmente 6
-                    minBet = table.MinBet.Amount,
-                    maxBet = table.MaxBet.Amount,
-                    status = table.Status.ToString(),
-                    createdBy = userId,
-                    createdAt = DateTime.UtcNow
+                    await Clients.Caller.SendAsync("QuickJoinRedirect", new { roomCode = preferredRoomCode });
+                    return;
                 }
-            };
+            }
 
-            // Notificar a todos en el lobby que se creó una mesa
-            await Clients.Group("lobby").SendAsync("TableCreated", tableData);
-
-            // También notificar al creador específicamente (por si necesita navegación automática)
-            await Clients.Caller.SendAsync("TableCreatedByMe", tableData);
-
-            Console.WriteLine($"[LobbyHub] Mesa {table.Id} creada exitosamente");
-        }
-        catch (HubException)
-        {
-            // Re-throw HubExceptions tal como están
-            throw;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[LobbyHub] Error inesperado en CreateTable: {ex.Message}");
-            throw new HubException($"Error interno al crear la mesa: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Obtener lista de mesas disponibles (método opcional para refrescar)
-    /// </summary>
-    public async Task GetAvailableTables()
-    {
-        try
-        {
-            // Como no tienes GetAvailableTablesAsync, usa un método que sí existe
-            // o comenta esta funcionalidad por ahora
-
-            await Clients.Caller.SendAsync("AvailableTables", new object[0]); // Array vacío por ahora
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[LobbyHub] Error en GetAvailableTables: {ex.Message}");
-            throw new HubException($"Error al obtener mesas: {ex.Message}");
-        }
-    }
-
-    // ==== MÉTODOS PRIVADOS DE UTILIDAD ====
-
-    private async Task NotifyLobbyUpdate(string tableId, int playerCount, string status)
-    {
-        try
-        {
-            var update = new
+            // Buscar una sala disponible
+            var activeRoomsResult = await _gameRoomService.GetActiveRoomsAsync();
+            if (activeRoomsResult.IsSuccess)
             {
-                tableId = tableId,
-                playerCount = playerCount,
-                status = status,
-                timestamp = DateTime.UtcNow
-            };
+                var availableRoom = activeRoomsResult.Value!
+                    .Where(r => !r.IsFull && r.Status == BlackJack.Domain.Models.Game.RoomStatus.WaitingForPlayers)
+                    .OrderBy(r => r.PlayerCount) // Preferir salas con menos jugadores
+                    .FirstOrDefault();
 
-            await Clients.Group("lobby").SendAsync("TableUpdated", update);
+                if (availableRoom != null)
+                {
+                    await Clients.Caller.SendAsync("QuickJoinRedirect", new { roomCode = availableRoom.RoomCode });
+                }
+                else
+                {
+                    await SendErrorAsync("No hay salas disponibles. Crea una nueva sala.");
+                }
+            }
+            else
+            {
+                await SendErrorAsync("Error obteniendo salas disponibles");
+            }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[LobbyHub] Error notificando actualización del lobby: {ex.Message}");
+            await HandleExceptionAsync(ex, "QuickJoin");
         }
     }
-}
 
-// ==== CLASES DE REQUEST ====
+    #endregion
 
-public class CreateTableRequest
-{
-    public string Name { get; set; } = string.Empty;
+    #region Statistics Methods
 
-    // Propiedades opcionales para configuración futura
-    public int MinBet { get; set; } = 10;
-    public int MaxBet { get; set; } = 500;
-    public int MaxPlayers { get; set; } = 6;
+    public async Task GetLobbyStats()
+    {
+        try
+        {
+            var activeRoomsResult = await _gameRoomService.GetActiveRoomsAsync();
+            var onlinePlayerCount = await _connectionManager.GetOnlinePlayerCountAsync();
+            var totalConnections = await _connectionManager.GetTotalConnectionCountAsync();
+
+            var stats = new
+            {
+                OnlinePlayers = onlinePlayerCount,
+                TotalConnections = totalConnections,
+                ActiveRooms = activeRoomsResult.IsSuccess ? activeRoomsResult.Value!.Count : 0,
+                PlayersInGame = activeRoomsResult.IsSuccess ?
+                    activeRoomsResult.Value!.Where(r => r.Status == BlackJack.Domain.Models.Game.RoomStatus.InProgress).Sum(r => r.PlayerCount) : 0,
+                Timestamp = DateTime.UtcNow
+            };
+
+            await Clients.Caller.SendAsync("LobbyStats", stats);
+        }
+        catch (Exception ex)
+        {
+            await HandleExceptionAsync(ex, "GetLobbyStats");
+        }
+    }
+
+    #endregion
+
+    #region Private Helper Methods
+
+    private async Task SendActiveRoomsToClient()
+    {
+        try
+        {
+            var result = await _gameRoomService.GetActiveRoomsAsync();
+
+            if (result.IsSuccess)
+            {
+                var activeRooms = result.Value!.Select(room => new ActiveRoomModel(
+                    RoomCode: room.RoomCode,
+                    Name: room.Name,
+                    PlayerCount: room.PlayerCount,
+                    MaxPlayers: room.MaxPlayers,
+                    Status: room.Status.ToString(),
+                    CreatedAt: room.CreatedAt
+                )).ToList();
+
+                await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.ActiveRoomsUpdated,
+                    SignalRResponse<List<ActiveRoomModel>>.Ok(activeRooms));
+
+                _logger.LogDebug("[LobbyHub] Sent {RoomCount} active rooms to connection {ConnectionId}",
+                    activeRooms.Count, Context.ConnectionId);
+            }
+            else
+            {
+                await SendErrorAsync("Error obteniendo salas activas");
+                _logger.LogWarning("[LobbyHub] Failed to get active rooms: {Error}", result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[LobbyHub] Error sending active rooms to client: {Error}", ex.Message);
+            await SendErrorAsync("Error interno del servidor");
+        }
+    }
+
+    #endregion
+
+    #region Admin Methods (Optional)
+
+    public async Task GetDetailedRoomInfo(string roomCode)
+    {
+        try
+        {
+            if (!ValidateInput(roomCode, nameof(roomCode)))
+            {
+                await SendErrorAsync("Código de sala inválido");
+                return;
+            }
+
+            var result = await _gameRoomService.GetRoomAsync(roomCode);
+
+            if (result.IsSuccess)
+            {
+                var room = result.Value!;
+                var detailedInfo = new
+                {
+                    RoomCode = room.RoomCode,
+                    Name = room.Name,
+                    Status = room.Status.ToString(),
+                    PlayerCount = room.PlayerCount,
+                    MaxPlayers = room.MaxPlayers,
+                    HostPlayerId = room.HostPlayerId.Value,
+                    CurrentPlayerTurn = room.CurrentPlayer?.Name,
+                    CanStart = room.CanStart,
+                    IsGameInProgress = room.IsGameInProgress,
+                    BlackjackTableId = room.BlackjackTableId,
+                    CreatedAt = room.CreatedAt,
+                    UpdatedAt = room.UpdatedAt,
+                    Players = room.Players.Select(p => new
+                    {
+                        PlayerId = p.PlayerId.Value,
+                        Name = p.Name,
+                        Position = p.Position,
+                        IsReady = p.IsReady,
+                        HasPlayedTurn = p.HasPlayedTurn,
+                        JoinedAt = p.JoinedAt
+                    }).ToList(),
+                    Spectators = room.Spectators.Select(s => new
+                    {
+                        PlayerId = s.PlayerId.Value,
+                        Name = s.Name,
+                        JoinedAt = s.JoinedAt
+                    }).ToList()
+                };
+
+                await Clients.Caller.SendAsync("DetailedRoomInfo",
+                    SignalRResponse<object>.Ok(detailedInfo));
+            }
+            else
+            {
+                await SendErrorAsync(result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            await HandleExceptionAsync(ex, "GetDetailedRoomInfo");
+        }
+    }
+
+    #endregion
 }

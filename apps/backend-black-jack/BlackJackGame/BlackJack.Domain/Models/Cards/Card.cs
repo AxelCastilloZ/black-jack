@@ -2,22 +2,77 @@
 
 namespace BlackJack.Domain.Models.Cards;
 
-public record Card(Suit Suit, Rank Rank)
+public class Card
 {
+    protected Card()
+    {
+        Suit = CardSuit.Hearts;
+        Rank = CardRank.Two;
+    }
+
+    public Card(CardSuit suit, CardRank rank)
+    {
+        Suit = suit;
+        Rank = rank;
+    }
+
+    public CardSuit Suit { get; private set; }
+    public CardRank Rank { get; private set; }
+
     public int GetValue()
     {
         return Rank switch
         {
-            Rank.Ace => 11,  // Se manejará como 1 o 11 en la lógica del juego
-            Rank.Jack or Rank.Queen or Rank.King => 10,
+            CardRank.Ace => 11, // Se maneja como 11 por defecto, la lógica de 1/11 está en Hand
+            CardRank.Jack or CardRank.Queen or CardRank.King => 10,
             _ => (int)Rank
         };
     }
 
-    public bool IsAce => Rank == Rank.Ace;
+    public string GetDisplayName()
+    {
+        var rankName = Rank switch
+        {
+            CardRank.Ace => "A",
+            CardRank.Jack => "J",
+            CardRank.Queen => "Q",
+            CardRank.King => "K",
+            _ => ((int)Rank).ToString()
+        };
+
+        var suitSymbol = Suit switch
+        {
+            CardSuit.Hearts => "♥",
+            CardSuit.Diamonds => "♦",
+            CardSuit.Clubs => "♣",
+            CardSuit.Spades => "♠",
+            _ => Suit.ToString()
+        };
+
+        return $"{rankName}{suitSymbol}";
+    }
 
     public override string ToString()
     {
-        return $"{Rank} of {Suit}";
+        return GetDisplayName();
+    }
+
+    public override bool Equals(object? obj)
+    {
+        if (obj is Card other)
+        {
+            return Suit == other.Suit && Rank == other.Rank;
+        }
+        return false;
+    }
+
+    public override int GetHashCode()
+    {
+        return HashCode.Combine(Suit, Rank);
+    }
+
+    public static Card Create(CardSuit suit, CardRank rank)
+    {
+        return new Card(suit, rank);
     }
 }

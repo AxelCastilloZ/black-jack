@@ -1,5 +1,4 @@
 ﻿using Microsoft.EntityFrameworkCore;
-using System.Linq.Expressions;
 using BlackJack.Data.Context;
 
 namespace BlackJack.Data.Repositories.Common;
@@ -25,21 +24,10 @@ public class Repository<T> : IRepository<T> where T : class
         return await _dbSet.ToListAsync();
     }
 
-    public virtual async Task<List<T>> FindAsync(Expression<Func<T, bool>> predicate)
-    {
-        return await _dbSet.Where(predicate).ToListAsync();
-    }
-
-    public virtual async Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate)
-    {
-        return await _dbSet.FirstOrDefaultAsync(predicate);
-    }
-
-    public virtual async Task<T> AddAsync(T entity)
+    public virtual async Task AddAsync(T entity)
     {
         await _dbSet.AddAsync(entity);
         await _context.SaveChangesAsync();
-        return entity;
     }
 
     public virtual async Task UpdateAsync(T entity)
@@ -52,10 +40,5 @@ public class Repository<T> : IRepository<T> where T : class
     {
         _dbSet.Remove(entity);
         await _context.SaveChangesAsync();
-    }
-
-    public virtual async Task<bool> ExistsAsync(Expression<Func<T, bool>> predicate)
-    {
-        return await _dbSet.AnyAsync(predicate);
     }
 }
