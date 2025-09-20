@@ -40,7 +40,7 @@ public class GameRoom : AggregateRoot
     public RoomStatus Status { get; private set; }
     public int MaxPlayers { get; private set; }
     public int CurrentPlayerIndex { get; private set; }
-    public Guid? BlackjackTableId { get; private set; }
+    public Guid? BlackjackTableId { get; set; }
 
     // Navegación
     public IReadOnlyList<RoomPlayer> Players => _players.AsReadOnly();
@@ -101,7 +101,7 @@ public class GameRoom : AggregateRoot
 
     public void RemovePlayer(PlayerId playerId)
     {
-        var player = _players.FirstOrDefault(p => p.PlayerId == playerId);
+        var player = _players.FirstOrDefault(p => p.PlayerId.Value == playerId.Value);
         if (player == null) return;
 
         var playerName = player.Name;
@@ -120,7 +120,7 @@ public class GameRoom : AggregateRoot
         }
 
         // Si era el host, transferir a otro jugador
-        if (player.PlayerId == HostPlayerId && _players.Count > 0)
+        if (player.PlayerId.Value == HostPlayerId.Value && _players.Count > 0)
         {
             HostPlayerId = _players[0].PlayerId;
         }
@@ -137,7 +137,7 @@ public class GameRoom : AggregateRoot
         if (IsPlayerInRoom(playerId))
             throw new InvalidOperationException("Player is already playing in this room");
 
-        if (_spectators.Any(s => s.PlayerId == playerId))
+        if (_spectators.Any(s => s.PlayerId.Value == playerId.Value))
             return; // Ya es espectador
 
         var spectator = Spectator.Create(playerId, spectatorName);
@@ -151,7 +151,7 @@ public class GameRoom : AggregateRoot
 
     public void RemoveSpectator(PlayerId playerId)
     {
-        var spectator = _spectators.FirstOrDefault(s => s.PlayerId == playerId);
+        var spectator = _spectators.FirstOrDefault(s => s.PlayerId.Value == playerId.Value);
         if (spectator != null)
         {
             var spectatorName = spectator.Name;
@@ -210,7 +210,7 @@ public class GameRoom : AggregateRoot
 
     public void SetCurrentPlayer(PlayerId playerId)
     {
-        var playerIndex = _players.FindIndex(p => p.PlayerId == playerId);
+        var playerIndex = _players.FindIndex(p => p.PlayerId.Value == playerId.Value);
         if (playerIndex == -1)
             throw new InvalidOperationException("Player not found in room");
 
@@ -269,25 +269,25 @@ public class GameRoom : AggregateRoot
         UpdateTimestamp();
     }
 
-    // Métodos de validación
+    // CORREGIDO: Métodos de validación que comparan por Value en lugar de por referencia
     public bool IsPlayerInRoom(PlayerId playerId)
     {
-        return _players.Any(p => p.PlayerId == playerId);
+        return _players.Any(p => p.PlayerId.Value == playerId.Value);
     }
 
     public bool IsHost(PlayerId playerId)
     {
-        return HostPlayerId == playerId;
+        return HostPlayerId.Value == playerId.Value;
     }
 
     public bool IsPlayerTurn(PlayerId playerId)
     {
-        return CurrentPlayer?.PlayerId == playerId;
+        return CurrentPlayer?.PlayerId.Value == playerId.Value;
     }
 
     public RoomPlayer? GetPlayer(PlayerId playerId)
     {
-        return _players.FirstOrDefault(p => p.PlayerId == playerId);
+        return _players.FirstOrDefault(p => p.PlayerId.Value == playerId.Value);
     }
 
     // Métodos de información

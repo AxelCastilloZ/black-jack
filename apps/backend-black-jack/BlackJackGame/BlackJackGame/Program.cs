@@ -31,22 +31,23 @@ builder.Services.AddSwaggerGen(o =>
 // Health + CORS
 builder.Services.AddHealthChecks();
 
-Console.WriteLine($"[STARTUP-DEBUG] Adding application services...");
-// SIMPLIFICADO: Solo llamar AddApplicationServices (ya incluye JWT)
+Console.WriteLine($"[STARTUP-DEBUG] Adding application services (WITHOUT JWT)...");
+// PASO 1: Servicios base SIN JWT (JWT ahora se maneja en SignalR)
 builder.Services.AddApplicationServices(builder.Configuration);
 
-Console.WriteLine($"[STARTUP-DEBUG] Adding SignalR services...");
-// SignalR según el entorno (esto debe estar FUERA de AddApplicationServices)
+Console.WriteLine($"[STARTUP-DEBUG] Adding SignalR with integrated JWT...");
+// PASO 2: SignalR con JWT integrado (IConfiguration pasado)
 if (builder.Environment.IsDevelopment())
 {
-    builder.Services.AddBlackJackSignalRDevelopment();
+    builder.Services.AddBlackJackSignalRDevelopment(builder.Configuration);
 }
 else
 {
-    builder.Services.AddBlackJackSignalR();
+    builder.Services.AddBlackJackSignalR(builder.Configuration);
 }
 
-// Políticas de autorización para SignalR
+Console.WriteLine($"[STARTUP-DEBUG] Adding SignalR authorization policies...");
+// PASO 3: Políticas de autorización después de JWT
 builder.Services.AddSignalRAuthorization();
 
 // CORS
@@ -118,7 +119,7 @@ app.MapControllers();
 app.MapHealthChecks("/api/health").AllowAnonymous();
 
 Console.WriteLine($"[STARTUP-DEBUG] Mapping SignalR hubs...");
-// Mapear hubs CON autorización
+// Mapear hubs CON autorización (JWT ya configurado en SignalR)
 app.MapHub<GameHub>("/hubs/game");
 app.MapHub<LobbyHub>("/hubs/lobby");
 
@@ -219,6 +220,40 @@ if (app.Environment.IsDevelopment())
 
         return Results.Ok(result);
     }).AllowAnonymous();
+
+    // NUEVO: Endpoint específico para debug JWT en SignalR
+    app.MapGet("/api/debug/jwt-claims", (HttpContext context) =>
+    {
+        Console.WriteLine($"[JWT-CLAIMS-DEBUG] JWT claims debug endpoint called");
+
+        var claims = context.User?.Claims?.Select(c => new { Type = c.Type, Value = c.Value }).ToArray() ?? Array.Empty<object>();
+        var playerId = context.User?.FindFirst("playerId")?.Value ??
+                       context.User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        var name = context.User?.FindFirst("name")?.Value ??
+                   context.User?.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value;
+
+        Console.WriteLine($"[JWT-CLAIMS-DEBUG] Total claims: {claims.Length}");
+        Console.WriteLine($"[JWT-CLAIMS-DEBUG] PlayerId claim: {playerId ?? "NULL"}");
+        Console.WriteLine($"[JWT-CLAIMS-DEBUG] Name claim: {name ?? "NULL"}");
+
+        foreach (var claim in claims)
+        {
+            Console.WriteLine($"[JWT-CLAIMS-DEBUG] Claim: {claim}");
+        }
+
+        var result = new
+        {
+            IsAuthenticated = context.User?.Identity?.IsAuthenticated ?? false,
+            ClaimsCount = claims.Length,
+            Claims = claims,
+            PlayerId = playerId,
+            Name = name,
+            UserName = context.User?.Identity?.Name,
+            Timestamp = DateTime.UtcNow
+        };
+
+        return Results.Ok(result);
+    }).RequireAuthorization();
 }
 
 Console.WriteLine($"[STARTUP-DEBUG] Application configured, starting...");

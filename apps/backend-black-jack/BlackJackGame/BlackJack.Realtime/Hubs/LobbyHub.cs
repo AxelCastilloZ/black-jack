@@ -1,13 +1,13 @@
-﻿// LobbyHub.cs - En BlackJack.Realtime/Hubs/
-using Microsoft.AspNetCore.SignalR;
-using Microsoft.Extensions.Logging;
-using BlackJack.Services.Game;
+﻿// LobbyHub.cs - En BlackJack.Realtime/Hubs/ - SIN AUTENTICACIÓN
 using BlackJack.Realtime.Models;
 using BlackJack.Realtime.Services;
+using BlackJack.Services.Game;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Logging;
 
 namespace BlackJack.Realtime.Hubs;
-
+[AllowAnonymous]
 public class LobbyHub : BaseHub
 {
     private readonly IGameRoomService _gameRoomService;
@@ -47,7 +47,7 @@ public class LobbyHub : BaseHub
         }
         else
         {
-            await SendErrorAsync("Error de autenticación");
+            await SendErrorAsync("Error generando ID de jugador");
         }
     }
 
@@ -68,16 +68,10 @@ public class LobbyHub : BaseHub
     {
         try
         {
-            if (!IsAuthenticated())
-            {
-                await SendErrorAsync("Debes estar autenticado para unirte al lobby");
-                return;
-            }
-
             var playerId = GetCurrentPlayerId();
             if (playerId == null)
             {
-                await SendErrorAsync("Error de autenticación");
+                await SendErrorAsync("Error generando ID de jugador");
                 return;
             }
 
@@ -138,6 +132,17 @@ public class LobbyHub : BaseHub
         }
     }
 
+    public async Task TestConnection()
+    {
+        await Clients.Caller.SendAsync("TestResponse", new
+        {
+            message = "LobbyHub funcionando correctamente",
+            timestamp = DateTime.UtcNow,
+            connectionId = Context.ConnectionId,
+            playerId = GetCurrentPlayerId()?.Value
+        });
+    }
+
     #endregion
 
     #region Quick Join Methods
@@ -146,18 +151,12 @@ public class LobbyHub : BaseHub
     {
         try
         {
-            if (!IsAuthenticated())
-            {
-                await SendErrorAsync("Debes estar autenticado para unirte a una sala");
-                return;
-            }
-
             var playerId = GetCurrentPlayerId();
             var userName = GetCurrentUserName();
 
             if (playerId == null || userName == null)
             {
-                await SendErrorAsync("Error de autenticación");
+                await SendErrorAsync("Error obteniendo información del jugador");
                 return;
             }
 

@@ -1,8 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Identity;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.IdentityModel.Tokens;
-using System.Text;
 using System.Security.Claims;
 using BlackJack.Data.Context;
 using BlackJack.Data.Identity;
@@ -32,9 +29,10 @@ public static class ServiceCollectionExtensions
         services.AddDbContext<ApplicationDbContext>(o =>
             o.UseSqlServer(connectionString));
 
-        Console.WriteLine($"[SERVICE-EXTENSIONS-DEBUG] Configuring Identity...");
-        // Identity
-        services.AddIdentity<ApplicationUser, IdentityRole>(options =>
+        Console.WriteLine($"[SERVICE-EXTENSIONS-DEBUG] Configuring Identity WITHOUT Authentication...");
+        // CAMBIO CRÍTICO: AddIdentityCore en lugar de AddIdentity
+        // AddIdentityCore NO registra Authentication automáticamente
+        services.AddIdentityCore<ApplicationUser>(options =>
         {
             options.Password.RequireDigit = false;
             options.Password.RequireLowercase = false;
@@ -43,166 +41,13 @@ public static class ServiceCollectionExtensions
             options.Password.RequiredLength = 6;
             options.User.RequireUniqueEmail = true;
         })
+        .AddRoles<IdentityRole>() // Agregar roles manualmente
         .AddEntityFrameworkStores<IdentityDbContext>()
         .AddDefaultTokenProviders();
 
-        Console.WriteLine($"[SERVICE-EXTENSIONS-DEBUG] Configuring JWT Bearer...");
-        // JWT Bearer - CORREGIDO para SignalR
-        var jwtKey = configuration["JwtSettings:Key"] ?? "default-key-for-development-only-not-secure";
-        Console.WriteLine($"[SERVICE-EXTENSIONS-DEBUG] JWT Key present: {!string.IsNullOrEmpty(jwtKey)}");
-        Console.WriteLine($"[SERVICE-EXTENSIONS-DEBUG] JWT Key length: {jwtKey.Length}");
+        Console.WriteLine($"[SERVICE-EXTENSIONS-DEBUG] Identity configured WITHOUT overriding JWT Authentication");
 
-        services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-            .AddJwtBearer(options =>
-            {
-                Console.WriteLine($"[SERVICE-EXTENSIONS-DEBUG] Configuring JWT Bearer options...");
-
-                options.TokenValidationParameters = new TokenValidationParameters
-                {
-                    ValidateIssuerSigningKey = true,
-                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(jwtKey)),
-                    ValidateIssuer = false,
-                    ValidateAudience = false,
-                    ClockSkew = TimeSpan.Zero,
-                    ValidateLifetime = true
-                };
-
-                // CRÍTICO: Configuración para SignalR - DEBE ESTAR PRESENTE
-                options.Events = new JwtBearerEvents
-                {
-                    OnMessageReceived = context =>
-                    {
-                        Console.WriteLine($"[JWT-DEBUG] OnMessageReceived called");
-                        Console.WriteLine($"[JWT-DEBUG] Path: {context.Request.Path}");
-
-                        var accessToken = context.Request.Query["access_token"];
-                        var path = context.HttpContext.Request.Path;
-                        var authHeader = context.Request.Headers["Authorization"].FirstOrDefault();
-
-                        Console.WriteLine($"[JWT-DEBUG] Query access_token present: {!string.IsNullOrEmpty(accessToken)}");
-                        Console.WriteLine($"[JWT-DEBUG] Auth header present: {!string.IsNullOrEmpty(authHeader)}");
-
-                        if (!string.IsNullOrEmpty(accessToken))
-                        {
-                            Console.WriteLine($"[JWT-DEBUG] Query access_token length: {accessToken.ToString().Length}");
-                            Console.WriteLine($"[JWT-DEBUG] Query access_token preview: {accessToken.ToString().Substring(0, Math.Min(50, accessToken.ToString().Length))}...");
-                        }
-
-                        // CRÍTICO: Para SignalR, obtener token del query string
-                        if (!string.IsNullOrEmpty(accessToken) &&
-                            (path.StartsWithSegments("/hubs") || path.StartsWithSegments("/hub")))
-                        {
-                            context.Token = accessToken;
-                            Console.WriteLine($"[JWT-DEBUG] TOKEN SET FROM QUERY for SignalR path");
-                            Console.WriteLine($"[JWT-DEBUG] This will enable Context.User in SignalR hubs");
-                        }
-                        else if (!string.IsNullOrEmpty(accessToken))
-                        {
-                            Console.WriteLine($"[JWT-DEBUG] Query token present but NOT a SignalR path");
-                        }
-                        else
-                        {
-                            Console.WriteLine($"[JWT-DEBUG] No query token found");
-                        }
-
-                        // Para requests normales, también intentar cookies como fallback
-                        if (string.IsNullOrEmpty(context.Token) &&
-                            context.Request.Cookies.TryGetValue("auth", out var cookieToken) &&
-                            !string.IsNullOrWhiteSpace(cookieToken))
-                        {
-                            context.Token = cookieToken;
-                            Console.WriteLine($"[JWT-DEBUG] Token set from cookie as fallback");
-                        }
-
-                        Console.WriteLine($"[JWT-DEBUG] Final context.Token present: {!string.IsNullOrEmpty(context.Token)}");
-                        return Task.CompletedTask;
-                    },
-
-                    OnAuthenticationFailed = context =>
-                    {
-                        Console.WriteLine($"[JWT-DEBUG] OnAuthenticationFailed called");
-                        Console.WriteLine($"[JWT-DEBUG] Path: {context.Request.Path}");
-                        Console.WriteLine($"[JWT-DEBUG] Exception: {context.Exception?.Message}");
-                        Console.WriteLine($"[JWT-DEBUG] Exception Type: {context.Exception?.GetType().Name}");
-
-                        // Obtener tokens del request para debug
-                        var queryToken = context.Request.Query["access_token"].FirstOrDefault();
-                        var authHeader = context.Request.Headers["Authorization"].FirstOrDefault();
-
-                        if (!string.IsNullOrEmpty(queryToken))
-                        {
-                            Console.WriteLine($"[JWT-DEBUG] Query token that failed length: {queryToken.Length}");
-                            Console.WriteLine($"[JWT-DEBUG] Query token that failed preview: {queryToken.Substring(0, Math.Min(100, queryToken.Length))}...");
-                        }
-                        else
-                        {
-                            Console.WriteLine($"[JWT-DEBUG] No query token was provided");
-                        }
-
-                        if (context.Request.Path.StartsWithSegments("/hubs"))
-                        {
-                            Console.WriteLine($"[JWT-DEBUG] *** SIGNALR AUTHENTICATION FAILED ***");
-                            if (!string.IsNullOrEmpty(queryToken))
-                            {
-                                Console.WriteLine($"[JWT-DEBUG] SignalR query token was: {queryToken.Substring(0, Math.Min(50, queryToken.Length))}...");
-                            }
-                            else
-                            {
-                                Console.WriteLine($"[JWT-DEBUG] No query token found for SignalR authentication");
-                            }
-                        }
-
-                        return Task.CompletedTask;
-                    },
-
-                    OnTokenValidated = context =>
-                    {
-                        Console.WriteLine($"[JWT-DEBUG] OnTokenValidated called - SUCCESS");
-                        Console.WriteLine($"[JWT-DEBUG] Path: {context.Request.Path}");
-                        Console.WriteLine($"[JWT-DEBUG] User authenticated: {context.Principal?.Identity?.IsAuthenticated ?? false}");
-                        Console.WriteLine($"[JWT-DEBUG] User name: {context.Principal?.Identity?.Name ?? "NULL"}");
-
-                        var claims = context.Principal?.Claims?.ToList() ?? new List<Claim>();
-                        Console.WriteLine($"[JWT-DEBUG] Claims count: {claims.Count}");
-
-                        foreach (var claim in claims)
-                        {
-                            Console.WriteLine($"[JWT-DEBUG] Claim: {claim.Type} = {claim.Value}");
-                        }
-
-                        var playerId = context.Principal?.FindFirst("playerId")?.Value ??
-                                       context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value ??
-                                       "NOT_FOUND";
-                        Console.WriteLine($"[JWT-DEBUG] PlayerId extracted: {playerId}");
-
-                        if (context.Request.Path.StartsWithSegments("/hubs"))
-                        {
-                            Console.WriteLine($"[JWT-DEBUG] *** SIGNALR AUTHENTICATION SUCCESS ***");
-                            Console.WriteLine($"[JWT-DEBUG] SignalR Context.User will now have claims");
-                        }
-
-                        return Task.CompletedTask;
-                    },
-
-                    OnChallenge = context =>
-                    {
-                        Console.WriteLine($"[JWT-DEBUG] OnChallenge called");
-                        Console.WriteLine($"[JWT-DEBUG] Path: {context.Request.Path}");
-                        Console.WriteLine($"[JWT-DEBUG] Error: {context.Error ?? "NULL"}");
-                        Console.WriteLine($"[JWT-DEBUG] AuthenticateFailure: {context.AuthenticateFailure?.Message ?? "NULL"}");
-
-                        if (context.Request.Path.StartsWithSegments("/hubs"))
-                        {
-                            Console.WriteLine($"[JWT-DEBUG] *** SIGNALR CHALLENGE - AUTH REQUIRED ***");
-                        }
-
-                        return Task.CompletedTask;
-                    }
-                };
-            });
-
-        Console.WriteLine($"[SERVICE-EXTENSIONS-DEBUG] Adding Authorization...");
-        services.AddAuthorization();
+        Console.WriteLine($"[SERVICE-EXTENSIONS-DEBUG] Adding HttpContextAccessor...");
         services.AddHttpContextAccessor();
 
         Console.WriteLine($"[SERVICE-EXTENSIONS-DEBUG] Registering Game Services...");

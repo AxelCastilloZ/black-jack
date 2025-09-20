@@ -1,4 +1,4 @@
-// src/pages/LobbyPage.tsx - Versión de Producción
+// src/pages/LobbyPage.tsx - Usando endpoint /api/table que funciona
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { signalRService } from '../services/signalr'
@@ -52,6 +52,12 @@ export default function LobbyPage() {
         setLoading(true)
         setError(null)
         
+        // Verificar autenticación antes de continuar
+        if (!authService.isAuthenticated()) {
+          navigate({ to: '/' })
+          return
+        }
+
         // Conectar SignalR si no está conectado
         if (!signalRService.isLobbyConnected) {
           await signalRService.startConnections()
@@ -66,7 +72,7 @@ export default function LobbyPage() {
         
       } catch (e: any) {
         if (isMounted) {
-          console.error('Error loading lobby:', e)
+          console.error('[LOBBY] Error loading:', e)
           setError(e?.message ?? 'No se pudo cargar el lobby')
         }
       } finally {
@@ -83,40 +89,24 @@ export default function LobbyPage() {
     }
   }, [])
 
-  // Cargar mesas desde API
+  // Cargar mesas desde API usando TableController
   const loadTablesFromAPI = async (): Promise<LobbyTable[]> => {
     try {
       const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:7102'
-      const token = authService.getToken()
-
+      
       console.log('[LOBBY] Loading tables from API...')
       console.log('[LOBBY] API_BASE:', API_BASE)
-      console.log('[LOBBY] Token exists:', !!token)
-      console.log('[LOBBY] User authenticated:', authService.isAuthenticated())
-
-      if (!token || !authService.isAuthenticated()) {
-        console.error('[LOBBY] No authentication token available')
-        throw new Error('No hay token de autenticación válido')
-      }
-
-      // Limpiar token para asegurar formato correcto
-      const cleanToken = token.replace(/^Bearer\s+/i, '').trim()
+      console.log('[LOBBY] Using TableController endpoint: /api/table')
       
-      const response = await fetch(`${API_BASE}/api/gameroom`, {
+      const response = await fetch(`${API_BASE}/api/table`, {
+        method: 'GET',
         headers: {
-          'Authorization': `Bearer ${cleanToken}`,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
         }
       })
 
       console.log('[LOBBY] API Response status:', response.status)
-
-      if (response.status === 401 || response.status === 403) {
-        console.error('[LOBBY] Authentication failed - redirecting to login')
-        authService.logout()
-        navigate({ to: '/' }) // Redirigir a login
-        throw new Error('Sesión expirada')
-      }
 
       if (!response.ok) {
         const errorText = await response.text()
@@ -127,15 +117,15 @@ export default function LobbyPage() {
       const data = await response.json()
       console.log('[LOBBY] API Response data:', data)
 
-      // Mapear datos del GameRoomController (ActiveRoomResponse)
-      const tables: LobbyTable[] = Array.isArray(data) ? data.map((room: any) => ({
-        id: room.roomCode || room.id,
-        name: room.name || 'Mesa Sin Nombre',
-        playerCount: room.playerCount || 0,
-        maxPlayers: room.maxPlayers || 6,
-        minBet: 10, // Default values - puedes ajustar según tu backend
-        maxBet: 1000,
-        status: room.status || 'WaitingForPlayers'
+      // Mapear datos del TableController (TableSummaryDto)
+      const tables: LobbyTable[] = Array.isArray(data) ? data.map((table: any) => ({
+        id: table.id,
+        name: table.name || 'Mesa Sin Nombre',
+        playerCount: table.playerCount || 0,
+        maxPlayers: table.maxPlayers || 6,
+        minBet: table.minBet || 10,
+        maxBet: table.maxBet || 1000,
+        status: table.status || 'WaitingForPlayers'
       })) : []
 
       console.log('[LOBBY] Parsed tables:', tables)
@@ -144,17 +134,12 @@ export default function LobbyPage() {
     } catch (error: any) {
       console.error('[LOBBY] Error loading from API:', error)
       
-      // Si es error de autenticación, no usar fallback
-      if (error.message?.includes('autenticación') || error.message?.includes('Sesión expirada')) {
-        throw error
-      }
-      
-      // Para otros errores, usar datos de respaldo
-      console.warn('[LOBBY] Using fallback data due to error')
+      // Datos de respaldo
+      console.warn('[LOBBY] Using fallback data')
       return [
         {
-          id: 'b9162ab8-0972-491e-b1eb-a4831410e720',
-          name: 'Mesa de Prueba (Offline)',
+          id: 'fallback-table-1',
+          name: 'Mesa de Respaldo (API Error)',
           playerCount: 0,
           maxPlayers: 6,
           minBet: 10,
@@ -176,7 +161,7 @@ export default function LobbyPage() {
     })
   }, [allTables, nameQuery, minBet, maxBet])
 
-  // Crear nueva mesa
+  // Crear nueva mesa usando TableController
   const handleCreateTable = async () => {
     const name = prompt('Nombre de la nueva mesa:', 'Mi Mesa VIP')
     if (!name?.trim()) return
@@ -186,56 +171,45 @@ export default function LobbyPage() {
       setError(null)
       
       const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:7102'
-      const token = authService.getToken()
-
-      if (!token || !authService.isAuthenticated()) {
-        throw new Error('No hay token de autenticación válido')
-      }
-
-      const cleanToken = token.replace(/^Bearer\s+/i, '').trim()
-
-      // Usar el formato correcto del GameRoomController
-      const response = await fetch(`${API_BASE}/api/gameroom`, {
+      
+      console.log('[LOBBY] Creating table:', name)
+      console.log('[LOBBY] Using TableController POST endpoint')
+      
+      const response = await fetch(`${API_BASE}/api/table`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${cleanToken}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ 
-          RoomName: name.trim(),  // Nota: GameRoomController espera "RoomName"
-          MaxPlayers: 6 
-        })
+        body: JSON.stringify({ name: name.trim() })
       })
 
-      if (response.status === 401 || response.status === 403) {
-        console.error('[LOBBY] Authentication failed creating room')
-        authService.logout()
-        navigate({ to: '/' })
-        throw new Error('Sesión expirada')
-      }
+      console.log('[LOBBY] Create response status:', response.status)
 
       if (!response.ok) {
         const errorText = await response.text()
-        console.error('[LOBBY] Error creating room:', errorText)
+        console.error('[LOBBY] Create error:', errorText)
         throw new Error(`Error ${response.status}: ${errorText}`)
       }
 
-      const newRoom = await response.json()
-      console.log('[LOBBY] Room created:', newRoom)
+      const newTable = await response.json()
+      console.log('[LOBBY] Table created:', newTable)
 
-      // Mapear respuesta del GameRoomController (RoomInfoResponse)
-      const newTable: LobbyTable = {
-        id: newRoom.roomCode,
-        name: newRoom.name,
-        playerCount: newRoom.playerCount || 0,
-        maxPlayers: newRoom.maxPlayers || 6,
-        minBet: 10,
-        maxBet: 1000,
-        status: newRoom.status || 'WaitingForPlayers'
+      // Mapear respuesta del TableController (TableSummaryDto)
+      const newLobbyTable: LobbyTable = {
+        id: newTable.id,
+        name: newTable.name,
+        playerCount: newTable.playerCount || 0,
+        maxPlayers: newTable.maxPlayers || 6,
+        minBet: newTable.minBet || 10,
+        maxBet: newTable.maxBet || 1000,
+        status: newTable.status || 'WaitingForPlayers'
       }
 
-      setAllTables(prev => [newTable, ...prev])
-      navigate({ to: `/game/${newTable.id}` })
+      setAllTables(prev => [newLobbyTable, ...prev])
+      
+      // Navegar usando el ID de la mesa
+      console.log('[LOBBY] Navigating to table:', newLobbyTable.id)
+      navigate({ to: `/game/${newLobbyTable.id}` })
       
     } catch (e: any) {
       const errorMessage = e?.message || 'No se pudo crear la mesa'
@@ -248,11 +222,13 @@ export default function LobbyPage() {
 
   // Navegar a mesa
   const handleJoinTable = (tableId: string) => {
+    console.log('[LOBBY] Navigating to table:', tableId)
     navigate({ to: `/game/${tableId}` })
   }
 
   // Recargar mesas
   const handleRefresh = async () => {
+    console.log('[LOBBY] Refreshing tables...')
     setError(null)
     setLoading(true)
     
@@ -268,6 +244,7 @@ export default function LobbyPage() {
 
   // Logout
   const handleLogout = () => {
+    console.log('[LOBBY] Logging out...')
     signalRService.stopConnections()
     authService.logout()
     navigate({ to: '/' })
@@ -436,6 +413,9 @@ export default function LobbyPage() {
               <p className="text-slate-400">
                 Selecciona una mesa y comienza a jugar BlackJack en tiempo real
               </p>
+              <div className="text-xs text-slate-500 mt-2">
+                Usando endpoint: /api/table (TableController)
+              </div>
             </div>
 
             {/* Error Message */}
