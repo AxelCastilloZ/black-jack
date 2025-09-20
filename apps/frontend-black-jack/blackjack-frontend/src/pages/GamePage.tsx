@@ -1,4 +1,4 @@
-// src/pages/GamePage.tsx - COMPLETAMENTE CORREGIDO: Sin isUnmounting
+// src/pages/GamePage.tsx - ARCHIVO COMPLETO CORREGIDO: Sin auto-LeaveRoom
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
 import { signalRService } from '../services/signalr'
@@ -45,29 +45,24 @@ export default function GamePage() {
   const [error, setError] = useState<string | null>(null)
   const [seatClickLoading, setSeatClickLoading] = useState<number | null>(null)
   
-  // useRef para evitar re-ejecuciones
   const hasJoinedTable = useRef(false)
   const currentUser = useRef(authService.getCurrentUser())
 
-  // Restablecer flag al montar
   useEffect(() => {
-    console.log('GamePage mounted - resetting unmounting flag')
-    // Sin necesidad de reset porque eliminamos isUnmounting
+    console.log('GamePage mounted - resetting flags')
   }, [])
 
-  // Verificar conexión con menos frecuencia
   useEffect(() => {
     const checkConnection = () => {
       setIsConnected(signalRService.isGameConnected)
     }
     
     checkConnection()
-    const interval = setInterval(checkConnection, 5000) // Cada 5 segundos en lugar de 2
+    const interval = setInterval(checkConnection, 5000)
     
     return () => clearInterval(interval)
   }, [])
 
-  // Configurar listeners UNA SOLA VEZ con useCallback estables
   const handleRoomInfo = useCallback((response: any) => {
     const roomData = response?.data || response
     console.log('Room info received:', roomData)
@@ -176,11 +171,9 @@ export default function GamePage() {
     setSeatClickLoading(null)
   }, [])
 
-  // Configurar listeners una sola vez al montar
   useEffect(() => {
     console.log('Configurando listeners de GamePage...')
     
-    // Asignar todos los handlers
     signalRService.onRoomInfo = handleRoomInfo
     signalRService.onRoomCreated = handleRoomCreated
     signalRService.onRoomJoined = handleRoomJoined
@@ -218,10 +211,8 @@ export default function GamePage() {
     handleError
   ])
 
-  // Auto-unirse a la mesa con mejor control
   useEffect(() => {
     const autoJoinTable = async () => {
-      // CONDICIÓN SIMPLIFICADA: sin verificar isUnmounting que estaba problemático
       if (
         isConnected && 
         tableId && 
@@ -241,7 +232,7 @@ export default function GamePage() {
         } catch (error) {
           console.error('Error joining table:', error)
           setError(error instanceof Error ? error.message : 'Error conectando a la mesa')
-          hasJoinedTable.current = false // Reset para permitir reintentos
+          hasJoinedTable.current = false
         } finally {
           setIsJoining(false)
         }
@@ -249,48 +240,38 @@ export default function GamePage() {
     }
 
     autoJoinTable()
-  }, [isConnected, tableId]) // Solo dependencias esenciales
+  }, [isConnected, tableId])
 
-  // Cleanup simplificado
   useEffect(() => {
     console.log('GamePage mounted - component instance created')
     
     return () => {
       console.log('GamePage cleanup triggered')
-      // Para cleanup inmediato al navegar, usar beforeunload será suficiente
-      // No necesitamos el flag isUnmounting que está causando problemas
     }
   }, [])
 
-  // Cleanup más suave para navegación
+  // CORREGIDO: Cleanup simplificado - SOLO en beforeunload real
   useEffect(() => {
     const handleBeforeUnload = () => {
       if (gameState?.roomCode) {
-        // Usar sendBeacon para cleanup más confiable durante unload
+        // Solo enviar beacon para cleanup en servidor
         navigator.sendBeacon && navigator.sendBeacon(
           '/api/cleanup', 
           JSON.stringify({ roomCode: gameState.roomCode })
         )
-        signalRService.leaveRoom(gameState.roomCode).catch(() => {})
+        // ELIMINADO: signalRService.leaveRoom automático
       }
     }
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden' && gameState?.roomCode) {
-        signalRService.leaveRoom(gameState.roomCode).catch(() => {})
-      }
-    }
+    // ELIMINADO: handleVisibilityChange que causaba auto-LeaveRoom
 
     window.addEventListener('beforeunload', handleBeforeUnload)
-    document.addEventListener('visibilitychange', handleVisibilityChange)
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [gameState?.roomCode]) // Solo ejecutar cuando roomCode cambie
+  }, [gameState?.roomCode])
 
-  // Función para unirse a un asiento (SIN verificar isUnmounting)
   const handleJoinSeat = useCallback(async (position: number) => {
     if (!isConnected || !gameState?.roomCode || seatClickLoading !== null) {
       console.log('Cannot join seat - conditions not met:', {
@@ -315,7 +296,6 @@ export default function GamePage() {
     }
   }, [isConnected, gameState?.roomCode, seatClickLoading])
 
-  // Función para dejar un asiento (SIN verificar isUnmounting)
   const handleLeaveSeat = useCallback(async () => {
     if (!isConnected || !gameState?.roomCode || seatClickLoading !== null) {
       console.log('Cannot leave seat - conditions not met')
@@ -336,7 +316,6 @@ export default function GamePage() {
     }
   }, [isConnected, gameState?.roomCode, seatClickLoading])
 
-  // Función para iniciar ronda (SIN verificar isUnmounting)
   const handleStartRound = useCallback(async () => {
     if (!isConnected || !gameState?.roomCode) return
     try {
@@ -348,7 +327,6 @@ export default function GamePage() {
     }
   }, [isConnected, gameState?.roomCode])
 
-  // Función para enviar mensaje (SIN verificar isUnmounting)
   const handleSendMessage = useCallback(() => {
     if (!chatInput.trim() || !currentUser.current) return
     
@@ -369,16 +347,27 @@ export default function GamePage() {
     setChatInput('')
   }, [chatInput])
 
-  // Obtener jugadores en posiciones específicas
+  // NUEVA: Función para salir EXPLÍCITAMENTE de la sala
+  const handleExplicitLeaveRoom = useCallback(async () => {
+    if (!gameState?.roomCode) return
+    
+    try {
+      console.log('EXPLICIT USER ACTION: Leaving room', gameState.roomCode)
+      await signalRService.leaveRoom(gameState.roomCode)
+      navigate({ to: '/lobby' })
+    } catch (error) {
+      console.error('Error leaving room explicitly:', error)
+      navigate({ to: '/lobby' }) // Navegar de todas formas
+    }
+  }, [gameState?.roomCode, navigate])
+
   const getPlayerAtPosition = useCallback((position: number) => {
     return gameState?.players?.find(p => p.position === position)
   }, [gameState?.players])
 
-  // Verificar si el usuario actual está en la mesa
   const currentPlayer = gameState?.players?.find(p => p.playerId === currentUser.current?.id)
   const isPlayerSeated = !!currentPlayer
 
-  // Loading state mejorado
   if (!isConnected || isJoining) {
     return (
       <div className="fixed top-0 left-0 w-screen h-screen bg-gradient-to-br from-emerald-900 to-emerald-800 z-[9999] overflow-hidden m-0 p-0 flex items-center justify-center">
@@ -405,7 +394,7 @@ export default function GamePage() {
       <div className="absolute top-0 left-0 right-0 bg-black/60 px-6 py-3 flex justify-between items-center text-white">
         <div className="flex items-center gap-4">
           <button
-            onClick={() => navigate({ to: '/lobby' })}
+            onClick={handleExplicitLeaveRoom}
             className="bg-transparent border-none text-white text-base cursor-pointer hover:text-gray-300 transition-colors"
           >
             ← Volver al Lobby
@@ -643,7 +632,6 @@ function PlayerPosition({
   
   const canJoinSeat = isEmpty && !isLoading
 
-  // useCallback para evitar recreación innecesaria
   const handleSeatClick = useCallback(async () => {
     if (canJoinSeat) {
       console.log(`Clicking to join seat ${position}`)

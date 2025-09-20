@@ -1,10 +1,11 @@
-﻿// BlackJack.Realtime/Hubs/GameHub.cs - CORREGIDO PARA USAR NUEVO MÉTODO SIN REGRESIÓN
+﻿// BlackJack.Realtime/Hubs/GameHub.cs - CORREGIDO: Grupos de SignalR DESPUÉS de verificar éxito
 using BlackJack.Domain.Enums;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Realtime.Models;
 using BlackJack.Services.Common;
 using BlackJack.Services.Game;
+using BlackJack.Realtime.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
@@ -16,14 +17,17 @@ public class GameHub : BaseHub
 {
     private readonly IGameRoomService _gameRoomService;
     private readonly IGameService _gameService;
+    private readonly IConnectionManager _connectionManager;
 
     public GameHub(
         IGameRoomService gameRoomService,
         IGameService gameService,
+        IConnectionManager connectionManager,
         ILogger<GameHub> logger) : base(logger)
     {
         _gameRoomService = gameRoomService;
         _gameService = gameService;
+        _connectionManager = connectionManager;
     }
 
     #region Connection Management
@@ -38,6 +42,15 @@ public class GameHub : BaseHub
         _logger.LogInformation("[GameHub] Player {PlayerId} ({UserName}) connected with ConnectionId {ConnectionId}",
             playerId, userName, Context.ConnectionId);
 
+        // NUEVO: Registrar conexión en ConnectionManager
+        if (playerId != null && userName != null)
+        {
+            await _connectionManager.AddConnectionAsync(Context.ConnectionId, playerId, userName);
+
+            // NUEVO: Verificar reconexión automática
+            await HandleAutoReconnectionAsync(playerId);
+        }
+
         await SendSuccessAsync("Conectado exitosamente al hub de juego");
     }
 
@@ -45,17 +58,119 @@ public class GameHub : BaseHub
     {
         var playerId = GetCurrentPlayerId();
 
+        _logger.LogInformation("[GameHub] Player {PlayerId} disconnecting from ConnectionId {ConnectionId}",
+            playerId, Context.ConnectionId);
+
+        // NUEVO: Guardar información de reconexión antes de desconectar
         if (playerId != null)
         {
+            await SaveReconnectionInfoAsync(playerId);
+        }
+
+        // Remover del ConnectionManager
+        await _connectionManager.RemoveConnectionAsync(Context.ConnectionId);
+
+        await base.OnDisconnectedAsync(exception);
+    }
+
+    /// <summary>
+    /// NUEVO: Maneja la reconexión automática del jugador a su sala anterior
+    /// </summary>
+    private async Task HandleAutoReconnectionAsync(PlayerId playerId)
+    {
+        try
+        {
+            _logger.LogInformation("[GameHub] === AUTO RECONNECTION CHECK for player {PlayerId} ===", playerId);
+
+            // Verificar si el jugador tiene información de reconexión
+            var reconnectionInfo = await _connectionManager.GetReconnectionInfoAsync(playerId);
+            if (reconnectionInfo != null && !string.IsNullOrEmpty(reconnectionInfo.LastRoomCode))
+            {
+                _logger.LogInformation("[GameHub] Found reconnection info for player {PlayerId} - Last room: {RoomCode}",
+                    playerId, reconnectionInfo.LastRoomCode);
+
+                // Verificar si la sala aún existe y el jugador sigue siendo miembro
+                var roomResult = await _gameRoomService.GetRoomAsync(reconnectionInfo.LastRoomCode);
+                if (roomResult.IsSuccess)
+                {
+                    var room = roomResult.Value!;
+
+                    if (room.IsPlayerInRoom(playerId))
+                    {
+                        _logger.LogInformation("[GameHub] AUTO-RECONNECTING player {PlayerId} to room {RoomCode}",
+                            playerId, reconnectionInfo.LastRoomCode);
+
+                        // Unirse automáticamente a los grupos de SignalR
+                        var roomGroupName = HubMethodNames.Groups.GetRoomGroup(reconnectionInfo.LastRoomCode);
+                        await JoinGroupAsync(roomGroupName);
+                        await _connectionManager.AddToGroupAsync(Context.ConnectionId, roomGroupName);
+
+                        // También unirse al grupo de la tabla si existe
+                        if (room.BlackjackTableId.HasValue)
+                        {
+                            var tableGroupName = $"Table_{room.BlackjackTableId.Value}";
+                            await JoinGroupAsync(tableGroupName);
+                            await _connectionManager.AddToGroupAsync(Context.ConnectionId, tableGroupName);
+                        }
+
+                        // Enviar estado actualizado de la sala al cliente reconectado
+                        var roomInfo = await MapToRoomInfoAsync(room);
+                        await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomJoined, roomInfo);
+
+                        // Limpiar información de reconexión (exitosa)
+                        await _connectionManager.ClearReconnectionInfoAsync(playerId);
+
+                        _logger.LogInformation("[GameHub] ✅ Successfully auto-reconnected player {PlayerId} to room {RoomCode}",
+                            playerId, reconnectionInfo.LastRoomCode);
+                    }
+                    else
+                    {
+                        _logger.LogInformation("[GameHub] Player {PlayerId} no longer member of room {RoomCode} - clearing reconnection info",
+                            playerId, reconnectionInfo.LastRoomCode);
+                        await _connectionManager.ClearReconnectionInfoAsync(playerId);
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("[GameHub] Room {RoomCode} no longer exists - clearing reconnection info for player {PlayerId}",
+                        reconnectionInfo.LastRoomCode, playerId);
+                    await _connectionManager.ClearReconnectionInfoAsync(playerId);
+                }
+            }
+            else
+            {
+                _logger.LogInformation("[GameHub] No reconnection info found for player {PlayerId}", playerId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameHub] Error during auto-reconnection for player {PlayerId}: {Error}",
+                playerId, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// NUEVO: Guarda información para reconexión posterior
+    /// </summary>
+    private async Task SaveReconnectionInfoAsync(PlayerId playerId)
+    {
+        try
+        {
+            // Obtener la sala actual del jugador
             var currentRoomResult = await _gameRoomService.GetPlayerCurrentRoomCodeAsync(playerId);
             if (currentRoomResult.IsSuccess && !string.IsNullOrEmpty(currentRoomResult.Value))
             {
-                _logger.LogInformation("[GameHub] Player {PlayerId} disconnected from room {RoomCode}",
+                await _connectionManager.SaveReconnectionInfoAsync(playerId, currentRoomResult.Value);
+
+                _logger.LogInformation("[GameHub] Saved reconnection info for player {PlayerId} in room {RoomCode}",
                     playerId, currentRoomResult.Value);
             }
         }
-
-        await base.OnDisconnectedAsync(exception);
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameHub] Error saving reconnection info for player {PlayerId}: {Error}",
+                playerId, ex.Message);
+        }
     }
 
     #endregion
@@ -99,7 +214,11 @@ public class GameHub : BaseHub
             if (result.IsSuccess)
             {
                 var room = result.Value!;
-                await JoinGroupAsync(HubMethodNames.Groups.GetRoomGroup(room.RoomCode));
+
+                // Unirse a grupos de SignalR
+                var roomGroupName = HubMethodNames.Groups.GetRoomGroup(room.RoomCode);
+                await JoinGroupAsync(roomGroupName);
+                await _connectionManager.AddToGroupAsync(Context.ConnectionId, roomGroupName);
 
                 var roomInfo = await MapToRoomInfoAsync(room);
                 await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomCreated, roomInfo);
@@ -119,14 +238,13 @@ public class GameHub : BaseHub
         }
     }
 
-    // CORREGIDO: Método simplificado que usa el nuevo servicio sin regresión
     public async Task JoinOrCreateRoomForTable(string tableId, string playerName)
     {
         try
         {
-            _logger.LogInformation("[GameHub] ===============================================");
+            _logger.LogInformation("[GameHub] ================================================");
             _logger.LogInformation("[GameHub] === JoinOrCreateRoomForTable STARTED ===");
-            _logger.LogInformation("[GameHub] ===============================================");
+            _logger.LogInformation("[GameHub] ================================================");
             _logger.LogInformation("[GameHub] TableId: {TableId}", tableId);
             _logger.LogInformation("[GameHub] PlayerName: {PlayerName}", playerName);
             _logger.LogInformation("[GameHub] ConnectionId: {ConnectionId}", Context.ConnectionId);
@@ -157,87 +275,89 @@ public class GameHub : BaseHub
             }
 
             _logger.LogInformation("[GameHub] Input validation passed");
-            _logger.LogInformation("[GameHub] Player {PlayerId} ({PlayerName}) joining/creating room for table {TableId}",
-                playerId, playerName, tableId);
+            _logger.LogInformation("[GameHub] Calling GameRoomService.JoinOrCreateRoomForTableAsync...");
 
-            // CORREGIDO: Usar el nuevo método del servicio que maneja la race condition
+            // CORREGIDO: Primero ejecutar la lógica de unión/creación
             var result = await _gameRoomService.JoinOrCreateRoomForTableAsync(tableId, playerId, playerName);
 
-            if (result.IsSuccess)
+            if (!result.IsSuccess)
             {
-                var room = result.Value!;
-                _logger.LogInformation("[GameHub] Service returned room: {RoomCode} for table {TableId}",
-                    room.RoomCode, tableId);
+                _logger.LogError("[GameHub] JoinOrCreateRoomForTableAsync FAILED: {Error}", result.Error);
+                await SendErrorAsync(result.Error);
+                return;
+            }
 
-                // Configurar grupos de SignalR
-                var tableGroupName = $"Table_{tableId}";
-                var roomGroupName = HubMethodNames.Groups.GetRoomGroup(room.RoomCode);
+            var room = result.Value!;
+            _logger.LogInformation("[GameHub] Service SUCCESS - Room: {RoomCode} for table {TableId}",
+                room.RoomCode, tableId);
 
-                _logger.LogInformation("[GameHub] Joining SignalR groups - Table: {TableGroup}, Room: {RoomGroup}",
-                    tableGroupName, roomGroupName);
+            // CORREGIDO: Solo unirse a grupos de SignalR DESPUÉS de confirmar éxito
+            var tableGroupName = $"Table_{tableId}";
+            var roomGroupName = HubMethodNames.Groups.GetRoomGroup(room.RoomCode);
 
-                await JoinGroupAsync(tableGroupName);
-                await JoinGroupAsync(roomGroupName);
+            _logger.LogInformation("[GameHub] Joining SignalR groups - Table: {TableGroup}, Room: {RoomGroup}",
+                tableGroupName, roomGroupName);
 
-                // Obtener información actualizada de la sala
-                var roomInfoResult = await _gameRoomService.GetRoomAsync(room.RoomCode);
-                if (roomInfoResult.IsSuccess)
+            await JoinGroupAsync(tableGroupName);
+            await JoinGroupAsync(roomGroupName);
+
+            // NUEVO: Registrar en ConnectionManager para reconexión
+            await _connectionManager.AddToGroupAsync(Context.ConnectionId, tableGroupName);
+            await _connectionManager.AddToGroupAsync(Context.ConnectionId, roomGroupName);
+
+            // Obtener información ACTUALIZADA de la sala después de join
+            var roomInfoResult = await _gameRoomService.GetRoomAsync(room.RoomCode);
+            if (roomInfoResult.IsSuccess)
+            {
+                var roomInfo = await MapToRoomInfoAsync(roomInfoResult.Value!);
+
+                // Determinar si el usuario creó la sala o se unió a una existente
+                var isNewRoom = room.HostPlayerId == playerId;
+                var eventMethod = isNewRoom ? HubMethodNames.ServerMethods.RoomCreated : HubMethodNames.ServerMethods.RoomJoined;
+
+                _logger.LogInformation("[GameHub] Sending {EventMethod} event to caller (isNewRoom: {IsNewRoom})", eventMethod, isNewRoom);
+                await Clients.Caller.SendAsync(eventMethod, roomInfo);
+
+                // Solo notificar si se unió a sala existente
+                if (!isNewRoom)
                 {
-                    var roomInfo = await MapToRoomInfoAsync(roomInfoResult.Value!);
+                    _logger.LogInformation("[GameHub] Notifying other users about player join");
 
-                    // Determinar si el usuario creó la sala o se unió a una existente
-                    var isNewRoom = room.HostPlayerId == playerId;
-                    var eventMethod = isNewRoom ? HubMethodNames.ServerMethods.RoomCreated : HubMethodNames.ServerMethods.RoomJoined;
+                    var playerJoinedEvent = new PlayerJoinedEventModel(
+                        RoomCode: room.RoomCode,
+                        PlayerId: playerId.Value,
+                        PlayerName: playerName,
+                        Position: -1,
+                        TotalPlayers: roomInfo.PlayerCount,
+                        Timestamp: DateTime.UtcNow
+                    );
 
-                    _logger.LogInformation("[GameHub] Sending {EventMethod} event to caller", eventMethod);
-                    await Clients.Caller.SendAsync(eventMethod, roomInfo);
+                    await Clients.OthersInGroup(roomGroupName)
+                        .SendAsync(HubMethodNames.ServerMethods.PlayerJoined, playerJoinedEvent);
 
-                    // Notificar a otros usuarios si se unió a sala existente
-                    if (!isNewRoom)
-                    {
-                        _logger.LogInformation("[GameHub] Notifying other users about player join");
-
-                        var playerJoinedEvent = new PlayerJoinedEventModel(
-                            RoomCode: room.RoomCode,
-                            PlayerId: playerId.Value,
-                            PlayerName: playerName,
-                            Position: -1,
-                            TotalPlayers: roomInfo.PlayerCount,
-                            Timestamp: DateTime.UtcNow
-                        );
-
-                        // Notificar a ambos grupos
-                        await Clients.OthersInGroup(tableGroupName)
-                            .SendAsync(HubMethodNames.ServerMethods.PlayerJoined, playerJoinedEvent);
-
-                        await Clients.OthersInGroup(roomGroupName)
-                            .SendAsync(HubMethodNames.ServerMethods.PlayerJoined, playerJoinedEvent);
-
-                        await Clients.OthersInGroup(tableGroupName)
-                            .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
-
-                        await Clients.OthersInGroup(roomGroupName)
-                            .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
-                    }
-
-                    _logger.LogInformation("[GameHub] Successfully {Action} room {RoomCode} for table {TableId}. Total players: {PlayerCount}",
-                        isNewRoom ? "created" : "joined", room.RoomCode, tableId, roomInfo.PlayerCount);
+                    await Clients.OthersInGroup(roomGroupName)
+                        .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
                 }
-                else
-                {
-                    _logger.LogError("[GameHub] Failed to get updated room info: {Error}", roomInfoResult.Error);
-                    await SendErrorAsync("Error obteniendo información de la sala");
-                }
+
+                _logger.LogInformation("[GameHub] Successfully {Action} room {RoomCode} for table {TableId}. Total players: {PlayerCount}",
+                    isNewRoom ? "created" : "joined", room.RoomCode, tableId, roomInfo.PlayerCount);
             }
             else
             {
-                _logger.LogError("[GameHub] JoinOrCreateRoomForTableAsync failed: {Error}", result.Error);
-                await SendErrorAsync(result.Error);
+                _logger.LogError("[GameHub] Failed to get updated room info: {Error}", roomInfoResult.Error);
+
+                // CORREGIDO: Si falla, remover de grupos de SignalR
+                await LeaveGroupAsync(roomGroupName);
+                await LeaveGroupAsync(tableGroupName);
+                await _connectionManager.RemoveFromGroupAsync(Context.ConnectionId, roomGroupName);
+                await _connectionManager.RemoveFromGroupAsync(Context.ConnectionId, tableGroupName);
+
+                await SendErrorAsync("Error obteniendo información de la sala");
             }
 
-            _logger.LogInformation("[GameHub] ===============================================");
+            _logger.LogInformation("[GameHub] ================================================");
             _logger.LogInformation("[GameHub] === JoinOrCreateRoomForTable COMPLETED ===");
-            _logger.LogInformation("[GameHub] ===============================================");
+            _logger.LogInformation("[GameHub] ================================================");
         }
         catch (Exception ex)
         {
@@ -287,70 +407,70 @@ public class GameHub : BaseHub
             }
 
             var room = roomResult.Value!;
-            await JoinGroupAsync(HubMethodNames.Groups.GetRoomGroup(request.RoomCode));
 
-            // CORREGIDO: También unirse al grupo de la tabla si existe
+            // CORREGIDO: Primero ejecutar JoinRoom, DESPUÉS unirse a grupos
+            var joinResult = await _gameRoomService.JoinRoomAsync(request.RoomCode, playerId, request.PlayerName);
+
+            if (!joinResult.IsSuccess)
+            {
+                _logger.LogError("[GameHub] JoinRoom failed: {Error}", joinResult.Error);
+                await SendErrorAsync(joinResult.Error);
+                return;
+            }
+
+            // Solo después de éxito, unirse a grupos de SignalR
+            var roomGroupName = HubMethodNames.Groups.GetRoomGroup(request.RoomCode);
+            await JoinGroupAsync(roomGroupName);
+            await _connectionManager.AddToGroupAsync(Context.ConnectionId, roomGroupName);
+
+            // También unirse al grupo de la tabla si existe
             if (room.BlackjackTableId.HasValue)
             {
                 var tableGroupName = $"Table_{room.BlackjackTableId.Value}";
                 await JoinGroupAsync(tableGroupName);
+                await _connectionManager.AddToGroupAsync(Context.ConnectionId, tableGroupName);
                 _logger.LogInformation("[GameHub] Also joined table group: {TableGroupName}", tableGroupName);
             }
 
-            var joinResult = await _gameRoomService.JoinRoomAsync(request.RoomCode, playerId, request.PlayerName);
-
-            if (joinResult.IsSuccess)
+            var updatedRoomResult = await _gameRoomService.GetRoomAsync(request.RoomCode);
+            if (updatedRoomResult.IsSuccess)
             {
-                var updatedRoomResult = await _gameRoomService.GetRoomAsync(request.RoomCode);
-                if (updatedRoomResult.IsSuccess)
-                {
-                    var roomInfo = await MapToRoomInfoAsync(updatedRoomResult.Value!);
+                var roomInfo = await MapToRoomInfoAsync(updatedRoomResult.Value!);
 
-                    await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomJoined, roomInfo);
+                await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomJoined, roomInfo);
 
-                    // CORREGIDO: Notificar a ambos grupos
-                    await Clients.OthersInGroup(HubMethodNames.Groups.GetRoomGroup(request.RoomCode))
-                        .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
+                await Clients.OthersInGroup(roomGroupName)
+                    .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
 
-                    if (room.BlackjackTableId.HasValue)
-                    {
-                        var tableGroupName = $"Table_{room.BlackjackTableId.Value}";
-                        await Clients.OthersInGroup(tableGroupName)
-                            .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
-                    }
+                var playerJoinedEvent = new PlayerJoinedEventModel(
+                    RoomCode: request.RoomCode,
+                    PlayerId: playerId.Value,
+                    PlayerName: request.PlayerName,
+                    Position: -1,
+                    TotalPlayers: roomInfo.PlayerCount,
+                    Timestamp: DateTime.UtcNow
+                );
 
-                    var playerJoinedEvent = new PlayerJoinedEventModel(
-                        RoomCode: request.RoomCode,
-                        PlayerId: playerId.Value,
-                        PlayerName: request.PlayerName,
-                        Position: -1,
-                        TotalPlayers: roomInfo.PlayerCount,
-                        Timestamp: DateTime.UtcNow
-                    );
-
-                    await Clients.Group(HubMethodNames.Groups.GetRoomGroup(request.RoomCode))
-                        .SendAsync(HubMethodNames.ServerMethods.PlayerJoined, playerJoinedEvent);
-
-                    if (room.BlackjackTableId.HasValue)
-                    {
-                        var tableGroupName = $"Table_{room.BlackjackTableId.Value}";
-                        await Clients.Group(tableGroupName)
-                            .SendAsync(HubMethodNames.ServerMethods.PlayerJoined, playerJoinedEvent);
-                    }
-                }
+                await Clients.OthersInGroup(roomGroupName)
+                    .SendAsync(HubMethodNames.ServerMethods.PlayerJoined, playerJoinedEvent);
 
                 _logger.LogInformation("[GameHub] Player {PlayerId} joined room {RoomCode} successfully",
                     playerId, request.RoomCode);
             }
             else
             {
-                await LeaveGroupAsync(HubMethodNames.Groups.GetRoomGroup(request.RoomCode));
+                // Si falla obtener info actualizada, remover de grupos
+                await LeaveGroupAsync(roomGroupName);
+                await _connectionManager.RemoveFromGroupAsync(Context.ConnectionId, roomGroupName);
+
                 if (room.BlackjackTableId.HasValue)
                 {
                     var tableGroupName = $"Table_{room.BlackjackTableId.Value}";
                     await LeaveGroupAsync(tableGroupName);
+                    await _connectionManager.RemoveFromGroupAsync(Context.ConnectionId, tableGroupName);
                 }
-                await SendErrorAsync(joinResult.Error);
+
+                await SendErrorAsync("Error obteniendo información actualizada de la sala");
             }
         }
         catch (Exception ex)
@@ -364,7 +484,7 @@ public class GameHub : BaseHub
     {
         try
         {
-            _logger.LogInformation("[GameHub] === JoinSeat STARTED ===");
+            _logger.LogInformation("[GameHub] ===== JoinSeat STARTED =====");
             _logger.LogInformation("[GameHub] RoomCode: {RoomCode}, Position: {Position}",
                 request.RoomCode, request.Position);
 
@@ -391,95 +511,48 @@ public class GameHub : BaseHub
             _logger.LogInformation("[GameHub] Player {PlayerId} attempting to join seat {Position} in room {RoomCode}",
                 playerId, request.Position, request.RoomCode);
 
-            // CORREGIDO: Validación robusta que verifica tanto base de datos como memoria
-            var roomCheckResult = await _gameRoomService.GetRoomAsync(request.RoomCode);
-            if (!roomCheckResult.IsSuccess)
-            {
-                _logger.LogError("[GameHub] JoinSeat failed for player {PlayerId}: {Error}",
-                    playerId, roomCheckResult.Error);
-                await SendErrorAsync("Sala no encontrada");
-                return;
-            }
-
-            var room = roomCheckResult.Value!;
-
-            // VALIDACIÓN MEJORADA: Verificar tanto en la sala como en memoria de posiciones
-            var isPlayerInRoom = room.IsPlayerInRoom(playerId);
-
-            // FALLBACK: Si no está en la sala pero está intentando unirse inmediatamente después de entrar,
-            // verificar en las posiciones de memoria del servicio
-            if (!isPlayerInRoom)
-            {
-                _logger.LogInformation("[GameHub] Player not found in room database, checking memory positions...");
-
-                // Verificar si el usuario está en algún grupo de la tabla (indicando que se unió recientemente)
-                var isInTableGroup = false;
-                if (room.BlackjackTableId.HasValue)
-                {
-                    var tableGroupName = $"Table_{room.BlackjackTableId.Value}";
-
-                    // WORKAROUND: Asumir que si llegamos hasta aquí y el usuario está intentando sentarse,
-                    // es porque se acaba de unir pero la persistencia aún no ha completado
-                    _logger.LogInformation("[GameHub] Applying timing workaround - allowing seat join for recently joined player");
-                    isInTableGroup = true;
-                }
-
-                if (!isInTableGroup)
-                {
-                    _logger.LogError("[GameHub] Player {PlayerId} is not in room {RoomCode} and not in table group",
-                        playerId, request.RoomCode);
-                    await SendErrorAsync("Debes estar en la sala para unirte a un asiento");
-                    return;
-                }
-                else
-                {
-                    _logger.LogInformation("[GameHub] Player {PlayerId} allowed to join seat due to recent room join (timing workaround)",
-                        playerId);
-                }
-            }
-
-            // Proceder con la lógica de unirse al asiento
             var result = await _gameRoomService.JoinSeatAsync(request.RoomCode, playerId, request.Position);
 
             if (result.IsSuccess)
             {
+                _logger.LogInformation("[GameHub] JoinSeat SUCCESS - Getting updated room info...");
+
                 var updatedRoomResult = await _gameRoomService.GetRoomAsync(request.RoomCode);
                 if (updatedRoomResult.IsSuccess)
                 {
                     var updatedRoom = updatedRoomResult.Value!;
                     var roomInfo = await MapToRoomInfoAsync(updatedRoom);
 
-                    // CORREGIDO: Notificar a TODOS los grupos relevantes
+                    _logger.LogInformation("[GameHub] Broadcasting RoomInfoUpdated to room group...");
+
                     await Clients.Group(HubMethodNames.Groups.GetRoomGroup(request.RoomCode))
                         .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
 
-                    // También notificar al grupo de la tabla si existe
-                    if (updatedRoom.BlackjackTableId.HasValue)
-                    {
-                        var tableGroupName = $"Table_{updatedRoom.BlackjackTableId.Value}";
-                        await Clients.Group(tableGroupName)
-                            .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
-                        _logger.LogInformation("[GameHub] Sent RoomInfoUpdated to table group: {TableGroupName}", tableGroupName);
-                    }
-
-                    // Respuesta específica al caller
                     await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.SeatJoined,
                         new { Position = request.Position, RoomInfo = roomInfo });
-                }
 
-                _logger.LogInformation("[GameHub] Player {PlayerId} joined seat {Position} successfully",
-                    playerId, request.Position);
+                    _logger.LogInformation("[GameHub] Player {PlayerId} joined seat {Position} successfully",
+                        playerId, request.Position);
+                }
+                else
+                {
+                    _logger.LogError("[GameHub] Failed to get updated room info after seat join: {Error}",
+                        updatedRoomResult.Error);
+                    await SendErrorAsync("Error obteniendo información actualizada de la sala");
+                }
             }
             else
             {
-                _logger.LogWarning("[GameHub] JoinSeat failed for player {PlayerId}: {Error}",
+                _logger.LogWarning("[GameHub] JoinSeat FAILED for player {PlayerId}: {Error}",
                     playerId, result.Error);
                 await SendErrorAsync(result.Error);
             }
+
+            _logger.LogInformation("[GameHub] ===== JoinSeat COMPLETED =====");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[GameHub] EXCEPTION in JoinSeat for player {PlayerId}",
+            _logger.LogError(ex, "[GameHub] CRITICAL EXCEPTION in JoinSeat for player {PlayerId}",
                 GetCurrentPlayerId());
             await HandleExceptionAsync(ex, "JoinSeat");
         }
@@ -521,16 +594,8 @@ public class GameHub : BaseHub
                     var room = updatedRoomResult.Value!;
                     var roomInfo = await MapToRoomInfoAsync(room);
 
-                    // CORREGIDO: Notificar a TODOS los grupos
                     await Clients.Group(HubMethodNames.Groups.GetRoomGroup(request.RoomCode))
                         .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
-
-                    if (room.BlackjackTableId.HasValue)
-                    {
-                        var tableGroupName = $"Table_{room.BlackjackTableId.Value}";
-                        await Clients.Group(tableGroupName)
-                            .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
-                    }
 
                     await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.SeatLeft, roomInfo);
                 }
@@ -565,7 +630,7 @@ public class GameHub : BaseHub
                 return;
             }
 
-            _logger.LogInformation("[GameHub] Player {PlayerId} leaving room {RoomCode}",
+            _logger.LogInformation("[GameHub] EXPLICIT LeaveRoom called by player {PlayerId} for room {RoomCode}",
                 playerId, roomCode);
 
             // Obtener info de la sala para el tableId antes de salir
@@ -576,10 +641,15 @@ public class GameHub : BaseHub
                 tableGroupName = $"Table_{roomResult.Value.BlackjackTableId.Value}";
             }
 
-            await LeaveGroupAsync(HubMethodNames.Groups.GetRoomGroup(roomCode));
+            // Salir de grupos de SignalR
+            var roomGroupName = HubMethodNames.Groups.GetRoomGroup(roomCode);
+            await LeaveGroupAsync(roomGroupName);
+            await _connectionManager.RemoveFromGroupAsync(Context.ConnectionId, roomGroupName);
+
             if (tableGroupName != null)
             {
                 await LeaveGroupAsync(tableGroupName);
+                await _connectionManager.RemoveFromGroupAsync(Context.ConnectionId, tableGroupName);
             }
 
             var result = await _gameRoomService.LeaveRoomAsync(roomCode, playerId);
@@ -598,17 +668,13 @@ public class GameHub : BaseHub
                     Timestamp: DateTime.UtcNow
                 );
 
-                // CORREGIDO: Notificar a ambos grupos
-                await Clients.Group(HubMethodNames.Groups.GetRoomGroup(roomCode))
+                await Clients.Group(roomGroupName)
                     .SendAsync(HubMethodNames.ServerMethods.PlayerLeft, playerLeftEvent);
 
-                if (tableGroupName != null)
-                {
-                    await Clients.Group(tableGroupName)
-                        .SendAsync(HubMethodNames.ServerMethods.PlayerLeft, playerLeftEvent);
-                }
+                // Limpiar información de reconexión (salida explícita)
+                await _connectionManager.ClearReconnectionInfoAsync(playerId);
 
-                _logger.LogInformation("[GameHub] Player {PlayerId} left room {RoomCode} successfully",
+                _logger.LogInformation("[GameHub] Player {PlayerId} EXPLICITLY left room {RoomCode} successfully",
                     playerId, roomCode);
             }
             else
@@ -680,7 +746,6 @@ public class GameHub : BaseHub
             {
                 _logger.LogInformation("[GameHub] Game started successfully in room {RoomCode}", roomCode);
 
-                // CORREGIDO: Notificar a ambos grupos sobre el inicio del juego
                 var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
                 if (roomResult.IsSuccess)
                 {
@@ -689,13 +754,6 @@ public class GameHub : BaseHub
 
                     await Clients.Group(HubMethodNames.Groups.GetRoomGroup(roomCode))
                         .SendAsync(HubMethodNames.ServerMethods.GameStarted, gameStartedEvent);
-
-                    if (room.BlackjackTableId.HasValue)
-                    {
-                        var tableGroupName = $"Table_{room.BlackjackTableId.Value}";
-                        await Clients.Group(tableGroupName)
-                            .SendAsync(HubMethodNames.ServerMethods.GameStarted, gameStartedEvent);
-                    }
                 }
             }
             else
@@ -730,28 +788,32 @@ public class GameHub : BaseHub
 
     #region Utility Methods
 
+    /// <summary>
+    /// CORREGIDO: MapToRoomInfoAsync ahora usa SeatPosition directamente del modelo BD
+    /// </summary>
     private async Task<RoomInfoModel> MapToRoomInfoAsync(BlackJack.Domain.Models.Game.GameRoom room)
     {
         try
         {
             _logger.LogInformation("[GameHub] Mapping room {RoomCode} to RoomInfoModel", room.RoomCode);
 
-            // Obtener posiciones de asientos desde el servicio
-            var positionsResult = await _gameRoomService.GetRoomPositionsAsync(room.RoomCode);
-            var positions = positionsResult.IsSuccess ? positionsResult.Value : new Dictionary<Guid, int>();
+            // ELIMINADO: Ya no necesitamos obtener posiciones de memoria
+            // var positionsResult = await _gameRoomService.GetRoomPositionsAsync(room.RoomCode);
+            // var positions = positionsResult.IsSuccess ? positionsResult.Value : new Dictionary<Guid, int>();
 
-            _logger.LogInformation("[GameHub] Room positions retrieved - Count: {Count}", positions.Count);
+            _logger.LogInformation("[GameHub] Using SeatPosition directly from database models");
 
             var roomInfo = new RoomInfoModel(
                 RoomCode: room.RoomCode,
                 Name: room.Name,
                 Status: room.Status.ToString(),
-                PlayerCount: room.PlayerCount,
+                PlayerCount: room.PlayerCount, // Este viene correcto de BD
                 MaxPlayers: room.MaxPlayers,
                 Players: room.Players.Select(p => new RoomPlayerModel(
                     PlayerId: p.PlayerId.Value,
                     Name: p.Name,
-                    Position: positions.TryGetValue(p.PlayerId.Value, out var pos) ? pos : -1, // -1 = sin asiento
+                    // CORREGIDO: Usar SeatPosition directamente del modelo RoomPlayer
+                    Position: p.GetSeatPosition(), // Método que devuelve SeatPosition ?? -1
                     IsReady: p.IsReady,
                     IsHost: room.HostPlayerId == p.PlayerId,
                     HasPlayedTurn: p.HasPlayedTurn
@@ -768,6 +830,10 @@ public class GameHub : BaseHub
 
             _logger.LogInformation("[GameHub] RoomInfoModel created successfully for room {RoomCode} with {PlayerCount} players",
                 room.RoomCode, roomInfo.PlayerCount);
+
+            // NUEVO: Log detallado para debugging
+            var playerDetails = string.Join(", ", roomInfo.Players.Select(p => $"{p.Name}(Pos:{p.Position})"));
+            _logger.LogInformation("[GameHub] Player details: {Players}", playerDetails);
 
             return roomInfo;
         }

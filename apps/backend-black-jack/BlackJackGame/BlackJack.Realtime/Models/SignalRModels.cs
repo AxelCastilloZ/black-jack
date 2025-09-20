@@ -256,3 +256,34 @@ public record SuccessModel(
 );
 
 #endregion
+
+
+// Actualización para SignalRModels.cs existente - AGREGAR AL FINAL
+
+#region Connection State Models
+
+/// <summary>
+/// Estado detallado de sala del jugador para reconexión robusta
+/// </summary>
+public record PlayerRoomState(
+    Guid PlayerId,
+    string RoomCode,
+    string? TableId,
+    List<string> Groups,
+    DateTime LastActivity,
+    DateTime? ConnectionLostAt
+);
+
+/// <summary>
+/// Estadísticas del ConnectionManager para monitoreo
+/// </summary>
+public record ConnectionManagerStats
+{
+    public int TotalConnections { get; init; }
+    public int OnlinePlayers { get; init; }
+    public int PendingReconnections { get; init; }
+    public int PlayersWithRoomState { get; init; }
+    public DateTime Timestamp { get; init; }
+}
+
+#endregion

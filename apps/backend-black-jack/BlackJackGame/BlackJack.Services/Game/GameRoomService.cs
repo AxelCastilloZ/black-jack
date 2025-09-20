@@ -1,4 +1,4 @@
-﻿// GameRoomService.cs - CORREGIDO PARA RESOLVER REGRESIÓN DE SALAS SEPARADAS
+﻿// GameRoomService.cs - CORREGIDO FINAL para eliminar errores de compilación
 using BlackJack.Data.Repositories.Game;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
@@ -19,10 +19,7 @@ public class GameRoomService : IGameRoomService
     private readonly IDomainEventDispatcher _eventDispatcher;
     private readonly ILogger<GameRoomService> _logger;
 
-    // Cache en memoria para posiciones de asientos (temporal, no persistente)
-    private readonly ConcurrentDictionary<string, Dictionary<PlayerId, int>> _roomPlayerPositions = new();
-
-    // CORREGIDO: Lock distribuido por TableId para evitar race conditions
+    // Lock distribuido por TableId más robusto
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> _tableLocks = new();
 
     public GameRoomService(
@@ -41,11 +38,13 @@ public class GameRoomService : IGameRoomService
 
     #region Gestión de Salas
 
-    public async Task<Result<GameRoom>> CreateRoomAsync(string roomName, PlayerId hostPlayerId)
+    // CORREGIDO: Método CreateRoomAsync ahora acepta BlackjackTableId opcional
+    public async Task<Result<GameRoom>> CreateRoomAsync(string roomName, PlayerId hostPlayerId, Guid? blackjackTableId = null)
     {
         try
         {
-            _logger.LogInformation("[GameRoomService] Creating room: {RoomName} for host: {HostId}", roomName, hostPlayerId);
+            _logger.LogInformation("[GameRoomService] Creating room: {RoomName} for host: {HostId}, TableId: {TableId}",
+                roomName, hostPlayerId, blackjackTableId);
 
             var existingRoom = await _gameRoomRepository.GetPlayerCurrentRoomAsync(hostPlayerId);
             if (existingRoom != null)
@@ -61,14 +60,16 @@ public class GameRoomService : IGameRoomService
             while (await _gameRoomRepository.RoomCodeExistsAsync(roomCode));
 
             var gameRoom = GameRoom.Create(roomName, hostPlayerId, roomCode);
+
+            if (blackjackTableId.HasValue)
+            {
+                gameRoom.BlackjackTableId = blackjackTableId.Value;
+                _logger.LogInformation("[GameRoomService] Assigned BlackjackTableId {TableId} to room {RoomCode}",
+                    blackjackTableId.Value, roomCode);
+            }
+
             gameRoom.AddPlayer(hostPlayerId, $"Host-{hostPlayerId.Value.ToString()[..8]}");
-
             await _gameRoomRepository.AddAsync(gameRoom);
-
-            // CORREGIDO: Inicializar posiciones de asientos en memoria inmediatamente
-            _roomPlayerPositions[roomCode] = new Dictionary<PlayerId, int>();
-            _logger.LogInformation("[GameRoomService] Initialized seat positions for new room {RoomCode}", roomCode);
-
             await _eventDispatcher.DispatchEventsAsync(gameRoom);
 
             _logger.LogInformation("[GameRoomService] Room created successfully: {RoomCode}", roomCode);
@@ -88,28 +89,17 @@ public class GameRoomService : IGameRoomService
             if (string.IsNullOrWhiteSpace(tableId))
                 return Result<GameRoom>.Failure("El ID de la mesa es requerido");
 
+            if (!Guid.TryParse(tableId, out var tableGuid))
+                return Result<GameRoom>.Failure("ID de mesa inválido");
+
             var existingRoomResult = await GetRoomByTableIdAsync(tableId);
             if (existingRoomResult.IsSuccess && existingRoomResult.Value != null)
             {
                 return Result<GameRoom>.Failure("Ya existe una sala para esta mesa");
             }
 
-            var createResult = await CreateRoomAsync(roomName, hostPlayerId);
-            if (!createResult.IsSuccess)
-                return createResult;
-
-            var room = createResult.Value!;
-
-            if (Guid.TryParse(tableId, out var tableGuid))
-            {
-                room.BlackjackTableId = tableGuid;
-                await _gameRoomRepository.UpdateAsync(room);
-            }
-
-            _logger.LogInformation("[GameRoomService] Created room {RoomCode} for table {TableId}",
-                room.RoomCode, tableId);
-
-            return Result<GameRoom>.Success(room);
+            var createResult = await CreateRoomAsync(roomName, hostPlayerId, tableGuid);
+            return createResult;
         }
         catch (Exception ex)
         {
@@ -118,74 +108,53 @@ public class GameRoomService : IGameRoomService
         }
     }
 
-    // CORREGIDO: Nuevo método principal para resolver la regresión de salas separadas
     public async Task<Result<GameRoom>> JoinOrCreateRoomForTableAsync(string tableId, PlayerId playerId, string playerName)
     {
-        // Obtener o crear semáforo para esta tabla específica (evita race conditions)
         var tableLock = _tableLocks.GetOrAdd(tableId, _ => new SemaphoreSlim(1, 1));
-
         await tableLock.WaitAsync();
+
         try
         {
-            _logger.LogInformation("[GameRoomService] === LOCKED ACCESS for table {TableId} ===", tableId);
-            _logger.LogInformation("[GameRoomService] Player {PlayerId} ({PlayerName}) requesting room for table {TableId}",
-                playerId, playerName, tableId);
+            _logger.LogInformation("[GameRoomService] === ATOMIC OPERATION START ===");
+            _logger.LogInformation("[GameRoomService] Player {PlayerId} requesting room for table {TableId}",
+                playerId, tableId);
 
-            // STEP 1: Buscar sala existente (dentro del lock para evitar race conditions)
-            _logger.LogInformation("[GameRoomService] Searching for existing room for table {TableId}...", tableId);
-            var existingRoomResult = await GetRoomByTableIdAsync(tableId);
-
-            if (existingRoomResult.IsSuccess && existingRoomResult.Value != null)
+            if (!Guid.TryParse(tableId, out var tableGuid))
             {
-                // EXISTING ROOM PATH
-                var existingRoom = existingRoomResult.Value;
-                _logger.LogInformation("[GameRoomService] Found existing room {RoomCode} for table {TableId}",
-                    existingRoom.RoomCode, tableId);
+                return Result<GameRoom>.Failure("ID de mesa inválido");
+            }
 
-                // Unirse a la sala existente
+            await _gameRoomRepository.FlushChangesAsync();
+            var existingRoom = await _gameRoomRepository.GetRoomByTableIdAsync(tableGuid);
+
+            if (existingRoom != null)
+            {
+                if (existingRoom.IsPlayerInRoom(playerId))
+                {
+                    return Result<GameRoom>.Success(existingRoom);
+                }
+
                 var joinResult = await JoinRoomAsync(existingRoom.RoomCode, playerId, playerName);
-
                 if (joinResult.IsSuccess)
                 {
-                    _logger.LogInformation("[GameRoomService] Player {PlayerId} successfully joined existing room {RoomCode} for table {TableId}",
-                        playerId, existingRoom.RoomCode, tableId);
-                    return Result<GameRoom>.Success(existingRoom);
+                    var updatedRoom = await _gameRoomRepository.GetRoomWithPlayersAsync(existingRoom.RoomCode);
+                    return Result<GameRoom>.Success(updatedRoom ?? existingRoom);
                 }
                 else
                 {
-                    _logger.LogError("[GameRoomService] Failed to join existing room {RoomCode}: {Error}",
-                        existingRoom.RoomCode, joinResult.Error);
                     return Result<GameRoom>.Failure(joinResult.Error);
                 }
             }
             else
             {
-                // NEW ROOM PATH
-                _logger.LogInformation("[GameRoomService] No existing room found for table {TableId}, creating new room...", tableId);
-
-                var roomName = $"Mesa {tableId.Substring(0, 8)}";
+                var roomName = $"Mesa {tableId.Substring(0, Math.Min(8, tableId.Length))}";
                 var createResult = await CreateRoomForTableAsync(roomName, tableId, playerId);
-
-                if (createResult.IsSuccess)
-                {
-                    _logger.LogInformation("[GameRoomService] Created new room {RoomCode} for table {TableId}",
-                        createResult.Value!.RoomCode, tableId);
-                }
-                else
-                {
-                    _logger.LogError("[GameRoomService] Failed to create room for table {TableId}: {Error}",
-                        tableId, createResult.Error);
-                }
-
                 return createResult;
             }
         }
         finally
         {
             tableLock.Release();
-            _logger.LogInformation("[GameRoomService] === UNLOCKED ACCESS for table {TableId} ===", tableId);
-
-            // Cleanup: remover semáforo si no hay waiters (optimización de memoria)
             if (tableLock.CurrentCount == 1)
             {
                 _tableLocks.TryRemove(tableId, out _);
@@ -200,36 +169,13 @@ public class GameRoomService : IGameRoomService
             if (!Guid.TryParse(tableId, out var tableGuid))
                 return Result<GameRoom?>.Failure("ID de mesa inválido");
 
-            // CORREGIDO: Incluir logs detallados para debugging
-            _logger.LogInformation("[GameRoomService] Searching for room with tableId: {TableId} (parsed: {TableGuid})", tableId, tableGuid);
-
-            var rooms = await _gameRoomRepository.GetActiveRoomsAsync();
-            _logger.LogInformation("[GameRoomService] Found {RoomCount} active rooms total", rooms.Count);
-
-            foreach (var room in rooms)
-            {
-                _logger.LogInformation("[GameRoomService] Room {RoomCode}: TableId={TableId}, Status={Status}",
-                    room.RoomCode, room.BlackjackTableId?.ToString() ?? "NULL", room.Status);
-            }
-
-            var matchingRoom = rooms.FirstOrDefault(r => r.BlackjackTableId == tableGuid);
-
-            if (matchingRoom != null)
-            {
-                _logger.LogInformation("[GameRoomService] Found matching room {RoomCode} for table {TableId}",
-                    matchingRoom.RoomCode, tableId);
-            }
-            else
-            {
-                _logger.LogInformation("[GameRoomService] No room found for table {TableId}", tableId);
-            }
-
-            return Result<GameRoom?>.Success(matchingRoom);
+            var room = await _gameRoomRepository.GetRoomByTableIdAsync(tableGuid);
+            return Result<GameRoom?>.Success(room);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[GameRoomService] Error buscando sala por mesa {TableId}: {Error}", tableId, ex.Message);
-            return Result<GameRoom?>.Failure($"Error buscando sala por mesa: {ex.Message}");
+            _logger.LogError(ex, "[GameRoomService] Error searching room by table {TableId}: {Error}", tableId, ex.Message);
+            return Result<GameRoom?>.Failure($"Error searching room by table: {ex.Message}");
         }
     }
 
@@ -237,19 +183,11 @@ public class GameRoomService : IGameRoomService
     {
         try
         {
-            var room = await _gameRoomRepository.GetByRoomCodeAsync(roomCode);
+            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
             if (room == null)
             {
                 return Result<GameRoom>.Failure("Sala no encontrada");
             }
-
-            // CORREGIDO: Asegurar que el diccionario de posiciones existe para la sala
-            if (!_roomPlayerPositions.ContainsKey(roomCode))
-            {
-                _roomPlayerPositions[roomCode] = new Dictionary<PlayerId, int>();
-                _logger.LogInformation("[GameRoomService] Initialized seat positions for existing room {RoomCode}", roomCode);
-            }
-
             return Result<GameRoom>.Success(room);
         }
         catch (Exception ex)
@@ -268,14 +206,6 @@ public class GameRoomService : IGameRoomService
             {
                 return Result<GameRoom>.Failure("Sala no encontrada");
             }
-
-            // Asegurar inicialización de posiciones
-            if (!_roomPlayerPositions.ContainsKey(room.RoomCode))
-            {
-                _roomPlayerPositions[room.RoomCode] = new Dictionary<PlayerId, int>();
-                _logger.LogInformation("[GameRoomService] Initialized seat positions for room {RoomCode}", room.RoomCode);
-            }
-
             return Result<GameRoom>.Success(room);
         }
         catch (Exception ex)
@@ -290,16 +220,6 @@ public class GameRoomService : IGameRoomService
         try
         {
             var rooms = await _gameRoomRepository.GetActiveRoomsAsync();
-
-            // CORREGIDO: Asegurar inicialización de posiciones para todas las salas activas
-            foreach (var room in rooms)
-            {
-                if (!_roomPlayerPositions.ContainsKey(room.RoomCode))
-                {
-                    _roomPlayerPositions[room.RoomCode] = new Dictionary<PlayerId, int>();
-                }
-            }
-
             return Result<List<GameRoom>>.Success(rooms);
         }
         catch (Exception ex)
@@ -317,8 +237,8 @@ public class GameRoomService : IGameRoomService
     {
         try
         {
-            _logger.LogInformation("[GameRoomService] Player {PlayerId} ({PlayerName}) joining room {RoomCode}",
-                playerId, playerName, roomCode);
+            _logger.LogInformation("[GameRoomService] Player {PlayerId} joining room {RoomCode}",
+                playerId, roomCode);
 
             var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
             if (room == null)
@@ -334,68 +254,19 @@ public class GameRoomService : IGameRoomService
 
             if (room.IsPlayerInRoom(playerId))
             {
-                _logger.LogInformation("[GameRoomService] Player {PlayerId} already in room {RoomCode}", playerId, roomCode);
-                return Result.Success(); // Ya está en la sala, no es error
+                return Result.Success();
             }
 
             room.AddPlayer(playerId, playerName);
-
-            // CORREGIDO: Manejo mejorado de concurrencia con retry
-            var retryCount = 0;
-            const int maxRetries = 3;
-
-            while (retryCount < maxRetries)
-            {
-                try
-                {
-                    await _gameRoomRepository.UpdateAsync(room);
-                    break;
-                }
-                catch (DbUpdateConcurrencyException)
-                {
-                    retryCount++;
-                    if (retryCount >= maxRetries)
-                    {
-                        _logger.LogError("[GameRoomService] Max retries reached for player {PlayerId} joining room {RoomCode}",
-                            playerId, roomCode);
-                        return Result.Failure("Conflicto de concurrencia. Intenta de nuevo.");
-                    }
-
-                    // Recargar la entidad y reintentar
-                    await Task.Delay(100 * retryCount); // Backoff exponencial
-                    room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
-                    if (room == null)
-                    {
-                        return Result.Failure("Sala no encontrada");
-                    }
-
-                    if (room.IsPlayerInRoom(playerId))
-                    {
-                        _logger.LogInformation("[GameRoomService] Player {PlayerId} already joined during retry", playerId);
-                        return Result.Success(); // Ya está en la sala
-                    }
-
-                    room.AddPlayer(playerId, playerName);
-                }
-            }
-
-            // CORREGIDO: Asegurar que el diccionario de posiciones existe
-            if (!_roomPlayerPositions.ContainsKey(roomCode))
-            {
-                _roomPlayerPositions[roomCode] = new Dictionary<PlayerId, int>();
-                _logger.LogInformation("[GameRoomService] Initialized seat positions for room {RoomCode} on player join", roomCode);
-            }
-
+            await _gameRoomRepository.UpdateAsync(room);
             await _eventDispatcher.DispatchEventsAsync(room);
 
-            _logger.LogInformation("[GameRoomService] Player {PlayerId} joined room {RoomCode} successfully. Total players: {PlayerCount}",
-                playerId, roomCode, room.PlayerCount);
+            _logger.LogInformation("[GameRoomService] Player {PlayerId} joined room {RoomCode} successfully", playerId, roomCode);
             return Result.Success();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[GameRoomService] Error joining room {RoomCode} for player {PlayerId}: {Error}",
-                roomCode, playerId, ex.Message);
+            _logger.LogError(ex, "[GameRoomService] Error joining room: {Error}", ex.Message);
             return Result.Failure($"Error joining room: {ex.Message}");
         }
     }
@@ -404,245 +275,272 @@ public class GameRoomService : IGameRoomService
     {
         try
         {
-            _logger.LogInformation("[GameRoomService] Player {PlayerId} leaving room {RoomCode}", playerId, roomCode);
-
             var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
             if (room == null)
             {
-                _logger.LogInformation("[GameRoomService] Room {RoomCode} not found for leaving player {PlayerId}", roomCode, playerId);
                 return Result.Success();
             }
 
             if (!room.IsPlayerInRoom(playerId))
             {
-                _logger.LogInformation("[GameRoomService] Player {PlayerId} not in room {RoomCode}", playerId, roomCode);
                 return Result.Success();
             }
 
             room.RemovePlayer(playerId);
-
-            // CORREGIDO: Limpiar posición de asiento de forma segura
-            if (_roomPlayerPositions.TryGetValue(roomCode, out var positions))
-            {
-                var removed = positions.Remove(playerId);
-                if (removed)
-                {
-                    _logger.LogInformation("[GameRoomService] Removed seat position for player {PlayerId} in room {RoomCode}",
-                        playerId, roomCode);
-                }
-            }
+            await _gameRoomRepository.FreeSeatAsync(roomCode, playerId);
 
             if (room.PlayerCount == 0)
             {
                 await _gameRoomRepository.DeleteAsync(room);
-                _roomPlayerPositions.TryRemove(roomCode, out _);
-                _logger.LogInformation("[GameRoomService] Room {RoomCode} deleted - no players remaining", roomCode);
             }
             else
             {
-                // Manejo de concurrencia para actualización
-                try
-                {
-                    await _gameRoomRepository.UpdateAsync(room);
-                    await _eventDispatcher.DispatchEventsAsync(room);
-                    _logger.LogInformation("[GameRoomService] Room {RoomCode} updated after player {PlayerId} left. Remaining players: {PlayerCount}",
-                        roomCode, playerId, room.PlayerCount);
-                }
-                catch (DbUpdateConcurrencyException)
-                {
-                    _logger.LogWarning("[GameRoomService] Concurrency conflict when player {PlayerId} left room {RoomCode}",
-                        playerId, roomCode);
-                    // No fallar, el jugador ya salió lógicamente
-                }
+                await _gameRoomRepository.UpdateAsync(room);
+                await _eventDispatcher.DispatchEventsAsync(room);
             }
 
-            _logger.LogInformation("[GameRoomService] Player {PlayerId} left room {RoomCode} successfully", playerId, roomCode);
             return Result.Success();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[GameRoomService] Error leaving room {RoomCode} for player {PlayerId}: {Error}",
-                roomCode, playerId, ex.Message);
+            _logger.LogError(ex, "[GameRoomService] Error leaving room: {Error}", ex.Message);
             return Result.Failure($"Error leaving room: {ex.Message}");
         }
     }
 
-    public async Task<r> AddSpectatorAsync(string roomCode, PlayerId playerId, string spectatorName)
+    public async Task<Result<bool>> AddSpectatorAsync(string roomCode, PlayerId playerId, string spectatorName)
     {
         try
         {
             var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
             if (room == null)
             {
-                return Result.Failure("Sala no encontrada");
+                return Result<bool>.Failure("Sala no encontrada");
             }
 
-            room.AddSpectator(playerId, spectatorName);
-
-            try
+            if (room.IsPlayerInRoom(playerId))
             {
-                await _gameRoomRepository.UpdateAsync(room);
-                await _eventDispatcher.DispatchEventsAsync(room);
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                return Result.Failure("Conflicto de concurrencia. Intenta de nuevo.");
+                return Result<bool>.Failure("Ya estás en esta sala como jugador");
             }
 
-            return Result.Success();
+            if (room.Spectators.Any(s => s.PlayerId == playerId))
+            {
+                return Result<bool>.Failure("Ya eres espectador de esta sala");
+            }
+
+            var spectator = new Spectator(playerId, spectatorName, room.BlackjackTableId ?? Guid.Empty);
+            room.AddSpectator(spectator);
+            await _gameRoomRepository.UpdateAsync(room);
+
+            return Result<bool>.Success(true);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[GameRoomService] Error adding spectator: {Error}", ex.Message);
-            return Result.Failure($"Error adding spectator: {ex.Message}");
+            return Result<bool>.Failure("Error agregando espectador");
         }
     }
 
-    public async Task<r> RemoveSpectatorAsync(string roomCode, PlayerId playerId)
+    public async Task<Result<bool>> RemoveSpectatorAsync(string roomCode, PlayerId playerId)
     {
         try
         {
             var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
             if (room == null)
             {
-                return Result.Success();
+                return Result<bool>.Failure("Sala no encontrada");
             }
 
-            room.RemoveSpectator(playerId);
-
-            try
+            var spectator = room.Spectators.FirstOrDefault(s => s.PlayerId == playerId);
+            if (spectator == null)
             {
-                await _gameRoomRepository.UpdateAsync(room);
-                await _eventDispatcher.DispatchEventsAsync(room);
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                _logger.LogWarning("[GameRoomService] Concurrency conflict when removing spectator");
+                return Result<bool>.Failure("No eres espectador de esta sala");
             }
 
-            return Result.Success();
+            room.RemoveSpectator(spectator);
+            await _gameRoomRepository.UpdateAsync(room);
+            return Result<bool>.Success(true);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[GameRoomService] Error removing spectator: {Error}", ex.Message);
-            return Result.Failure($"Error removing spectator: {ex.Message}");
+            return Result<bool>.Failure("Error removiendo espectador");
         }
     }
 
     #endregion
 
-    #region Gestión de Asientos (Solo en Memoria)
+    #region Gestión de Asientos
 
-    public async Task<r> JoinSeatAsync(string roomCode, PlayerId playerId, int position)
+    public async Task<Result<bool>> JoinSeatAsync(string roomCode, PlayerId playerId, int position)
     {
         try
         {
+            _logger.LogInformation("[GameRoomService] === JoinSeat VALIDATION START ===");
+            _logger.LogInformation("[GameRoomService] Player: {PlayerId}, Room: {RoomCode}, Position: {Position}",
+                playerId, roomCode, position);
+
             if (position < 0 || position > 5)
             {
-                return Result.Failure("Posición inválida. Debe estar entre 0 y 5.");
+                return Result<bool>.Failure("Posición de asiento inválida. Debe estar entre 0 y 5.");
             }
 
             var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
             if (room == null)
             {
-                return Result.Failure("Sala no encontrada");
+                return Result<bool>.Failure("Sala no encontrada");
             }
 
-            if (room.Status == RoomStatus.InProgress)
-            {
-                return Result.Failure("No puedes cambiar de asiento durante la partida");
-            }
+            // Validación robusta de membership
+            _logger.LogInformation("[GameRoomService] === ROBUST MEMBERSHIP VALIDATION ===");
 
-            // CORREGIDO: Verificación más robusta de pertenencia a sala
             var isPlayerInRoom = room.IsPlayerInRoom(playerId);
-            _logger.LogInformation("[GameRoomService] JoinSeat validation - Player {PlayerId} in room: {IsInRoom}, Position: {Position}",
-                playerId, isPlayerInRoom, position);
+            _logger.LogInformation("[GameRoomService] Membership check 1 (room instance): {IsValid}", isPlayerInRoom);
 
-            if (!isPlayerInRoom)
-            {
-                // Log adicional para debug
-                _logger.LogWarning("[GameRoomService] Player {PlayerId} attempting to join seat but not in room {RoomCode}. Current players: {PlayerIds}",
-                    playerId, roomCode, string.Join(", ", room.Players.Select(p => p.PlayerId.Value)));
-                return Result.Failure("Debes estar en la sala para unirte a un asiento");
-            }
+            var isPlayerInRoomDb = await _gameRoomRepository.IsPlayerInRoomAsync(playerId, roomCode);
+            _logger.LogInformation("[GameRoomService] Membership check 2 (database direct): {IsValid}", isPlayerInRoomDb);
 
-            // Obtener o crear diccionario de posiciones para esta sala
-            if (!_roomPlayerPositions.TryGetValue(roomCode, out var positions))
-            {
-                positions = new Dictionary<PlayerId, int>();
-                _roomPlayerPositions[roomCode] = positions;
-                _logger.LogInformation("[GameRoomService] Created new position dictionary for room {RoomCode}", roomCode);
-            }
+            var playerCurrentRoomResult = await GetPlayerCurrentRoomCodeAsync(playerId);
+            var isInThisRoom = playerCurrentRoomResult.IsSuccess && playerCurrentRoomResult.Value == roomCode;
+            _logger.LogInformation("[GameRoomService] Membership check 3 (player current room): {IsValid}", isInThisRoom);
 
-            // Verificar si la posición ya está ocupada
-            if (positions.ContainsValue(position))
-            {
-                _logger.LogInformation("[GameRoomService] Position {Position} already occupied in room {RoomCode}", position, roomCode);
-                return Result.Failure("La posición ya está ocupada");
-            }
+            var isMembershipValid = isPlayerInRoom || isPlayerInRoomDb || isInThisRoom;
 
-            // Remover posición anterior del jugador si tenía una
-            if (positions.Remove(playerId))
+            _logger.LogInformation("[GameRoomService] === MEMBERSHIP VALIDATION SUMMARY ===");
+            _logger.LogInformation("[GameRoomService] Room instance check: {Check1}", isPlayerInRoom);
+            _logger.LogInformation("[GameRoomService] Database direct check: {Check2}", isPlayerInRoomDb);
+            _logger.LogInformation("[GameRoomService] Current room check: {Check3}", isInThisRoom);
+            _logger.LogInformation("[GameRoomService] FINAL MEMBERSHIP VALID: {IsValid}", isMembershipValid);
+
+            if (!isMembershipValid)
             {
-                _logger.LogInformation("[GameRoomService] Removed previous position for player {PlayerId} in room {RoomCode}",
+                var currentPlayers = string.Join(", ", room.Players.Select(p => p.PlayerId.Value));
+                _logger.LogError("[GameRoomService] Player {PlayerId} FAILED all membership validations for room {RoomCode}",
                     playerId, roomCode);
+                _logger.LogError("[GameRoomService] Current players in room: {Players}", currentPlayers);
+                return Result<bool>.Failure("Debes estar en la sala para unirte a un asiento");
             }
 
-            // Asignar nueva posición
-            positions[playerId] = position;
+            _logger.LogInformation("[GameRoomService] ✅ Player {PlayerId} passed membership validation for room {RoomCode}",
+                playerId, roomCode);
 
-            _logger.LogInformation("[GameRoomService] Player {PlayerId} joined seat {Position} in room {RoomCode}. Current positions: {Positions}",
-                playerId, position, roomCode, string.Join(", ", positions.Select(kvp => $"{kvp.Key.Value.ToString()[..8]}->P{kvp.Value}")));
+            // Verificar si el asiento está ocupado
+            var isSeatOccupied = await _gameRoomRepository.IsSeatOccupiedAsync(roomCode, position);
+            if (isSeatOccupied)
+            {
+                return Result<bool>.Failure($"El asiento {position} ya está ocupado");
+            }
 
-            return Result.Success();
+            // Verificar si el jugador ya está sentado
+            var isPlayerSeated = await _gameRoomRepository.IsPlayerSeatedAsync(roomCode, playerId);
+            if (isPlayerSeated)
+            {
+                return Result<bool>.Failure("Ya estás sentado en un asiento. Debes salir primero del asiento actual");
+            }
+
+            // Actualizar posición en BD
+            var roomPlayer = await _gameRoomRepository.GetRoomPlayerAsync(roomCode, playerId);
+            if (roomPlayer == null)
+            {
+                return Result<bool>.Failure("Error: jugador no encontrado en la sala");
+            }
+
+            roomPlayer.JoinSeat(position);
+            await _gameRoomRepository.UpdateRoomPlayerAsync(roomPlayer);
+
+            _logger.LogInformation("[GameRoomService] Player {PlayerId} joined seat {Position} in room {RoomCode}",
+                playerId, position, roomCode);
+            _logger.LogInformation("[GameRoomService] === JoinSeat VALIDATION END - SUCCESS ===");
+
+            return Result<bool>.Success(true);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[GameRoomService] Error joining seat {Position} in room {RoomCode} for player {PlayerId}: {Error}",
-                position, roomCode, playerId, ex.Message);
-            return Result.Failure($"Error joining seat: {ex.Message}");
+            _logger.LogError(ex, "[GameRoomService] CRITICAL ERROR in JoinSeatAsync for player {PlayerId} in room {RoomCode}",
+                playerId, roomCode);
+            return Result<bool>.Failure("Error interno del servidor");
         }
     }
 
-    public async Task<r> LeaveSeatAsync(string roomCode, PlayerId playerId)
+    public async Task<Result<bool>> LeaveSeatAsync(string roomCode, PlayerId playerId)
     {
         try
         {
             var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
             if (room == null)
             {
-                return Result.Failure("Sala no encontrada");
+                return Result<bool>.Failure("Sala no encontrada");
             }
 
-            if (room.Status == RoomStatus.InProgress)
+            if (!room.IsPlayerInRoom(playerId))
             {
-                return Result.Failure("No puedes salir del asiento durante la partida");
+                return Result<bool>.Failure("No estás en esta sala");
             }
 
-            // Remover posición del jugador
-            if (_roomPlayerPositions.TryGetValue(roomCode, out var positions))
+            var seatFreed = await _gameRoomRepository.FreeSeatAsync(roomCode, playerId);
+            if (!seatFreed)
             {
-                var removed = positions.Remove(playerId);
-                if (!removed)
-                {
-                    return Result.Failure("No estás sentado en esta sala");
-                }
-
-                _logger.LogInformation("[GameRoomService] Player {PlayerId} left seat in room {RoomCode}. Remaining positions: {Positions}",
-                    playerId, roomCode, string.Join(", ", positions.Select(kvp => $"{kvp.Key.Value.ToString()[..8]}->P{kvp.Value}")));
-            }
-            else
-            {
-                return Result.Failure("No estás sentado en esta sala");
+                return Result<bool>.Failure("No estás sentado en ningún asiento");
             }
 
-            return Result.Success();
+            return Result<bool>.Success(true);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[GameRoomService] Error leaving seat in room {RoomCode} for player {PlayerId}: {Error}",
-                roomCode, playerId, ex.Message);
-            return Result.Failure($"Error leaving seat: {ex.Message}");
+            _logger.LogError(ex, "[GameRoomService] Error in LeaveSeatAsync: {Error}", ex.Message);
+            return Result<bool>.Failure("Error interno del servidor");
+        }
+    }
+
+    public async Task<Result<Dictionary<Guid, int>>> GetRoomPositionsAsync(string roomCode)
+    {
+        try
+        {
+            var positions = await _gameRoomRepository.GetSeatPositionsAsync(roomCode);
+            _logger.LogInformation("[GameRoomService] Retrieved {Count} seat positions from database for room {RoomCode}",
+                positions.Count, roomCode);
+            return Result<Dictionary<Guid, int>>.Success(positions);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error getting room positions: {Error}", ex.Message);
+            return Result<Dictionary<Guid, int>>.Failure("Error obteniendo posiciones de la sala");
+        }
+    }
+
+    public async Task<Result<List<SeatInfo>>> GetSeatInfoAsync(string roomCode)
+    {
+        try
+        {
+            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
+            if (room == null)
+            {
+                return Result<List<SeatInfo>>.Failure("Sala no encontrada");
+            }
+
+            var seatInfoList = new List<SeatInfo>();
+
+            for (int i = 0; i <= 5; i++)
+            {
+                var playerInSeat = await _gameRoomRepository.GetPlayerInSeatAsync(roomCode, i);
+
+                var seatInfo = new SeatInfo
+                {
+                    Position = i,
+                    IsOccupied = playerInSeat != null,
+                    PlayerId = playerInSeat?.PlayerId.Value,
+                    PlayerName = playerInSeat?.Name
+                };
+
+                seatInfoList.Add(seatInfo);
+            }
+
+            return Result<List<SeatInfo>>.Success(seatInfoList);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error getting seat info: {Error}", ex.Message);
+            return Result<List<SeatInfo>>.Failure("Error obteniendo información de asientos");
         }
     }
 
@@ -650,165 +548,85 @@ public class GameRoomService : IGameRoomService
 
     #region Control de Juego
 
-    public async Task<r> StartGameAsync(string roomCode, PlayerId hostPlayerId)
+    public async Task<Result<bool>> StartGameAsync(string roomCode, PlayerId hostPlayerId)
     {
         try
         {
-            _logger.LogInformation("[GameRoomService] Starting game in room {RoomCode} by host {HostId}", roomCode, hostPlayerId);
-
             var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
             if (room == null)
             {
-                return Result.Failure("Sala no encontrada");
+                return Result<bool>.Failure("Sala no encontrada");
             }
 
-            if (!room.IsHost(hostPlayerId))
+            if (room.HostPlayerId != hostPlayerId)
             {
-                return Result.Failure("Solo el host puede iniciar el juego");
+                return Result<bool>.Failure("Solo el host puede iniciar el juego");
             }
 
             if (!room.CanStart)
             {
-                return Result.Failure("No se puede iniciar el juego. Verifica que haya al menos 1 jugador.");
+                return Result<bool>.Failure("La sala no puede iniciar el juego aún");
             }
 
-            if (!room.BlackjackTableId.HasValue)
-            {
-                var table = BlackjackTable.Create($"Table for Room {roomCode}");
-                await _tableRepository.AddAsync(table);
-                room.BlackjackTableId = table.Id;
-            }
+            room.StartGame();
+            await _gameRoomRepository.UpdateAsync(room);
 
-            room.StartGame(room.BlackjackTableId.Value);
-
-            try
-            {
-                await _gameRoomRepository.UpdateAsync(room);
-                await _eventDispatcher.DispatchEventsAsync(room);
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                return Result.Failure("Conflicto de concurrencia al iniciar juego. Intenta de nuevo.");
-            }
-
-            _logger.LogInformation("[GameRoomService] Game started in room {RoomCode} with table {TableId}",
-                roomCode, room.BlackjackTableId);
-            return Result.Success();
+            return Result<bool>.Success(true);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[GameRoomService] Error starting game: {Error}", ex.Message);
-            return Result.Failure($"Error starting game: {ex.Message}");
+            return Result<bool>.Failure("Error iniciando el juego");
         }
     }
 
-    public async Task<r> NextTurnAsync(string roomCode)
+    public async Task<Result<bool>> EndGameAsync(string roomCode)
     {
         try
         {
             var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
             if (room == null)
             {
-                return Result.Failure("Sala no encontrada");
-            }
-
-            if (!room.IsGameInProgress)
-            {
-                return Result.Failure("No hay juego en progreso");
-            }
-
-            room.NextTurn();
-
-            try
-            {
-                await _gameRoomRepository.UpdateAsync(room);
-                await _eventDispatcher.DispatchEventsAsync(room);
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                return Result.Failure("Conflicto de concurrencia al avanzar turno.");
-            }
-
-            _logger.LogInformation("[GameRoomService] Turn advanced in room {RoomCode}", roomCode);
-            return Result.Success();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[GameRoomService] Error advancing turn: {Error}", ex.Message);
-            return Result.Failure($"Error advancing turn: {ex.Message}");
-        }
-    }
-
-    public async Task<r> EndGameAsync(string roomCode)
-    {
-        try
-        {
-            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
-            if (room == null)
-            {
-                return Result.Failure("Sala no encontrada");
+                return Result<bool>.Failure("Sala no encontrada");
             }
 
             room.EndGame();
 
-            // CORREGIDO: Limpiar posiciones de asientos al terminar la partida
-            if (_roomPlayerPositions.TryGetValue(roomCode, out var positions))
+            // Limpiar posiciones de asientos
+            var seatedPlayers = await _gameRoomRepository.GetSeatPositionsAsync(roomCode);
+            foreach (var playerId in seatedPlayers.Keys)
             {
-                var clearedPositions = positions.Count;
-                positions.Clear();
-                _logger.LogInformation("[GameRoomService] Cleared {PositionCount} seat positions in room {RoomCode} after game end",
-                    clearedPositions, roomCode);
+                await _gameRoomRepository.FreeSeatAsync(roomCode, PlayerId.From(playerId));
             }
 
-            try
-            {
-                await _gameRoomRepository.UpdateAsync(room);
-                await _eventDispatcher.DispatchEventsAsync(room);
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                _logger.LogWarning("[GameRoomService] Concurrency conflict when ending game");
-            }
-
-            _logger.LogInformation("[GameRoomService] Game ended in room {RoomCode}", roomCode);
-            return Result.Success();
+            await _gameRoomRepository.UpdateAsync(room);
+            return Result<bool>.Success(true);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[GameRoomService] Error ending game: {Error}", ex.Message);
-            return Result.Failure($"Error ending game: {ex.Message}");
+            return Result<bool>.Failure("Error terminando el juego");
         }
     }
 
-    #endregion
-
-    #region Consultas
-
-    public async Task<Result<bool>> IsPlayerInRoomAsync(PlayerId playerId)
+    public async Task<Result<bool>> NextTurnAsync(string roomCode)
     {
         try
         {
-            var room = await _gameRoomRepository.GetPlayerCurrentRoomAsync(playerId);
-            return Result<bool>.Success(room != null);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[GameRoomService] Error checking if player is in room: {Error}", ex.Message);
-            return Result<bool>.Failure($"Error checking player status: {ex.Message}");
-        }
-    }
+            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
+            if (room == null)
+            {
+                return Result<bool>.Failure("Sala no encontrada");
+            }
 
-    public async Task<Result<string?>> GetPlayerCurrentRoomCodeAsync(PlayerId playerId)
-    {
-        try
-        {
-            var room = await _gameRoomRepository.GetPlayerCurrentRoomAsync(playerId);
-            return Result<string?>.Success(room?.RoomCode);
+            room.NextTurn();
+            await _gameRoomRepository.UpdateAsync(room);
+            return Result<bool>.Success(true);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[GameRoomService] Error getting player current room: {Error}", ex.Message);
-            return Result<string?>.Failure($"Error getting current room: {ex.Message}");
+            _logger.LogError(ex, "[GameRoomService] Error advancing turn: {Error}", ex.Message);
+            return Result<bool>.Failure("Error avanzando el turno");
         }
     }
 
@@ -822,36 +640,45 @@ public class GameRoomService : IGameRoomService
                 return Result<bool>.Failure("Sala no encontrada");
             }
 
-            var isPlayerTurn = room.IsPlayerTurn(playerId);
+            var isPlayerTurn = room.CurrentPlayer?.PlayerId == playerId;
             return Result<bool>.Success(isPlayerTurn);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[GameRoomService] Error checking player turn: {Error}", ex.Message);
-            return Result<bool>.Failure($"Error checking turn: {ex.Message}");
+            return Result<bool>.Failure("Error verificando turno");
         }
     }
 
-    public async Task<Result<List<int>>> GetAvailablePositionsAsync(string roomCode)
+    #endregion
+
+    #region Consultas
+
+    public async Task<Result<bool>> IsPlayerInRoomAsync(PlayerId playerId, string roomCode)
     {
         try
         {
-            if (!_roomPlayerPositions.TryGetValue(roomCode, out var positions))
-            {
-                return Result<List<int>>.Success(Enumerable.Range(0, 6).ToList());
-            }
-
-            var occupiedPositions = positions.Values.ToHashSet();
-            var availablePositions = Enumerable.Range(0, 6)
-                .Where(pos => !occupiedPositions.Contains(pos))
-                .ToList();
-
-            return Result<List<int>>.Success(availablePositions);
+            var isInRoom = await _gameRoomRepository.IsPlayerInRoomAsync(playerId, roomCode);
+            return Result<bool>.Success(isInRoom);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[GameRoomService] Error getting available positions: {Error}", ex.Message);
-            return Result<List<int>>.Failure($"Error getting available positions: {ex.Message}");
+            _logger.LogError(ex, "[GameRoomService] Error checking player in room: {Error}", ex.Message);
+            return Result<bool>.Failure("Error verificando membresía");
+        }
+    }
+
+    public async Task<Result<string?>> GetPlayerCurrentRoomCodeAsync(PlayerId playerId)
+    {
+        try
+        {
+            var room = await _gameRoomRepository.GetPlayerCurrentRoomAsync(playerId);
+            return Result<string?>.Success(room?.RoomCode);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error getting current room: {Error}", ex.Message);
+            return Result<string?>.Failure("Error obteniendo sala actual");
         }
     }
 
@@ -859,62 +686,82 @@ public class GameRoomService : IGameRoomService
     {
         try
         {
-            if (!_roomPlayerPositions.TryGetValue(roomCode, out var positions))
-            {
-                return Result<bool>.Success(false);
-            }
-
-            var isOccupied = positions.ContainsValue(position);
+            var isOccupied = await _gameRoomRepository.IsSeatOccupiedAsync(roomCode, position);
             return Result<bool>.Success(isOccupied);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[GameRoomService] Error checking position: {Error}", ex.Message);
-            return Result<bool>.Failure($"Error checking position: {ex.Message}");
+            return Result<bool>.Failure("Error verificando posición");
         }
     }
 
-    public async Task<Result<int?>> GetPlayerPositionAsync(string roomCode, PlayerId playerId)
+    public async Task<Result<bool>> GetAvailablePositionsAsync(string roomCode)
     {
         try
         {
-            if (!_roomPlayerPositions.TryGetValue(roomCode, out var positions))
+            var seatInfo = await GetSeatInfoAsync(roomCode);
+            if (!seatInfo.IsSuccess)
             {
-                return Result<int?>.Success(null);
+                return Result<bool>.Failure(seatInfo.Error);
             }
 
-            if (positions.TryGetValue(playerId, out var position))
-            {
-                return Result<int?>.Success(position);
-            }
-
-            return Result<int?>.Success(null);
+            var hasAvailableSeats = seatInfo.Value!.Any(seat => !seat.IsOccupied);
+            return Result<bool>.Success(hasAvailableSeats);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[GameRoomService] Error getting player position: {Error}", ex.Message);
-            return Result<int?>.Failure($"Error getting player position: {ex.Message}");
+            _logger.LogError(ex, "[GameRoomService] Error getting available positions: {Error}", ex.Message);
+            return Result<bool>.Failure("Error obteniendo posiciones disponibles");
         }
     }
 
-    public async Task<Result<Dictionary<Guid, int>>> GetRoomPositionsAsync(string roomCode)
+    public async Task<Result<List<GameRoom>>> GetRoomsByStatusAsync(RoomStatus status)
     {
         try
         {
-            if (!_roomPlayerPositions.TryGetValue(roomCode, out var positions))
-            {
-                // CORREGIDO: Inicializar si no existe y retornar vacío
-                _roomPlayerPositions[roomCode] = new Dictionary<PlayerId, int>();
-                return Result<Dictionary<Guid, int>>.Success(new Dictionary<Guid, int>());
-            }
-
-            var result = positions.ToDictionary(kvp => kvp.Key.Value, kvp => kvp.Value);
-            return Result<Dictionary<Guid, int>>.Success(result);
+            var rooms = await _gameRoomRepository.GetRoomsByStatusAsync(status);
+            return Result<List<GameRoom>>.Success(rooms);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[GameRoomService] Error getting room positions: {Error}", ex.Message);
-            return Result<Dictionary<Guid, int>>.Failure($"Error getting room positions: {ex.Message}");
+            _logger.LogError(ex, "[GameRoomService] Error getting rooms by status: {Error}", ex.Message);
+            return Result<List<GameRoom>>.Failure("Error obteniendo salas por estado");
+        }
+    }
+
+    public async Task<Result<GameRoomStats>> GetRoomStatsAsync(string roomCode)
+    {
+        try
+        {
+            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
+            if (room == null)
+            {
+                return Result<GameRoomStats>.Failure("Sala no encontrada");
+            }
+
+            var seatInfoResult = await GetSeatInfoAsync(roomCode);
+            var seatInfo = seatInfoResult.IsSuccess ? seatInfoResult.Value! : new List<SeatInfo>();
+
+            var stats = new GameRoomStats
+            {
+                RoomCode = room.RoomCode,
+                TotalPlayers = room.PlayerCount,
+                SeatedPlayers = seatInfo.Count(s => s.IsOccupied),
+                Spectators = room.Spectators.Count,
+                OccupiedSeats = seatInfo.Where(s => s.IsOccupied).Select(s => s.Position).ToList(),
+                AvailableSeats = seatInfo.Where(s => !s.IsOccupied).Select(s => s.Position).ToList(),
+                Status = room.Status,
+                CreatedAt = room.CreatedAt,
+                LastActivity = room.UpdatedAt
+            };
+
+            return Result<GameRoomStats>.Success(stats);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error getting room stats: {Error}", ex.Message);
+            return Result<GameRoomStats>.Failure("Error obteniendo estadísticas");
         }
     }
 
@@ -931,4 +778,31 @@ public class GameRoomService : IGameRoomService
     }
 
     #endregion
+}
+
+/// <summary>
+/// Modelo para información de asientos
+/// </summary>
+public class SeatInfo
+{
+    public int Position { get; set; }
+    public bool IsOccupied { get; set; }
+    public Guid? PlayerId { get; set; }
+    public string? PlayerName { get; set; }
+}
+
+/// <summary>
+/// Modelo para estadísticas de sala (renombrado para evitar conflictos)
+/// </summary>
+public class GameRoomStats
+{
+    public string RoomCode { get; set; } = string.Empty;
+    public int TotalPlayers { get; set; }
+    public int SeatedPlayers { get; set; }
+    public int Spectators { get; set; }
+    public List<int> OccupiedSeats { get; set; } = new();
+    public List<int> AvailableSeats { get; set; } = new();
+    public RoomStatus Status { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime LastActivity { get; set; }
 }

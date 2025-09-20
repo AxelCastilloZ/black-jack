@@ -231,21 +231,24 @@ public class PlayerController : BaseController
         {
             var playerId = GetCurrentPlayerId();
 
-            // Verificar si ya está en una sala
-            var inRoomResult = await _gameRoomService.IsPlayerInRoomAsync(playerId);
-            if (!inRoomResult.IsSuccess)
+            // CORREGIDO: Verificar si ya está en una sala usando GetPlayerCurrentRoomCodeAsync
+            var currentRoomResult = await _gameRoomService.GetPlayerCurrentRoomCodeAsync(playerId);
+            if (!currentRoomResult.IsSuccess)
             {
-                return BadRequest(new { error = inRoomResult.Error });
+                return BadRequest(new { error = currentRoomResult.Error });
             }
 
-            var canPlay = !inRoomResult.Value; // Puede jugar si NO está en una sala
-            var reason = inRoomResult.Value ? "Already in a room" : "Available to play";
+            // El jugador está en una sala si currentRoomResult.Value no es null/empty
+            var isInRoom = !string.IsNullOrEmpty(currentRoomResult.Value);
+            var canPlay = !isInRoom; // Puede jugar si NO está en una sala
+            var reason = isInRoom ? "Already in a room" : "Available to play";
 
             return Ok(new
             {
                 canPlay,
                 reason,
-                playerId = playerId.Value.ToString()
+                playerId = playerId.Value.ToString(),
+                currentRoomCode = currentRoomResult.Value // Incluir room code si está en una sala
             });
         }
         catch (UnauthorizedAccessException)

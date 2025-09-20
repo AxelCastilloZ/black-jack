@@ -1,4 +1,4 @@
-﻿// SignalRServiceExtensions.cs - VERSIÓN CORREGIDA CON JWT INTEGRADO
+﻿// SignalRServiceExtensions.cs - CONFIGURACIÓN DE TIMEOUTS CORREGIDA
 using BlackJack.Domain.Common;
 using BlackJack.Realtime.EventHandlers;
 using BlackJack.Realtime.Hubs;
@@ -33,9 +33,12 @@ public static class SignalRServiceExtensions
         {
             Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Configuring SignalR options for production...");
             options.EnableDetailedErrors = false;
-            options.KeepAliveInterval = TimeSpan.FromSeconds(15);
-            options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
-            options.HandshakeTimeout = TimeSpan.FromSeconds(15);
+
+            // CORREGIDO: Timeouts optimizados para producción
+            options.KeepAliveInterval = TimeSpan.FromSeconds(15);      // Ping cada 15s
+            options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);  // Timeout después de 60s sin respuesta
+            options.HandshakeTimeout = TimeSpan.FromSeconds(15);       // Timeout de handshake
+
             options.MaximumReceiveMessageSize = 32 * 1024; // 32KB
             options.StreamBufferCapacity = 10;
         })
@@ -54,6 +57,7 @@ public static class SignalRServiceExtensions
 
     /// <summary>
     /// Registra SignalR con configuración JWT completa para desarrollo
+    /// CORREGIDO: Timeouts apropiados que evitan desconexiones frecuentes
     /// </summary>
     public static IServiceCollection AddBlackJackSignalRDevelopment(this IServiceCollection services, IConfiguration configuration)
     {
@@ -62,14 +66,17 @@ public static class SignalRServiceExtensions
         // PASO 1: Configurar JWT Bearer Authentication (CRÍTICO PARA SIGNALR)
         AddJwtAuthenticationForSignalR(services, configuration);
 
-        // PASO 2: Configurar SignalR con opciones permisivas para desarrollo
+        // PASO 2: Configurar SignalR con opciones CORREGIDAS para desarrollo
         services.AddSignalR(options =>
         {
             Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Configuring SignalR options for development...");
             options.EnableDetailedErrors = true; // Más detalles en desarrollo
-            options.KeepAliveInterval = TimeSpan.FromSeconds(30);
-            options.ClientTimeoutInterval = TimeSpan.FromMinutes(2);
-            options.HandshakeTimeout = TimeSpan.FromSeconds(30);
+
+            // CORREGIDO: Timeouts que eliminan desconexiones frecuentes
+            options.KeepAliveInterval = TimeSpan.FromSeconds(15);      // Era 30s - CAUSABA EL PROBLEMA
+            options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);  // Era 2min - Reducido pero estable
+            options.HandshakeTimeout = TimeSpan.FromSeconds(30);       // Más generoso para desarrollo
+
             options.MaximumReceiveMessageSize = 1024 * 1024; // 1MB para desarrollo
         })
         .AddJsonProtocol(options =>
@@ -82,6 +89,7 @@ public static class SignalRServiceExtensions
         RegisterSignalRServices(services);
 
         Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] BlackJack SignalR configured successfully for DEVELOPMENT");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] KeepAlive: 15s, ClientTimeout: 60s (FIXED TIMEOUT ISSUES)");
         return services;
     }
 
@@ -307,8 +315,9 @@ public static class SignalRServiceExtensions
         services.AddSignalR(options =>
         {
             options.EnableDetailedErrors = false;
+            // CORREGIDO: Mismos timeouts para Redis
             options.KeepAliveInterval = TimeSpan.FromSeconds(15);
-            options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+            options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);
         })
         .AddJsonProtocol(options =>
         {

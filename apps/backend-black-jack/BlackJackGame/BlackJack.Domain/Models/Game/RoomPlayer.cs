@@ -1,118 +1,110 @@
-﻿using BlackJack.Domain.Common;
+﻿// BlackJack.Domain/Models/Game/RoomPlayer.cs - COMPLETO CON SeatPosition
 using BlackJack.Domain.Models.Users;
 
 namespace BlackJack.Domain.Models.Game;
 
-public class RoomPlayer : BaseEntity
+public class RoomPlayer
 {
-    // EF Core constructor
-    protected RoomPlayer() : base()
+    public Guid Id { get; set; }
+    public Guid GameRoomId { get; set; }
+    public PlayerId PlayerId { get; set; } = null!;
+    public string Name { get; set; } = string.Empty;
+    public int Position { get; set; } // Posición en lista de jugadores (para orden)
+
+    // NUEVO: Posición de asiento en la mesa (0-5, null = no sentado)
+    public int? SeatPosition { get; set; }
+
+    public bool IsReady { get; set; }
+    public bool HasPlayedTurn { get; set; }
+    public DateTime JoinedAt { get; set; }
+    public DateTime? LastActionAt { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+
+    // Navigation properties
+    public GameRoom GameRoom { get; set; } = null!;
+
+    public RoomPlayer()
     {
-        PlayerId = PlayerId.New();
-        Name = string.Empty;
-        Position = 0;
-        IsReady = false;
-        HasPlayedTurn = false;
-        JoinedAt = DateTime.UtcNow;
+        var now = DateTime.UtcNow;
+        CreatedAt = now;
+        UpdatedAt = now;
+        JoinedAt = now;
     }
 
-    // Constructor principal
-    public RoomPlayer(PlayerId playerId, string name, int position, Guid? id = null)
-        : base(id ?? Guid.NewGuid())
+    public RoomPlayer(PlayerId playerId, string name, int position) : this()
     {
-        PlayerId = playerId ?? throw new ArgumentNullException(nameof(playerId));
-        Name = name ?? throw new ArgumentNullException(nameof(name));
+        PlayerId = playerId;
+        Name = name;
         Position = position;
+        SeatPosition = null; // Por defecto, no sentado
         IsReady = false;
         HasPlayedTurn = false;
-        JoinedAt = DateTime.UtcNow;
     }
 
-    // Propiedades principales
-    public PlayerId PlayerId { get; private set; } = default!;
-    public string Name { get; private set; } = default!;
-    public int Position { get; private set; }
-    public bool IsReady { get; private set; }
-    public bool HasPlayedTurn { get; private set; }
-    public DateTime JoinedAt { get; private set; }
-    public DateTime? LastActionAt { get; private set; }
+    // NUEVO: Método para verificar si el jugador está sentado
+    public bool IsSeated => SeatPosition.HasValue;
 
-    // Propiedades calculadas
-    public bool IsActive => IsReady;
-    public TimeSpan TimeInRoom => DateTime.UtcNow - JoinedAt;
+    // NUEVO: Método para obtener posición de asiento de forma segura
+    public int GetSeatPosition() => SeatPosition ?? -1;
 
-    // Métodos de estado
-    public void SetReady(bool isReady = true)
+    // NUEVO: Método para unirse a un asiento
+    public void JoinSeat(int seatPosition)
     {
-        IsReady = isReady;
-        UpdateTimestamp();
+        if (seatPosition < 0 || seatPosition > 5)
+            throw new ArgumentException("La posición del asiento debe estar entre 0 y 5", nameof(seatPosition));
+
+        SeatPosition = seatPosition;
+        UpdatedAt = DateTime.UtcNow;
+    }
+
+    // NUEVO: Método para salir del asiento
+    public void LeaveSeat()
+    {
+        SeatPosition = null;
+        UpdatedAt = DateTime.UtcNow;
+    }
+
+    // NUEVO: Método para actualizar posición en lista de jugadores (requerido por GameRoom)
+    public void UpdatePosition(int newPosition)
+    {
+        Position = newPosition;
+        UpdatedAt = DateTime.UtcNow;
+    }
+
+    // NUEVO: Método para resetear jugador para nuevo juego (requerido por GameRoom)
+    public void ResetForNewGame()
+    {
+        IsReady = false;
+        HasPlayedTurn = false;
+        LastActionAt = null;
+        // Mantener SeatPosition - el jugador sigue sentado pero resetea su estado de juego
+        UpdatedAt = DateTime.UtcNow;
+    }
+
+    public void MarkAsReady()
+    {
+        IsReady = true;
+        UpdatedAt = DateTime.UtcNow;
+    }
+
+    public void MarkAsNotReady()
+    {
+        IsReady = false;
+        UpdatedAt = DateTime.UtcNow;
     }
 
     public void MarkTurnPlayed()
     {
         HasPlayedTurn = true;
         LastActionAt = DateTime.UtcNow;
-        UpdateTimestamp();
+        UpdatedAt = DateTime.UtcNow;
     }
 
-    public void UpdatePosition(int newPosition)
+    public void ResetTurn()
     {
-        if (newPosition < 0)
-            throw new ArgumentException("Position cannot be negative", nameof(newPosition));
-
-        Position = newPosition;
-        UpdateTimestamp();
-    }
-
-    public void UpdateName(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            throw new ArgumentException("Name cannot be null or empty", nameof(name));
-
-        Name = name;
-        UpdateTimestamp();
-    }
-
-    // Reset para nueva partida
-    public void ResetForNewGame()
-    {
-        IsReady = false;
         HasPlayedTurn = false;
         LastActionAt = null;
-        UpdateTimestamp();
-    }
-
-    // Factory method
-    public static RoomPlayer Create(PlayerId playerId, string name, int position)
-    {
-        return new RoomPlayer(playerId, name, position);
-    }
-
-    // Métodos de información
-    public string GetStatusInfo()
-    {
-        var status = IsReady ? "Ready" : "Not Ready";
-        var turnStatus = HasPlayedTurn ? "Turn Played" : "Waiting";
-        return $"{Name} (Pos: {Position}) - {status}, {turnStatus}";
-    }
-
-    public override string ToString()
-    {
-        return GetStatusInfo();
-    }
-
-    // Métodos de comparación
-    public override bool Equals(object? obj)
-    {
-        if (obj is RoomPlayer other)
-        {
-            return PlayerId == other.PlayerId;
-        }
-        return false;
-    }
-
-    public override int GetHashCode()
-    {
-        return PlayerId.GetHashCode();
+        UpdatedAt = DateTime.UtcNow;
     }
 }

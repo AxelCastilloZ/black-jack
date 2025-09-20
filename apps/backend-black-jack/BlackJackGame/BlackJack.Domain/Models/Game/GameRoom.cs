@@ -131,7 +131,7 @@ public class GameRoom : AggregateRoot
         UpdateTimestamp();
     }
 
-    // Manejo de espectadores
+    // Manejo de espectadores - CORREGIDO: Dos sobrecargas
     public void AddSpectator(PlayerId playerId, string spectatorName)
     {
         if (IsPlayerInRoom(playerId))
@@ -145,6 +145,26 @@ public class GameRoom : AggregateRoot
 
         // Disparar evento
         AddDomainEvent(new SpectatorJoinedEvent(RoomCode, playerId, spectatorName));
+
+        UpdateTimestamp();
+    }
+
+    // NUEVO: Sobrecarga que acepta objeto Spectator
+    public void AddSpectator(Spectator spectator)
+    {
+        if (spectator == null)
+            throw new ArgumentNullException(nameof(spectator));
+
+        if (IsPlayerInRoom(spectator.PlayerId))
+            throw new InvalidOperationException("Player is already playing in this room");
+
+        if (_spectators.Any(s => s.PlayerId.Value == spectator.PlayerId.Value))
+            return; // Ya es espectador
+
+        _spectators.Add(spectator);
+
+        // Disparar evento
+        AddDomainEvent(new SpectatorJoinedEvent(RoomCode, spectator.PlayerId, spectator.Name));
 
         UpdateTimestamp();
     }
@@ -164,7 +184,35 @@ public class GameRoom : AggregateRoot
         }
     }
 
-    // Sistema de turnos
+    // NUEVO: Sobrecarga que acepta objeto Spectator
+    public void RemoveSpectator(Spectator spectator)
+    {
+        if (spectator != null && _spectators.Remove(spectator))
+        {
+            // Disparar evento
+            AddDomainEvent(new SpectatorLeftEvent(RoomCode, spectator.PlayerId, spectator.Name));
+
+            UpdateTimestamp();
+        }
+    }
+
+    // Sistema de turnos - CORREGIDO: Dos sobrecargas para StartGame
+    public void StartGame()
+    {
+        if (!CanStart)
+            throw new InvalidOperationException("Cannot start game - conditions not met");
+
+        Status = RoomStatus.InProgress;
+        CurrentPlayerIndex = 0;
+
+        // Disparar evento
+        var playerNames = GetPlayerNames();
+        var firstPlayer = _players.Count > 0 ? _players[0].PlayerId : PlayerId.New();
+        AddDomainEvent(new GameStartedEvent(RoomCode, BlackjackTableId ?? Guid.NewGuid(), playerNames, firstPlayer));
+
+        UpdateTimestamp();
+    }
+
     public void StartGame(Guid blackjackTableId)
     {
         if (!CanStart)

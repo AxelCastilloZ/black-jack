@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿// BlackJack.Data/Configurations/Game/RoomPlayerConfiguration.cs - COMPLETO
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
@@ -11,7 +12,7 @@ public class RoomPlayerConfiguration : IEntityTypeConfiguration<RoomPlayer>
     {
         builder.HasKey(rp => rp.Id);
 
-        // ✅ CORREGIDO: Usar HasConversion en lugar de OwnsOne
+        // Configuración de PlayerId con conversión
         builder.Property(rp => rp.PlayerId)
             .HasConversion(
                 playerId => playerId.Value,       // Convertir PlayerId a Guid para DB
@@ -21,12 +22,18 @@ public class RoomPlayerConfiguration : IEntityTypeConfiguration<RoomPlayer>
             .HasColumnType("uniqueidentifier")
             .IsRequired();
 
+        // Configuración de campos básicos
         builder.Property(rp => rp.Name)
             .IsRequired()
             .HasMaxLength(100);
 
         builder.Property(rp => rp.Position)
             .IsRequired();
+
+        // NUEVO: Configuración para SeatPosition
+        builder.Property(rp => rp.SeatPosition)
+            .IsRequired(false)  // Nullable - null significa no sentado
+            .HasColumnName("SeatPosition");
 
         builder.Property(rp => rp.IsReady)
             .IsRequired();
@@ -40,10 +47,32 @@ public class RoomPlayerConfiguration : IEntityTypeConfiguration<RoomPlayer>
         builder.Property(rp => rp.LastActionAt)
             .IsRequired(false);
 
-        // Índices
-        builder.HasIndex(rp => rp.Position);
+        builder.Property(rp => rp.CreatedAt)
+            .IsRequired();
 
-        // Crear índice en PlayerId para consultas rápidas
-        builder.HasIndex(rp => rp.PlayerId);
+        builder.Property(rp => rp.UpdatedAt)
+            .IsRequired();
+
+        // Índices para optimización
+        builder.HasIndex(rp => rp.Position)
+            .HasDatabaseName("IX_RoomPlayers_Position");
+
+        builder.HasIndex(rp => rp.PlayerId)
+            .HasDatabaseName("IX_RoomPlayers_PlayerId");
+
+        // NUEVO: Índice para SeatPosition
+        builder.HasIndex(rp => rp.SeatPosition)
+            .HasDatabaseName("IX_RoomPlayers_SeatPosition");
+
+        // NUEVO: Índice compuesto para GameRoomId + SeatPosition
+        builder.HasIndex(rp => new { rp.GameRoomId, rp.SeatPosition })
+            .HasDatabaseName("IX_RoomPlayers_GameRoomId_SeatPosition")
+            .IsUnique(false); // No único porque SeatPosition puede ser null
+
+        // Configuración de relaciones
+        builder.HasOne(rp => rp.GameRoom)
+            .WithMany(gr => gr.Players)
+            .HasForeignKey(rp => rp.GameRoomId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }

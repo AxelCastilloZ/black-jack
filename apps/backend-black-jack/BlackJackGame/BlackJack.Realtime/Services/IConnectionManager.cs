@@ -1,4 +1,4 @@
-﻿// IConnectionManager.cs - En BlackJack.Realtime/Services/
+﻿// IConnectionManager.cs - INTERFAZ ACTUALIZADA con métodos de reconexión mejorados
 using BlackJack.Domain.Models.Users;
 using BlackJack.Realtime.Models;
 
@@ -28,12 +28,18 @@ public interface IConnectionManager
     Task<List<PlayerId>> GetOnlinePlayersAsync();
     Task<List<PlayerId>> GetPlayersInRoomAsync(string roomCode);
 
-    // Reconexión
+    // Reconexión - MEJORADO
     Task<ReconnectionInfo?> GetReconnectionInfoAsync(PlayerId playerId);
     Task SaveReconnectionInfoAsync(PlayerId playerId, string? roomCode);
     Task ClearReconnectionInfoAsync(PlayerId playerId);
 
+    // NUEVO: Estado detallado de jugadores
+    Task<PlayerRoomState?> GetPlayerRoomStateAsync(PlayerId playerId);
+
     // Limpieza y mantenimiento
     Task CleanupStaleConnectionsAsync();
     Task<int> GetTotalConnectionCountAsync();
+
+    // NUEVO: Estadísticas del manager
+    Task<ConnectionManagerStats> GetStatsAsync();
 }

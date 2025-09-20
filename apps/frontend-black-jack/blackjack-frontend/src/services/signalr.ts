@@ -1,4 +1,4 @@
-// src/services/signalr.ts - CORREGIDO: Reconexión controlada y manejo mejorado
+// src/services/signalr.ts - ARCHIVO COMPLETO CORREGIDO
 import {
   HubConnection,
   HubConnectionBuilder,
@@ -15,7 +15,7 @@ class SignalRService {
   private lobbyConnection?: HubConnection
   private gameConnection?: HubConnection
   private isStarting = false
-  private isDestroying = false // NUEVO: Flag para evitar reconexiones durante cleanup
+  private isDestroying = false
 
   // Event callbacks para el UI
   public onPlayerJoined?: (player: any) => void
@@ -51,20 +51,17 @@ class SignalRService {
           console.log('[DEBUG] Clean token length:', cleanToken.length)
           console.log('[DEBUG] Token preview:', cleanToken.substring(0, 100) + '...')
           
-          // Verificar que el token tenga estructura JWT (3 partes separadas por .)
           const parts = cleanToken.split('.')
           console.log('[DEBUG] Token parts count:', parts.length)
           
           if (parts.length === 3) {
             try {
-              // Decodificar payload del JWT
               const payload = JSON.parse(atob(parts[1]))
               console.log('[DEBUG] ✅ Token payload decoded:', payload)
               console.log('[DEBUG] PlayerId in token:', payload.playerId || payload.sub || payload.nameid || 'NOT_FOUND')
               console.log('[DEBUG] Name in token:', payload.name || payload.unique_name || 'NOT_FOUND')
               console.log('[DEBUG] Token expires:', new Date((payload.exp || 0) * 1000))
               
-              // Verificar si el token está expirado
               const now = Math.floor(Date.now() / 1000)
               if (payload.exp && payload.exp < now) {
                 console.error('[DEBUG] ❌ TOKEN EXPIRED!')
@@ -91,16 +88,14 @@ class SignalRService {
         skipNegotiation: true,
         transport: 1 // WebSockets
       })
-      // CORREGIDO: Reconexión menos agresiva - esto es clave
-      .withAutomaticReconnect([2000, 5000, 10000, 30000]) // Intervalos más conservadores
-      .configureLogging(LogLevel.Information) // REDUCIDO: De Debug a Information
+      .withAutomaticReconnect([2000, 5000, 10000, 30000])
+      .configureLogging(LogLevel.Information)
       .build()
   }
 
   private setupConnectionHandlers(connection: HubConnection, name: string) {
     console.log(`[SignalR] Setting up handlers for ${name}`)
     
-    // CORREGIDO: Verificar antes de intentar reconectar
     connection.onreconnecting((error) => {
       if (this.isDestroying) {
         console.log(`[SignalR] ${name} skip reconnecting - service is destroying`)
@@ -137,7 +132,6 @@ class SignalRService {
 
     // Handlers específicos para LobbyHub
     if (name === 'Lobby') {
-      // CORREGIDO: Solo un handler por evento
       connection.on('ActiveRoomsUpdated', (response: any) => {
         if (this.isDestroying) return
         console.log('[SignalR] 📥 ActiveRoomsUpdated event:', response)
@@ -245,23 +239,19 @@ class SignalRService {
     }
   }
 
-  // CORREGIDO: Mejor manejo de múltiples llamadas simultáneas
   async startConnections(): Promise<boolean> {
     if (this.isStarting) {
       console.log('[SignalR] ⏳ Connection start already in progress, waiting...')
       
-      // Esperar hasta que termine el proceso actual
       let attempts = 0
-      while (this.isStarting && attempts < 50) { // máximo 5 segundos
+      while (this.isStarting && attempts < 50) {
         await new Promise(resolve => setTimeout(resolve, 100))
         attempts++
       }
       
-      // Retornar el estado actual después de esperar
       return this.isLobbyConnected && this.isGameConnected
     }
     
-    // VERIFICAR AUTENTICACIÓN COMPLETA
     if (!authService.isAuthenticated()) {
       console.error('[SignalR] ❌ Cannot start connections - user not authenticated')
       return false
@@ -270,12 +260,11 @@ class SignalRService {
     console.log('[SignalR] ✅ User is authenticated, starting connections...')
 
     this.isStarting = true
-    this.isDestroying = false // Reset el flag de destrucción
+    this.isDestroying = false
 
     try {
       console.log('[SignalR] 🚀 Starting SignalR connections...')
 
-      // CORREGIDO: Verificar si las conexiones necesitan ser recreadas
       if (!this.lobbyConnection || this.lobbyConnection.state === HubConnectionState.Disconnected) {
         console.log('[SignalR] 🏗️ Creating lobby connection...')
         this.lobbyConnection = this.buildConnection('/hubs/lobby')
@@ -288,7 +277,6 @@ class SignalRService {
         this.setupConnectionHandlers(this.gameConnection, 'Game')
       }
 
-      // Iniciar conexiones si están desconectadas
       const tasks: Promise<void>[] = []
 
       if (this.lobbyConnection.state === HubConnectionState.Disconnected) {
@@ -327,7 +315,6 @@ class SignalRService {
         console.log('[SignalR] ✅ All connections already active')
       }
 
-      // CORREGIDO: Solo unirse al lobby si no está destruyendo
       if (!this.isDestroying && this.lobbyConnection.state === HubConnectionState.Connected) {
         try {
           console.log('[SignalR] 🏛️ Joining lobby group...')
@@ -344,13 +331,11 @@ class SignalRService {
     } catch (error: any) {
       console.error('[SignalR] ❌ Failed to start connections:', error)
       
-      // DEBUG ESPECÍFICO PARA ERRORES DE AUTENTICACIÓN
       if (error.message?.includes('401') || error.message?.includes('Unauthorized')) {
         console.error('[SignalR] 🔐 AUTHENTICATION ERROR - JWT token issue')
         console.log('[SignalR] Current auth state:')
         authService.debugAuthState()
         
-        // Verificar token específicamente
         const token = authService.getToken()
         if (token) {
           try {
@@ -382,10 +367,9 @@ class SignalRService {
     }
   }
 
-  // CORREGIDO: Método para cleanup controlado
   async stopConnections() {
     console.log('[SignalR] 🛑 Stopping all connections...')
-    this.isDestroying = true // Marcar que estamos cerrando
+    this.isDestroying = true
     
     const tasks: Promise<void>[] = []
 
@@ -406,11 +390,9 @@ class SignalRService {
       await Promise.all(tasks)
     }
 
-    // CORREGIDO: Limpiar referencias
     this.lobbyConnection = undefined
     this.gameConnection = undefined
     
-    // CORREGIDO: Limpiar todos los event handlers
     this.onPlayerJoined = undefined
     this.onPlayerLeft = undefined
     this.onRoomInfo = undefined
@@ -425,7 +407,6 @@ class SignalRService {
     console.log('[SignalR] ✅ All connections stopped and cleaned')
   }
 
-  // NUEVO: Método para verificar si las conexiones están sanas
   async verifyConnections(): Promise<boolean> {
     if (!this.isLobbyConnected || !this.isGameConnected) {
       console.log('[SignalR] Connections not ready, attempting to start...')
@@ -434,7 +415,6 @@ class SignalRService {
     return true
   }
 
-  // Métodos de mesa con verificación mejorada
   async joinOrCreateRoomForTable(tableId: string, playerName?: string): Promise<void> {
     if (!(await this.verifyConnections())) {
       throw new Error('No hay conexión de juego disponible')
@@ -507,7 +487,6 @@ class SignalRService {
     }
   }
 
-  // Resto de métodos similares con verificación...
   async joinRoom(roomCode: string): Promise<void> {
     if (!(await this.verifyConnections())) {
       throw new Error('No hay conexión de juego disponible')
@@ -539,13 +518,14 @@ class SignalRService {
     })
   }
 
+  // CORREGIDO: leaveRoom solo cuando es EXPLÍCITO
   async leaveRoom(roomCode: string): Promise<void> {
     if (!this.gameConnection || this.gameConnection.state !== HubConnectionState.Connected) {
       return
     }
 
     try {
-      console.log(`[SignalR] 🚪 Leaving room: ${roomCode}`)
+      console.log(`[SignalR] 🚪 EXPLICIT LeaveRoom called for: ${roomCode}`)
       await this.gameConnection.invoke('LeaveRoom', roomCode)
     } catch (error) {
       console.warn('[SignalR] ⚠️ Error leaving room:', error)
@@ -591,7 +571,6 @@ class SignalRService {
     })
   }
 
-  // Getters para estado
   get isLobbyConnected(): boolean {
     return this.lobbyConnection?.state === HubConnectionState.Connected
   }
