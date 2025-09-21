@@ -73,7 +73,7 @@ public class GameRoom : AggregateRoot
     }
 
     // Manejo de jugadores
-    public void AddPlayer(PlayerId playerId, string playerName)
+    public void AddPlayer(PlayerId playerId, string playerName, bool isViewer = false)
     {
         if (playerId == null)
             throw new ArgumentNullException(nameof(playerId));
@@ -90,7 +90,7 @@ public class GameRoom : AggregateRoot
         if (Status != RoomStatus.WaitingForPlayers)
             throw new InvalidOperationException("Cannot add players - game is in progress");
 
-        var roomPlayer = new RoomPlayer(playerId, playerName, _players.Count);
+        var roomPlayer = new RoomPlayer(playerId, playerName, _players.Count, isViewer);
         _players.Add(roomPlayer);
 
         // Disparar evento

@@ -16,6 +16,7 @@ public class RoomPlayer
 
     public bool IsReady { get; set; }
     public bool HasPlayedTurn { get; set; }
+    public bool IsViewer { get; set; }
     public DateTime JoinedAt { get; set; }
     public DateTime? LastActionAt { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -40,6 +41,18 @@ public class RoomPlayer
         SeatPosition = null; // Por defecto, no sentado
         IsReady = false;
         HasPlayedTurn = false;
+        IsViewer = false; // Por defecto, no es viewer
+    }
+
+    public RoomPlayer(PlayerId playerId, string name, int position, bool isViewer) : this()
+    {
+        PlayerId = playerId;
+        Name = name;
+        Position = position;
+        SeatPosition = null; // Por defecto, no sentado
+        IsReady = false;
+        HasPlayedTurn = false;
+        IsViewer = isViewer;
     }
 
     // NUEVO: Método para verificar si el jugador está sentado

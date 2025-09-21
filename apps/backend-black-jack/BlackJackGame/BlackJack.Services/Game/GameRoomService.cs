@@ -68,7 +68,7 @@ public class GameRoomService : IGameRoomService
                     blackjackTableId.Value, roomCode);
             }
 
-            gameRoom.AddPlayer(hostPlayerId, $"Host-{hostPlayerId.Value.ToString()[..8]}");
+            gameRoom.AddPlayer(hostPlayerId, $"Host-{hostPlayerId.Value.ToString()[..8]}", false);
             await _gameRoomRepository.AddAsync(gameRoom);
             await _eventDispatcher.DispatchEventsAsync(gameRoom);
 
@@ -90,7 +90,7 @@ public class GameRoomService : IGameRoomService
                 return Result<GameRoom>.Failure("El ID de la mesa es requerido");
 
             if (!Guid.TryParse(tableId, out var tableGuid))
-                return Result<GameRoom>.Failure("ID de mesa inválido");
+return Result<GameRoom>.Failure("ID de mesa inválido");
 
             var existingRoomResult = await GetRoomByTableIdAsync(tableId);
             if (existingRoomResult.IsSuccess && existingRoomResult.Value != null)
@@ -105,6 +105,42 @@ public class GameRoomService : IGameRoomService
         {
             _logger.LogError(ex, "[GameRoomService] Error creating room for table: {Error}", ex.Message);
             return Result<GameRoom>.Failure($"Error creating room for table: {ex.Message}");
+        }
+    }
+
+    public async Task<Result<GameRoom>> CreateRoomForTableAsViewerAsync(string roomName, string tableId, PlayerId hostPlayerId)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(tableId))
+                return Result<GameRoom>.Failure("El ID de la mesa es requerido");
+
+            if (!Guid.TryParse(tableId, out var tableGuid))
+                return Result<GameRoom>.Failure("ID de mesa inválido");
+
+            var existingRoomResult = await GetRoomByTableIdAsync(tableId);
+            if (existingRoomResult.IsSuccess && existingRoomResult.Value != null)
+            {
+                return Result<GameRoom>.Failure("Ya existe una sala para esta mesa");
+            }
+
+            // For viewers, we allow them to create rooms even if they're in another room
+            // First, leave any existing room they might be in
+            var currentRoomResult = await GetPlayerCurrentRoomCodeAsync(hostPlayerId);
+            if (currentRoomResult.IsSuccess && !string.IsNullOrEmpty(currentRoomResult.Value))
+            {
+                _logger.LogInformation("[GameRoomService] Viewer {PlayerId} leaving current room {CurrentRoom} to create new room for table {TableId}", 
+                    hostPlayerId, currentRoomResult.Value, tableId);
+                await LeaveRoomAsync(currentRoomResult.Value, hostPlayerId);
+            }
+
+            var createResult = await CreateRoomAsync(roomName, hostPlayerId, tableGuid);
+            return createResult;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error creating room for table as viewer: {Error}", ex.Message);
+            return Result<GameRoom>.Failure($"Error creating room for table as viewer: {ex.Message}");
         }
     }
 
@@ -149,6 +185,73 @@ public class GameRoomService : IGameRoomService
             {
                 var roomName = $"Mesa {tableId.Substring(0, Math.Min(8, tableId.Length))}";
                 var createResult = await CreateRoomForTableAsync(roomName, tableId, playerId);
+                return createResult;
+            }
+        }
+        finally
+        {
+            tableLock.Release();
+            if (tableLock.CurrentCount == 1)
+            {
+                _tableLocks.TryRemove(tableId, out _);
+            }
+        }
+    }
+
+    public async Task<Result<GameRoom>> JoinOrCreateRoomForTableAsViewerAsync(string tableId, PlayerId playerId, string playerName)
+    {
+        var tableLock = _tableLocks.GetOrAdd(tableId, _ => new SemaphoreSlim(1, 1));
+        await tableLock.WaitAsync();
+
+        try
+        {
+            _logger.LogInformation("[GameRoomService] === ATOMIC OPERATION START (VIEWER) ===");
+            _logger.LogInformation("[GameRoomService] Viewer {PlayerId} requesting room for table {TableId}",
+                playerId, tableId);
+
+            if (!Guid.TryParse(tableId, out var tableGuid))
+            {
+                return Result<GameRoom>.Failure("ID de mesa inválido");
+            }
+
+            await _gameRoomRepository.FlushChangesAsync();
+            var existingRoom = await _gameRoomRepository.GetRoomByTableIdAsync(tableGuid);
+
+            if (existingRoom != null)
+            {
+                // Check if player is already in this specific room
+                if (existingRoom.IsPlayerInRoom(playerId))
+                {
+                    _logger.LogInformation("[GameRoomService] Viewer {PlayerId} already in room {RoomCode}", playerId, existingRoom.RoomCode);
+                    return Result<GameRoom>.Success(existingRoom);
+                }
+
+                // For viewers, we allow them to join even if they're in another room
+                // First, leave any existing room they might be in
+                var currentRoomResult = await GetPlayerCurrentRoomCodeAsync(playerId);
+                if (currentRoomResult.IsSuccess && !string.IsNullOrEmpty(currentRoomResult.Value))
+                {
+                    _logger.LogInformation("[GameRoomService] Viewer {PlayerId} leaving current room {CurrentRoom} to join {NewRoom}", 
+                        playerId, currentRoomResult.Value, existingRoom.RoomCode);
+                    await LeaveRoomAsync(currentRoomResult.Value, playerId);
+                }
+
+                var joinResult = await JoinRoomAsync(existingRoom.RoomCode, playerId, playerName, true); // isViewer = true
+                if (joinResult.IsSuccess)
+                {
+                    var updatedRoom = await _gameRoomRepository.GetRoomWithPlayersAsync(existingRoom.RoomCode);
+                    return Result<GameRoom>.Success(updatedRoom ?? existingRoom);
+                }
+                else
+                {
+                    return Result<GameRoom>.Failure(joinResult.Error);
+                }
+            }
+            else
+            {
+                // For new rooms, use the viewer-specific creation method
+                var roomName = $"Mesa {tableId.Substring(0, Math.Min(8, tableId.Length))}";
+                var createResult = await CreateRoomForTableAsViewerAsync(roomName, tableId, playerId);
                 return createResult;
             }
         }
@@ -233,12 +336,12 @@ public class GameRoomService : IGameRoomService
 
     #region Gestión de Jugadores
 
-    public async Task<r> JoinRoomAsync(string roomCode, PlayerId playerId, string playerName)
+    public async Task<r> JoinRoomAsync(string roomCode, PlayerId playerId, string playerName, bool isViewer = false)
     {
         try
         {
-            _logger.LogInformation("[GameRoomService] Player {PlayerId} joining room {RoomCode}",
-                playerId, roomCode);
+            _logger.LogInformation("[GameRoomService] Player {PlayerId} joining room {RoomCode} as {Role}",
+                playerId, roomCode, isViewer ? "viewer" : "player");
 
             var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
             if (room == null)
@@ -257,7 +360,7 @@ public class GameRoomService : IGameRoomService
                 return Result.Success();
             }
 
-            room.AddPlayer(playerId, playerName);
+            room.AddPlayer(playerId, playerName, isViewer);
             await _gameRoomRepository.UpdateAsync(room);
             await _eventDispatcher.DispatchEventsAsync(room);
 
