@@ -480,6 +480,208 @@ public class GameHub : BaseHub
         }
     }
 
+    public async Task JoinAsViewer(JoinRoomRequest request)
+    {
+        try
+        {
+            _logger.LogInformation("[GameHub] === JoinAsViewer STARTED ===");
+            _logger.LogInformation("[GameHub] RoomCode: {RoomCode}, PlayerName: {PlayerName}",
+                request.RoomCode, request.PlayerName);
+
+            if (!IsAuthenticated())
+            {
+                await SendErrorAsync("Debes estar autenticado para unirte como viewer");
+                return;
+            }
+
+            var playerId = GetCurrentPlayerId();
+            if (playerId == null)
+            {
+                await SendErrorAsync("Error de autenticación");
+                return;
+            }
+
+            if (!ValidateInput(request.RoomCode, nameof(request.RoomCode)) ||
+                !ValidateInput(request.PlayerName, nameof(request.PlayerName), 30))
+            {
+                await SendErrorAsync("Datos de entrada inválidos");
+                return;
+            }
+
+            _logger.LogInformation("[GameHub] Player {PlayerId} joining room {RoomCode} as viewer",
+                playerId, request.RoomCode);
+
+            var roomResult = await _gameRoomService.GetRoomAsync(request.RoomCode);
+            if (!roomResult.IsSuccess)
+            {
+                await SendErrorAsync("Sala no encontrada");
+                return;
+            }
+
+            var room = roomResult.Value!;
+
+            // Join as viewer (isViewer = true)
+            var joinResult = await _gameRoomService.JoinRoomAsync(request.RoomCode, playerId, request.PlayerName, true);
+
+            if (!joinResult.IsSuccess)
+            {
+                _logger.LogError("[GameHub] JoinAsViewer failed: {Error}", joinResult.Error);
+                await SendErrorAsync(joinResult.Error);
+                return;
+            }
+
+            // Join SignalR groups
+            var roomGroupName = HubMethodNames.Groups.GetRoomGroup(request.RoomCode);
+            await JoinGroupAsync(roomGroupName);
+            await _connectionManager.AddToGroupAsync(Context.ConnectionId, roomGroupName);
+
+            // Also join table group if exists
+            if (room.BlackjackTableId.HasValue)
+            {
+                var tableGroupName = $"Table_{room.BlackjackTableId.Value}";
+                await JoinGroupAsync(tableGroupName);
+                await _connectionManager.AddToGroupAsync(Context.ConnectionId, tableGroupName);
+                _logger.LogInformation("[GameHub] Also joined table group: {TableGroupName}", tableGroupName);
+            }
+
+            var updatedRoomResult = await _gameRoomService.GetRoomAsync(request.RoomCode);
+            if (updatedRoomResult.IsSuccess)
+            {
+                var roomInfo = await MapToRoomInfoAsync(updatedRoomResult.Value!);
+
+                await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomJoined, roomInfo);
+
+                await Clients.OthersInGroup(roomGroupName)
+                    .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
+
+                var playerJoinedEvent = new PlayerJoinedEventModel(
+                    RoomCode: request.RoomCode,
+                    PlayerId: playerId.Value,
+                    PlayerName: request.PlayerName,
+                    Position: -1,
+                    TotalPlayers: roomInfo.PlayerCount,
+                    Timestamp: DateTime.UtcNow
+                );
+
+                await Clients.OthersInGroup(roomGroupName)
+                    .SendAsync(HubMethodNames.ServerMethods.PlayerJoined, playerJoinedEvent);
+
+                _logger.LogInformation("[GameHub] Player {PlayerId} joined room {RoomCode} as viewer successfully",
+                    playerId, request.RoomCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameHub] Error in JoinAsViewer: {Error}", ex.Message);
+            await SendErrorAsync("Error interno del servidor");
+        }
+    }
+
+    public async Task JoinOrCreateRoomForTableAsViewer(string tableId, string playerName)
+    {
+        try
+        {
+            _logger.LogInformation("[GameHub] === JoinOrCreateRoomForTableAsViewer STARTED ===");
+            _logger.LogInformation("[GameHub] TableId: {TableId}, PlayerName: {PlayerName}",
+                tableId, playerName);
+
+            if (!IsAuthenticated())
+            {
+                await SendErrorAsync("Debes estar autenticado para unirte como viewer");
+                return;
+            }
+
+            var playerId = GetCurrentPlayerId();
+            if (playerId == null)
+            {
+                await SendErrorAsync("Error de autenticación");
+                return;
+            }
+
+            if (!ValidateInput(tableId, nameof(tableId)) ||
+                !ValidateInput(playerName, nameof(playerName), 30))
+            {
+                _logger.LogWarning("[GameHub] JoinOrCreateRoomForTableAsViewer - Invalid input data");
+                await SendErrorAsync("Datos inválidos");
+                return;
+            }
+
+            _logger.LogInformation("[GameHub] Input validation passed");
+            _logger.LogInformation("[GameHub] Calling GameRoomService.JoinOrCreateRoomForTableAsync...");
+
+            // Use the viewer-specific method
+            var result = await _gameRoomService.JoinOrCreateRoomForTableAsViewerAsync(tableId, playerId, playerName);
+
+            if (!result.IsSuccess)
+            {
+                _logger.LogError("[GameHub] JoinOrCreateRoomForTableAsync FAILED: {Error}", result.Error);
+                await SendErrorAsync(result.Error);
+                return;
+            }
+
+            var room = result.Value!;
+            _logger.LogInformation("[GameHub] Service SUCCESS - Room: {RoomCode} for table {TableId}",
+                room.RoomCode, tableId);
+
+            // Join SignalR groups
+            var tableGroupName = $"Table_{tableId}";
+            var roomGroupName = HubMethodNames.Groups.GetRoomGroup(room.RoomCode);
+
+            _logger.LogInformation("[GameHub] Joining SignalR groups - Table: {TableGroup}, Room: {RoomGroup}",
+                tableGroupName, roomGroupName);
+
+            await JoinGroupAsync(tableGroupName);
+            await JoinGroupAsync(roomGroupName);
+
+            // Register in ConnectionManager for reconnection
+            await _connectionManager.AddToGroupAsync(Context.ConnectionId, tableGroupName);
+            await _connectionManager.AddToGroupAsync(Context.ConnectionId, roomGroupName);
+
+            // Get updated room info after join
+            var roomInfoResult = await _gameRoomService.GetRoomAsync(room.RoomCode);
+            if (roomInfoResult.IsSuccess)
+            {
+                var roomInfo = await MapToRoomInfoAsync(roomInfoResult.Value!);
+
+                // Determine if the user created the room or joined an existing one
+                var isNewRoom = room.HostPlayerId == playerId;
+                var eventMethod = isNewRoom ? HubMethodNames.ServerMethods.RoomCreated : HubMethodNames.ServerMethods.RoomJoined;
+
+                _logger.LogInformation("[GameHub] Sending {EventMethod} event to caller (isNewRoom: {IsNewRoom})", eventMethod, isNewRoom);
+                await Clients.Caller.SendAsync(eventMethod, roomInfo);
+
+                // Only notify if joined existing room
+                if (!isNewRoom)
+                {
+                    _logger.LogInformation("[GameHub] Notifying other users about viewer join");
+
+                    var playerJoinedEvent = new PlayerJoinedEventModel(
+                        RoomCode: room.RoomCode,
+                        PlayerId: playerId.Value,
+                        PlayerName: playerName,
+                        Position: -1,
+                        TotalPlayers: roomInfo.PlayerCount,
+                        Timestamp: DateTime.UtcNow
+                    );
+
+                    await Clients.OthersInGroup(roomGroupName)
+                        .SendAsync(HubMethodNames.ServerMethods.PlayerJoined, playerJoinedEvent);
+
+                    await Clients.OthersInGroup(roomGroupName)
+                        .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
+                }
+
+                _logger.LogInformation("[GameHub] Player {PlayerId} joined/created room {RoomCode} as viewer successfully",
+                    playerId, room.RoomCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameHub] EXCEPTION in JoinOrCreateRoomForTableAsViewer");
+            await HandleExceptionAsync(ex, "JoinOrCreateRoomForTableAsViewer");
+        }
+    }
+
     public async Task JoinSeat(JoinSeatRequest request)
     {
         try

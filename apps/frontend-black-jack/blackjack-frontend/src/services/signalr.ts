@@ -505,6 +505,46 @@ class SignalRService {
     })
   }
 
+  async joinAsViewer(tableId: string, playerName: string): Promise<void> {
+    if (!(await this.verifyConnections())) {
+      throw new Error('No hay conexión de juego disponible')
+    }
+
+    const user = authService.getCurrentUser()
+    if (!user) {
+      throw new Error('Usuario no autenticado')
+    }
+
+    console.log(`[SignalR] 👁️ Joining as viewer: ${playerName} to table: ${tableId}`)
+
+    // Convert tableId to roomCode (assuming tableId is the roomCode for now)
+    const roomCode = tableId
+
+    await this.gameConnection!.invoke('JoinAsViewer', {
+      roomCode: roomCode,
+      playerName: playerName
+    })
+  }
+
+  async joinOrCreateRoomForTableAsViewer(tableId: string, playerName?: string): Promise<void> {
+    if (!(await this.verifyConnections())) {
+      throw new Error('No hay conexión de juego disponible')
+    }
+
+    const user = authService.getCurrentUser()
+    const finalPlayerName = playerName || user?.displayName || 'Viewer'
+
+    console.log(`[SignalR] 👁️ Joining/creating room as viewer for table: ${tableId}, playerName: ${finalPlayerName}`)
+    
+    try {
+      await this.gameConnection!.invoke('JoinOrCreateRoomForTableAsViewer', tableId, finalPlayerName)
+      console.log(`[SignalR] ✅ Successfully invoked JoinOrCreateRoomForTableAsViewer`)
+    } catch (error) {
+      console.error(`[SignalR] ❌ Error in JoinOrCreateRoomForTableAsViewer:`, error)
+      throw error
+    }
+  }
+
   async createRoom(roomName: string): Promise<void> {
     if (!(await this.verifyConnections())) {
       throw new Error('No hay conexión de juego disponible')

@@ -74,6 +74,17 @@ const gameRoute = createRoute({
   component: GamePage,
 })
 
+// Viewer route - same component, different path
+const viewerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/viewer/$tableId',
+  beforeLoad: () => requireAuth(),
+  component: GamePage,
+})
+
+// 5. QUINTA PANTALLA: Viewer (cuando selecciona "Ver" una mesa)
+// Now using same GamePage component for both player and viewer modes
+
 // Pantalla de perfil (acceso desde cualquier lugar)
 const profileRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -112,6 +123,7 @@ const routeTree = rootRoute.addChildren([
   homeRoute,
   lobbyRoute,
   gameRoute,
+  viewerRoute,
   profileRoute,
 ])
 

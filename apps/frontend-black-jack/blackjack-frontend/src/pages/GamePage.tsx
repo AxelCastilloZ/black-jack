@@ -37,6 +37,9 @@ export default function GamePage() {
   const { tableId } = useParams({ strict: false }) as { tableId: string }
   const navigate = useNavigate()
   
+  // Detect if we're in viewer mode based on the current path
+  const [isViewer, setIsViewer] = useState(false)
+  
   const [gameState, setGameState] = useState<GameState | null>(null)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [isConnected, setIsConnected] = useState(false)
@@ -50,6 +53,11 @@ export default function GamePage() {
 
   useEffect(() => {
     console.log('GamePage mounted - resetting flags')
+    
+    // Detect if we're in viewer mode based on the current path
+    const isViewerMode = window.location.pathname.includes('/viewer/')
+    setIsViewer(isViewerMode)
+    console.log('GamePage mode:', isViewerMode ? 'VIEWER' : 'PLAYER')
   }, [])
 
   useEffect(() => {
@@ -224,10 +232,15 @@ export default function GamePage() {
           hasJoinedTable.current = true
           setError(null)
           
-          console.log('Auto-joining table:', tableId)
+          console.log('Auto-joining table:', tableId, 'Mode:', isViewer ? 'VIEWER' : 'PLAYER')
           
-          const playerName = currentUser.current?.displayName || 'Jugador'
-          await signalRService.joinOrCreateRoomForTable(tableId, playerName)
+          const playerName = currentUser.current?.displayName || (isViewer ? 'Viewer' : 'Jugador')
+          
+          if (isViewer) {
+            await signalRService.joinOrCreateRoomForTableAsViewer(tableId, playerName)
+          } else {
+            await signalRService.joinOrCreateRoomForTable(tableId, playerName)
+          }
           
         } catch (error) {
           console.error('Error joining table:', error)
@@ -240,7 +253,7 @@ export default function GamePage() {
     }
 
     autoJoinTable()
-  }, [isConnected, tableId])
+  }, [isConnected, tableId, isViewer])
 
   useEffect(() => {
     console.log('GamePage mounted - component instance created')
@@ -416,7 +429,7 @@ export default function GamePage() {
         
         <div className="text-sm flex items-center gap-4">
           <div>
-            {gameState?.playerCount || 0}/{gameState?.maxPlayers || 6} jugadores
+            {isViewer ? 'Modo Viewer' : 'Modo Jugador'} • {gameState?.playerCount || 0}/{gameState?.maxPlayers || 6} jugadores
           </div>
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'}`}></div>
@@ -464,13 +477,18 @@ export default function GamePage() {
               : 'Se necesitan mínimo 2 jugadores para comenzar'
             }
           </p>
-          {!isPlayerSeated && (
+          {!isPlayerSeated && !isViewer && (
             <p className="m-0 text-gray-600 text-sm mt-2">
               Haz clic en un asiento libre para unirte a la mesa
             </p>
           )}
+          {isViewer && (
+            <p className="m-0 text-gray-600 text-sm mt-2">
+              Modo espectador - Observando la partida
+            </p>
+          )}
         </div>
-        {gameState?.canStart && gameState.status !== 'InProgress' && currentPlayer?.isHost && (
+        {!isViewer && gameState?.canStart && gameState.status !== 'InProgress' && currentPlayer?.isHost && (
           <button
             onClick={handleStartRound}
             className="ml-4 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold transition-colors"
@@ -491,6 +509,7 @@ export default function GamePage() {
         onJoinSeat={handleJoinSeat}
         onLeaveSeat={handleLeaveSeat}
         seatClickLoading={seatClickLoading}
+        isViewer={isViewer}
         className="absolute top-[120px] left-10"
       />
 
@@ -504,6 +523,7 @@ export default function GamePage() {
         onJoinSeat={handleJoinSeat}
         onLeaveSeat={handleLeaveSeat}
         seatClickLoading={seatClickLoading}
+        isViewer={isViewer}
         className="absolute bottom-[120px] left-10"
       />
 
@@ -517,6 +537,7 @@ export default function GamePage() {
         onJoinSeat={handleJoinSeat}
         onLeaveSeat={handleLeaveSeat}
         seatClickLoading={seatClickLoading}
+        isViewer={isViewer}
         className="absolute bottom-10 left-1/2 transform -translate-x-1/2"
         isMainPosition={true}
       />
@@ -531,6 +552,7 @@ export default function GamePage() {
         onJoinSeat={handleJoinSeat}
         onLeaveSeat={handleLeaveSeat}
         seatClickLoading={seatClickLoading}
+        isViewer={isViewer}
         className="absolute bottom-[120px] right-10"
       />
 
@@ -544,6 +566,7 @@ export default function GamePage() {
         onJoinSeat={handleJoinSeat}
         onLeaveSeat={handleLeaveSeat}
         seatClickLoading={seatClickLoading}
+        isViewer={isViewer}
         className="absolute top-[120px] right-10"
       />
 
@@ -557,6 +580,7 @@ export default function GamePage() {
         onJoinSeat={handleJoinSeat}
         onLeaveSeat={handleLeaveSeat}
         seatClickLoading={seatClickLoading}
+        isViewer={isViewer}
         className="absolute top-[120px] left-1/2 transform -translate-x-1/2"
       />
 
@@ -611,6 +635,7 @@ function PlayerPosition({
   onJoinSeat,
   onLeaveSeat,
   seatClickLoading,
+  isViewer,
   className, 
   isMainPosition = false 
 }: {
@@ -623,6 +648,7 @@ function PlayerPosition({
   onJoinSeat: (position: number) => Promise<void>
   onLeaveSeat: () => Promise<void>
   seatClickLoading: number | null
+  isViewer: boolean
   className: string
   isMainPosition?: boolean
 }) {
@@ -630,21 +656,21 @@ function PlayerPosition({
   const isEmpty = !player
   const isLoading = seatClickLoading === position || (isCurrentUser && seatClickLoading === -1)
   
-  const canJoinSeat = isEmpty && !isLoading
+  const canJoinSeat = isEmpty && !isLoading && !isViewer
 
   const handleSeatClick = useCallback(async () => {
-    if (canJoinSeat) {
+    if (canJoinSeat && !isViewer) {
       console.log(`Clicking to join seat ${position}`)
       await onJoinSeat(position)
     }
-  }, [canJoinSeat, position, onJoinSeat])
+  }, [canJoinSeat, position, onJoinSeat, isViewer])
 
   const handleLeaveSeat = useCallback(async () => {
-    if (isCurrentUser && !isLoading && gameStatus !== 'InProgress') {
+    if (isCurrentUser && !isLoading && gameStatus !== 'InProgress' && !isViewer) {
       console.log('Clicking to leave seat')
       await onLeaveSeat()
     }
-  }, [isCurrentUser, isLoading, gameStatus, onLeaveSeat])
+  }, [isCurrentUser, isLoading, gameStatus, onLeaveSeat, isViewer])
 
   // Asiento vacío
   if (isEmpty) {
@@ -670,7 +696,8 @@ function PlayerPosition({
               {isLoading ? 'Uniéndose...' : 'Asiento libre'}
             </div>
             <div className="text-gray-400 text-xs">
-              {canJoinSeat ? 'Clic para unirse' : 
+              {isViewer ? 'Asiento vacío' :
+               canJoinSeat ? 'Clic para unirse' : 
                isLoading ? 'Procesando...' : 'No disponible'}
             </div>
           </div>
@@ -732,7 +759,7 @@ function PlayerPosition({
           </div>
         )}
 
-        {isCurrentUser && !isLoading && gameStatus !== 'InProgress' && (
+        {isCurrentUser && !isLoading && gameStatus !== 'InProgress' && !isViewer && (
           <div>
             <button
               onClick={handleLeaveSeat}

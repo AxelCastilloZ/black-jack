@@ -10,8 +10,10 @@ public interface IGameRoomService
     // Métodos básicos de sala
     Task<Result<GameRoom>> CreateRoomAsync(string roomName, PlayerId hostPlayerId, Guid? blackjackTableId = null);
     Task<Result<GameRoom>> CreateRoomForTableAsync(string roomName, string tableId, PlayerId hostPlayerId);
+    Task<Result<GameRoom>> CreateRoomForTableAsViewerAsync(string roomName, string tableId, PlayerId hostPlayerId);
     Task<Result<GameRoom>> JoinOrCreateRoomForTableAsync(string tableId, PlayerId playerId, string playerName);
-    Task<Result> JoinRoomAsync(string roomCode, PlayerId playerId, string playerName);
+    Task<Result<GameRoom>> JoinOrCreateRoomForTableAsViewerAsync(string tableId, PlayerId playerId, string playerName);
+    Task<Result> JoinRoomAsync(string roomCode, PlayerId playerId, string playerName, bool isViewer = false);
     Task<Result> LeaveRoomAsync(string roomCode, PlayerId playerId);
     Task<Result<GameRoom>> GetRoomAsync(string roomCode);
     Task<Result<GameRoom>> GetRoomByIdAsync(Guid roomId);

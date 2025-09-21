@@ -41,6 +41,10 @@ public class RoomPlayerConfiguration : IEntityTypeConfiguration<RoomPlayer>
         builder.Property(rp => rp.HasPlayedTurn)
             .IsRequired();
 
+        builder.Property(rp => rp.IsViewer)
+            .IsRequired()
+            .HasDefaultValue(false);
+
         builder.Property(rp => rp.JoinedAt)
             .IsRequired();
 
