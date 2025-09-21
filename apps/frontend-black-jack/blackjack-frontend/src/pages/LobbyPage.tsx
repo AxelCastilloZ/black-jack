@@ -226,6 +226,12 @@ export default function LobbyPage() {
     navigate({ to: `/game/${tableId}` })
   }
 
+  // Navegar a mesa como viewer
+  const handleViewTable = (tableId: string) => {
+    console.log('[LOBBY] Navigating to viewer mode for table:', tableId)
+    navigate({ to: `/viewer/${tableId}` })
+  }
+
   // Recargar mesas
   const handleRefresh = async () => {
     console.log('[LOBBY] Refreshing tables...')
@@ -472,6 +478,7 @@ export default function LobbyPage() {
                     key={table.id}
                     table={table}
                     onJoin={() => handleJoinTable(table.id)}
+                    onView={() => handleViewTable(table.id)}
                   />
                 ))}
               </div>
@@ -484,7 +491,7 @@ export default function LobbyPage() {
 }
 
 // Componente para cada mesa
-function TableCard({ table, onJoin }: { table: LobbyTable; onJoin: () => void }) {
+function TableCard({ table, onJoin, onView }: { table: LobbyTable; onJoin: () => void; onView: () => void }) {
   const getStatusConfig = (status: string) => {
     switch (status.toLowerCase()) {
       case 'waitingforplayers':
@@ -563,17 +570,26 @@ function TableCard({ table, onJoin }: { table: LobbyTable; onJoin: () => void })
             </div>
           </div>
 
-          <button
-            onClick={onJoin}
-            disabled={!statusConfig.canJoin}
-            className={`px-6 py-3 rounded-lg font-semibold transition-all ${
-              statusConfig.canJoin
-                ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                : 'bg-gray-600 text-gray-400 cursor-not-allowed'
-            }`}
-          >
-            {statusConfig.canJoin ? 'Unirse' : 'Ocupado'}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={onJoin}
+              disabled={!statusConfig.canJoin}
+              className={`px-6 py-3 rounded-lg font-semibold transition-all ${
+                statusConfig.canJoin
+                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  : 'bg-gray-600 text-gray-400 cursor-not-allowed'
+              }`}
+            >
+              {statusConfig.canJoin ? 'Unirse' : 'Ocupado'}
+            </button>
+
+            <button
+              onClick={onView}
+              className="px-6 py-3 rounded-lg font-semibold transition-all bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              Ver
+            </button>
+          </div>
         </div>
       </div>
     </div>
