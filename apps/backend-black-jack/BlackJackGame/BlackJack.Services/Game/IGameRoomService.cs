@@ -46,6 +46,8 @@ public interface IGameRoomService
     Task<Result<bool>> GetAvailablePositionsAsync(string roomCode);
     Task<Result<GameRoomStats>> GetRoomStatsAsync(string roomCode);
 
+
+    Task<Result<int>> ForceCleanupPlayerAsync(PlayerId playerId);
     // NUEVOS: Métodos de Auto-Betting
     /// <summary>
     /// Procesa las apuestas automáticas para todos los jugadores sentados en una sala
