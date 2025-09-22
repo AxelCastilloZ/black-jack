@@ -39,6 +39,7 @@ interface GameState {
   // New game state
   dealerHand?: Hand | null
   playerHand?: Hand | null
+  playersWithHands?: Array<RoomPlayer & { hand?: Hand | null }>
 }
 
 interface RoomPlayer {
@@ -65,6 +66,7 @@ export default function GamePage() {
     overall: false
   })
   const [isJoining, setIsJoining] = useState(false)
+  const [isStartingRound, setIsStartingRound] = useState(false)
   const [error, setError] = useState<string | null>(null)
   
   // CORREGIDO: Estado de loading centralizado aquí
@@ -128,7 +130,15 @@ export default function GamePage() {
     if (!isComponentMounted.current) return
     const roomData = response?.data || response
     console.log('[GamePage] Room info received via RoomHub:', roomData)
-    setGameState(roomData)
+    setGameState(prev => {
+      // Preserve hand information when updating room info
+      return {
+        ...roomData,
+        playerHand: prev?.playerHand || null,
+        playersWithHands: prev?.playersWithHands || [],
+        dealerHand: prev?.dealerHand || null
+      }
+    })
     setError(null)
   }, [])
 
@@ -136,7 +146,15 @@ export default function GamePage() {
     if (!isComponentMounted.current) return
     const roomData = response?.data || response
     console.log('[GamePage] Room created via RoomHub:', roomData)
-    setGameState(roomData)
+    setGameState(prev => {
+      // Preserve hand information when updating room info
+      return {
+        ...roomData,
+        playerHand: prev?.playerHand || null,
+        playersWithHands: prev?.playersWithHands || [],
+        dealerHand: prev?.dealerHand || null
+      }
+    })
     setError(null)
   }, [])
 
@@ -144,14 +162,30 @@ export default function GamePage() {
     if (!isComponentMounted.current) return
     const roomData = response?.data || response
     console.log('[GamePage] Room joined via RoomHub:', roomData)
-    setGameState(roomData)
+    setGameState(prev => {
+      // Preserve hand information when updating room info
+      return {
+        ...roomData,
+        playerHand: prev?.playerHand || null,
+        playersWithHands: prev?.playersWithHands || [],
+        dealerHand: prev?.dealerHand || null
+      }
+    })
     setError(null)
   }, [])
 
   const handleRoomInfoUpdated = useCallback((roomData: any) => {
     if (!isComponentMounted.current) return
     console.log('[GamePage] Room info updated via RoomHub:', roomData)
-    setGameState(roomData)
+    setGameState(prev => {
+      // Preserve hand information when updating room info
+      return {
+        ...roomData,
+        playerHand: prev?.playerHand || null,
+        playersWithHands: prev?.playersWithHands || [],
+        dealerHand: prev?.dealerHand || null
+      }
+    })
     setError(null)
   }, [])
 
@@ -235,7 +269,92 @@ export default function GamePage() {
   const handleGameStateChanged = useCallback((newState: any) => {
     if (!isComponentMounted.current) return
     console.log('[GamePage] Game state changed via GameControlHub:', newState)
-    setGameState(newState)
+    if (newState?.players) {
+      console.log('[GamePage] Players with hands:', newState.players.map((p: any) => ({
+        playerId: p.playerId,
+        name: p.name,
+        seat: p.seat,
+        hasHand: !!p.hand,
+        handValue: p.hand?.value
+      })))
+    }
+    setGameState(prev => {
+      const prevState: any = prev || {}
+
+      // Normalize payloads from GameStarted/GameStateChanged/GameStateUpdated
+      const status = (newState?.status as string) || 'InProgress'
+      const dealerHand = newState?.dealerHand || prevState.dealerHand || null
+
+      // If server sends players array with hand per player
+      let playerHand = prevState.playerHand || null
+      let playersWithHands = prevState.playersWithHands || []
+      const currentUserId = (authService.getCurrentUser()?.id) as string | undefined
+      if (Array.isArray(newState?.players)) {
+        // Set current player's hand if available
+        // console.log('[GamePage] currentUserId:', currentUserId)
+        if (currentUserId) {
+          const me = newState.players.find((p: any) => p.playerId === currentUserId)
+          // console.log('[GamePage] Found current user in players:', me)
+          if (me?.hand) {
+            playerHand = {
+              id: me.hand.handId || me.hand.id,
+              cards: me.hand.cards || [],
+              value: me.hand.value || 0,
+              status: me.hand.status || 'Active'
+            }
+            // console.log('[GamePage] Set playerHand:', playerHand)
+          }
+        } else {
+          // console.log('[GamePage] No currentUserId available, will try to set playerHand later')
+        }
+
+        // Map all players with their hands
+        playersWithHands = newState.players.map((p: any) => ({
+          ...p,
+          position: p.seat, // Map seat to position for consistency
+          hand: p.hand ? {
+            id: p.hand.handId || p.hand.id,
+            cards: p.hand.cards || [],
+            value: p.hand.value || 0,
+            status: p.hand.status || 'Active'
+          } : null
+        }))
+        // console.log('[GamePage] Mapped playersWithHands:', playersWithHands)
+      }
+
+      // Coerce canStart=false when game is in progress
+      const canStart = status === 'InProgress' ? false : (prevState.canStart ?? false)
+
+        const newGameState = {
+          ...prevState,
+          status: 'InProgress',
+          canStart,
+          dealerHand: dealerHand ? {
+            id: dealerHand.handId || dealerHand.id,
+            cards: dealerHand.cards || [],
+            value: dealerHand.value || 0,
+            status: dealerHand.status || 'Active'
+          } : null,
+          playerHand,
+          playersWithHands
+        } as any
+
+        // Fallback: if playerHand is still null but we have currentUserId, try to find it
+        if (!newGameState.playerHand && currentUserId && Array.isArray(newState?.players)) {
+          const me = newState.players.find((p: any) => p.playerId === currentUserId)
+          if (me?.hand) {
+            newGameState.playerHand = {
+              id: me.hand.handId || me.hand.id,
+              cards: me.hand.cards || [],
+              value: me.hand.value || 0,
+              status: me.hand.status || 'Active'
+            }
+            // console.log('[GamePage] Fallback: Set playerHand:', newGameState.playerHand)
+          }
+        }
+
+        return newGameState
+    })
   }, [])
 
   const handleError = useCallback((errorMessage: string) => {
@@ -377,21 +496,29 @@ export default function GamePage() {
   }, [gameState?.roomCode, navigate])
 
   const handleStartRound = useCallback(async () => {
+    if (isStartingRound) return
     if (!connectionStatus.gameControl || !gameState?.roomCode || !isComponentMounted.current) {
       console.log('[GamePage] Cannot start game - GameControlHub not connected')
       return
     }
     
     try {
+      setIsStartingRound(true)
       setError(null)
       console.log('[GamePage] Starting game via GameControlHub')
       await signalRService.startGame(gameState.roomCode)
+      // Optimistically update local status and request fresh room info
+      setGameState(prev => (prev ? { ...prev, status: 'InProgress' } as any : prev))
+      signalRService.getRoomInfo(gameState.roomCode).catch(() => {})
     } catch (error) {
       if (!isComponentMounted.current) return
       console.error('[GamePage] Error starting game:', error)
       setError(error instanceof Error ? error.message : 'Error iniciando juego')
+    } finally {
+      // Keep disabled until status flips to InProgress; re-enable otherwise
+      setIsStartingRound(false)
     }
-  }, [connectionStatus.gameControl, gameState?.roomCode])
+  }, [connectionStatus.gameControl, gameState?.roomCode, isStartingRound])
 
   // Game action handlers
   const handleHit = useCallback(async () => {
@@ -431,6 +558,13 @@ export default function GamePage() {
   // Computed values
   const currentPlayer = gameState?.players?.find(p => p.playerId === currentUser.current?.id)
   const isPlayerSeated = !!currentPlayer
+  // Debug logging for troubleshooting
+  // console.log('[GamePage] currentUser.current?.id:', currentUser.current?.id)
+  // console.log('[GamePage] currentPlayer:', currentPlayer)
+  // console.log('[GamePage] isPlayerSeated:', isPlayerSeated)
+  // console.log('[GamePage] playerHand:', gameState?.playerHand)
+  // console.log('[GamePage] currentPlayerTurn:', gameState?.currentPlayerTurn)
+  // console.log('[GamePage] isPlayerTurn:', gameState?.currentPlayerTurn === currentPlayer?.name)
 
   // Loading screen
   if (!connectionStatus.overall || isJoining) {
@@ -519,6 +653,7 @@ export default function GamePage() {
         isViewer={isViewer}
         isCurrentPlayerHost={currentPlayer?.isHost || false}
         gameControlConnected={connectionStatus.gameControl}
+        isStarting={isStartingRound}
         onStartRound={handleStartRound}
         dealerHand={gameState?.dealerHand}
         playerHand={gameState?.playerHand}
@@ -540,6 +675,8 @@ export default function GamePage() {
         onError={setError}
         seatClickLoading={seatClickLoading}
         setSeatClickLoading={setSeatClickLoading}
+        // Pass hand information for each player
+        playersWithHands={gameState?.playersWithHands || []}
       />
 
       {/* Game Bettings - hidden for gameplay testing (handled by coworker) */}

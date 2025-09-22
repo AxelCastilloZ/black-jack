@@ -23,6 +23,7 @@ interface GameTableProps {
   isViewer: boolean
   isCurrentPlayerHost: boolean
   gameControlConnected: boolean
+  isStarting?: boolean
   onStartRound: () => Promise<void>
   // New game state props
   dealerHand?: Hand | null
@@ -39,6 +40,7 @@ export default function GameTable({
   isViewer,
   isCurrentPlayerHost,
   gameControlConnected,
+  isStarting = false,
   onStartRound,
   dealerHand,
   playerHand,
@@ -46,10 +48,10 @@ export default function GameTable({
   onHit,
   onStand
 }: GameTableProps) {
-  const showStartButton = !isViewer && 
-                          canStart && 
-                          gameStatus !== 'InProgress' && 
-                          isCurrentPlayerHost && 
+  const showStartButton = !isViewer &&
+                          canStart &&
+                          gameStatus !== 'InProgress' &&
+                          isCurrentPlayerHost &&
                           gameControlConnected
 
   return (
@@ -57,7 +59,7 @@ export default function GameTable({
       {/* Dealer Hand */}
       <div className="absolute top-20 left-1/2 transform -translate-x-1/2">
         <HandDisplay
-          hand={dealerHand}
+          hand={dealerHand ?? null}
           isDealer={true}
           showAllCards={gameStatus !== 'InProgress' || !isPlayerTurn}
         />
@@ -67,7 +69,7 @@ export default function GameTable({
       {isPlayerSeated && !isViewer && (
         <div className="absolute bottom-32 left-1/2 transform -translate-x-1/2">
           <HandDisplay
-            hand={playerHand}
+            hand={playerHand ?? null}
             isDealer={false}
             showAllCards={true}
             playerName="You"
@@ -123,9 +125,12 @@ export default function GameTable({
         {showStartButton && (
           <button
             onClick={onStartRound}
-            className="ml-4 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold transition-colors"
+            disabled={isStarting}
+            className={`ml-4 px-4 py-2 rounded-lg font-semibold transition-colors text-white ${
+              isStarting ? 'bg-gray-600 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700'
+            }`}
           >
-            Iniciar Ronda
+            {isStarting ? 'Iniciando...' : 'Iniciar Ronda'}
           </button>
         )}
       </div>

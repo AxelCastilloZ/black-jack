@@ -362,6 +362,14 @@ namespace BlackJack.Services.Game
                         return Result.Failure("Table not found");
                     }
 
+                    // Idempotent: if already in progress, return OK immediately
+                    if (table.Status == GameStatus.InProgress)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogInformation("[GameService] StartRoundAsync: already InProgress -> OK");
+                        return Result.Success();
+                    }
+
                     var seats = table.Seats.Where(s => s.IsOccupied && s.Player is not null).ToList();
                     if (seats.Count < 1)
                     {
@@ -376,14 +384,6 @@ namespace BlackJack.Services.Game
                     //     await transaction.RollbackAsync();
                     //     return Result.Failure("Todos los jugadores deben apostar antes de iniciar la ronda");
                     // }
-
-                    // Idempotente: si ya está en progreso, OK
-                    if (table.Status == GameStatus.InProgress)
-                    {
-                        await transaction.RollbackAsync();
-                        _logger.LogInformation("[GameService] StartRoundAsync: ya estaba InProgress -> OK");
-                        return Result.Success();
-                    }
 
                     // TEMP: Relajar validación de estado para permitir pruebas
                     // if (table.Status != GameStatus.WaitingForPlayers)
@@ -441,35 +441,46 @@ namespace BlackJack.Services.Game
 
         public async Task<Result> PlayerActionAsync(Guid tableId, PlayerId playerId, PlayerAction action)
         {
-            _logger.LogInformation($"[GameService] PlayerActionAsync: tableId={tableId}, playerId={playerId}, action={action}");
-
             try
             {
+                _logger.LogInformation($"[GameService] PlayerActionAsync START: tableId={tableId}, playerId={playerId}, action={action}");
+                _logger.LogInformation($"[GameService] PlayerActionAsync: playerId.Value={playerId.Value}");
                 using var transaction = await _tables.BeginTransactionAsync();
 
                 var table = await _tables.GetTableWithPlayersForUpdateAsync(tableId);
+                _logger.LogInformation($"[GameService] Table retrieved: {(table != null ? "Found" : "Not found")}");
+                
                 if (table is null)
                 {
+                    _logger.LogError($"[GameService] Table {tableId} not found");
                     await transaction.RollbackAsync();
                     return Result.Failure("Table not found");
                 }
 
+                _logger.LogInformation($"[GameService] Table status: {table.Status}");
+                
                 if (table.Status != GameStatus.InProgress)
                 {
+                    _logger.LogError($"[GameService] Table {tableId} is not in progress. Status: {table.Status}");
                     await transaction.RollbackAsync();
                     return Result.Failure("La ronda no está en progreso");
                 }
 
+                _logger.LogInformation($"[GameService] Looking for player {playerId} in {table.Seats.Count} seats");
+                
                 var seat = table.Seats.FirstOrDefault(s =>
                     s.IsOccupied && s.Player != null && s.Player.PlayerId == playerId);
 
                 if (seat is null || seat.Player is null)
                 {
+                    _logger.LogError($"[GameService] Player {playerId} not found in any occupied seat");
+                    _logger.LogError($"[GameService] Available seats: {string.Join(", ", table.Seats.Select(s => $"Pos:{s.Position}, Occupied:{s.IsOccupied}, PlayerId:{(s.Player?.PlayerId.Value.ToString() ?? "null")}"))}");
                     await transaction.RollbackAsync();
                     return Result.Failure("Player not seated at this table");
                 }
 
                 var player = seat.Player;
+                _logger.LogInformation($"[GameService] Found player {playerId} at seat {seat.Position}");
 
                 // Para acciones básicas del juego
                 switch (action)
@@ -480,27 +491,45 @@ namespace BlackJack.Services.Game
                         // Get player's current hand
                         if (!player.HandIds.Any())
                         {
+                            _logger.LogError($"[GameService] Player {playerId} has no hand IDs");
                             await transaction.RollbackAsync();
                             return Result.Failure("Player has no active hand");
                         }
                         
                         var handId = player.HandIds.First();
+                        _logger.LogInformation($"[GameService] Player {playerId} hand ID: {handId}");
+                        
                         var playerHand = await _handRepository.GetByIdAsync(handId);
                         if (playerHand == null)
                         {
+                            _logger.LogError($"[GameService] Player {playerId} hand not found for ID: {handId}");
                             await transaction.RollbackAsync();
                             return Result.Failure("Player hand not found");
                         }
                         
+                        _logger.LogInformation($"[GameService] Player {playerId} hand status: {playerHand.Status}, isComplete: {playerHand.IsComplete}");
+                        
                         // Check if hand is already complete (bust, stand, etc.)
                         if (playerHand.IsComplete)
                         {
+                            _logger.LogError($"[GameService] Player {playerId} hand is already complete: {playerHand.Status}");
                             await transaction.RollbackAsync();
                             return Result.Failure("Cannot hit on a completed hand");
                         }
                         
+                        // Check if deck is empty
+                        if (table.Deck.IsEmpty)
+                        {
+                            _logger.LogError($"[GameService] Deck is empty for table {tableId}");
+                            await transaction.RollbackAsync();
+                            return Result.Failure("Cannot deal from empty deck");
+                        }
+                        
                         // Deal one card
+                        _logger.LogInformation($"[GameService] Dealing card to player {playerId}");
                         var card = table.DealCard();
+                        _logger.LogInformation($"[GameService] Card dealt: {card.GetDisplayName()}");
+                        
                         playerHand.AddCard(card);
                         await _handRepository.UpdateAsync(playerHand);
                         

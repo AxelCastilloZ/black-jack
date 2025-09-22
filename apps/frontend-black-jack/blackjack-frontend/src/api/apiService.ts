@@ -13,7 +13,7 @@ function joinUrl(base: string, path: string) {
   return `${b}/${p}`
 }
 
-const TOKEN_KEY = 'auth_token'
+const TOKEN_KEY = 'blackjack_token'
 
 export class ApiService {
   private api: AxiosInstance

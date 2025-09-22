@@ -11,6 +11,20 @@ interface RoomPlayer {
   hasPlayedTurn: boolean
 }
 
+interface Hand {
+  id: string
+  cards: Array<{
+    suit: string
+    rank: string
+  }>
+  value: number
+  status: string
+}
+
+interface PlayerWithHand extends RoomPlayer {
+  hand?: Hand | null
+}
+
 interface GameSeatsProps {
   players: RoomPlayer[]
   roomCode?: string
@@ -24,6 +38,8 @@ interface GameSeatsProps {
   // CORREGIDO: Loading state controlado desde GamePage
   seatClickLoading: number | null
   setSeatClickLoading: (loading: number | null) => void
+  // New prop for players with hand information
+  playersWithHands?: PlayerWithHand[]
 }
 
 export default function GameSeats({
@@ -37,11 +53,19 @@ export default function GameSeats({
   isComponentMounted,
   onError,
   seatClickLoading,
-  setSeatClickLoading
+  setSeatClickLoading,
+  playersWithHands = []
 }: GameSeatsProps) {
+  // console.log('[GameSeats] playersWithHands:', playersWithHands)
   const getPlayerAtPosition = useCallback((position: number) => {
     return players?.find(p => p.position === position)
   }, [players])
+
+  const getPlayerWithHandAtPosition = useCallback((position: number) => {
+    const player = playersWithHands?.find(p => p.position === position)
+    // console.log(`[GameSeats] getPlayerWithHandAtPosition(${position}):`, player)
+    return player
+  }, [playersWithHands])
 
   const currentPlayer = players?.find(p => p.playerId === currentUser?.id)
   const isPlayerSeated = !!currentPlayer
@@ -97,6 +121,7 @@ export default function GameSeats({
       <PlayerPosition 
         position={0}
         player={getPlayerAtPosition(0)}
+        playerWithHand={getPlayerWithHandAtPosition(0)}
         currentUser={currentUser}
         isCurrentUserSeated={isPlayerSeated}
         gameStatus={gameStatus}
@@ -112,6 +137,7 @@ export default function GameSeats({
       <PlayerPosition 
         position={1}
         player={getPlayerAtPosition(1)}
+        playerWithHand={getPlayerWithHandAtPosition(1)}
         currentUser={currentUser}
         isCurrentUserSeated={isPlayerSeated}
         gameStatus={gameStatus}
@@ -127,6 +153,7 @@ export default function GameSeats({
       <PlayerPosition 
         position={2}
         player={getPlayerAtPosition(2)}
+        playerWithHand={getPlayerWithHandAtPosition(2)}
         currentUser={currentUser}
         isCurrentUserSeated={isPlayerSeated}
         gameStatus={gameStatus}
@@ -143,6 +170,7 @@ export default function GameSeats({
       <PlayerPosition 
         position={3}
         player={getPlayerAtPosition(3)}
+        playerWithHand={getPlayerWithHandAtPosition(3)}
         currentUser={currentUser}
         isCurrentUserSeated={isPlayerSeated}
         gameStatus={gameStatus}
@@ -158,6 +186,7 @@ export default function GameSeats({
       <PlayerPosition 
         position={4}
         player={getPlayerAtPosition(4)}
+        playerWithHand={getPlayerWithHandAtPosition(4)}
         currentUser={currentUser}
         isCurrentUserSeated={isPlayerSeated}
         gameStatus={gameStatus}
@@ -173,6 +202,7 @@ export default function GameSeats({
       <PlayerPosition 
         position={5}
         player={getPlayerAtPosition(5)}
+        playerWithHand={getPlayerWithHandAtPosition(5)}
         currentUser={currentUser}
         isCurrentUserSeated={isPlayerSeated}
         gameStatus={gameStatus}
@@ -192,6 +222,7 @@ export default function GameSeats({
 function PlayerPosition({ 
   position, 
   player, 
+  playerWithHand,
   currentUser, 
   isCurrentUserSeated,
   gameStatus,
@@ -206,6 +237,7 @@ function PlayerPosition({
 }: {
   position: number
   player?: RoomPlayer
+  playerWithHand?: PlayerWithHand
   currentUser: any
   isCurrentUserSeated: boolean
   gameStatus?: string
@@ -309,6 +341,23 @@ function PlayerPosition({
           )}
         </div>
       </div>
+
+      {/* Player Hand Display */}
+      {playerWithHand?.hand && gameStatus === 'InProgress' && (
+        <div className="ml-[52px] mt-2">
+          <div className="flex items-center space-x-1">
+            {playerWithHand.hand.cards.map((card, index) => (
+              <div key={index} className="w-8 h-12 bg-white border border-gray-300 rounded text-black text-xs flex flex-col items-center justify-center">
+                <div className="font-bold">{card.rank}</div>
+                <div className="text-xs">{card.suit === 'Hearts' ? '♥' : card.suit === 'Diamonds' ? '♦' : card.suit === 'Clubs' ? '♣' : '♠'}</div>
+              </div>
+            ))}
+            <div className="ml-2 text-white text-sm font-bold">
+              {playerWithHand.hand.value}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="ml-[52px] space-y-1">
         {player.isReady && (

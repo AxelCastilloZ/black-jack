@@ -195,6 +195,14 @@ class SignalRService {
           this.onRoomInfoUpdated?.(data)
         })
 
+        // Some servers emit RoomUpdated; treat it like RoomInfoUpdated
+        connection.on('RoomUpdated', (roomData: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 RoomUpdated event:', roomData)
+          const data = roomData?.data || roomData
+          this.onRoomInfoUpdated?.(data)
+        })
+
         connection.on('RoomInfo', (roomData: any) => {
           if (this.isDestroying) return
           console.log('[SignalR] 📥 RoomInfo event:', roomData)
@@ -206,11 +214,24 @@ class SignalRService {
           console.log('[SignalR] 📥 PlayerJoined event:', data)
           this.onPlayerJoined?.(data)
         })
-        
+
         connection.on('PlayerLeft', (data: any) => {
           if (this.isDestroying) return
           console.log('[SignalR] 📥 PlayerLeft event:', data)
           this.onPlayerLeft?.(data)
+        })
+
+        // Game events can come through RoomHub as well
+        connection.on('GameStarted', (gameData: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 GameStarted event (via RoomHub):', gameData)
+          this.onGameStateChanged?.(gameData)
+        })
+
+        connection.on('GameStateUpdated', (gameState: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 GameStateUpdated event (via RoomHub):', gameState)
+          this.onGameStateChanged?.(gameState)
         })
         break
 
@@ -238,6 +259,13 @@ class SignalRService {
         connection.on('GameStateChanged', (gameState: any) => {
           if (this.isDestroying) return
           console.log('[SignalR] 📥 GameStateChanged event:', gameState)
+          this.onGameStateChanged?.(gameState)
+        })
+
+        // Some servers emit GameStateUpdated instead of GameStateChanged
+        connection.on('GameStateUpdated', (gameState: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 GameStateUpdated event:', gameState)
           this.onGameStateChanged?.(gameState)
         })
         break
