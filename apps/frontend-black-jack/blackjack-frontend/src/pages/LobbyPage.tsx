@@ -1,4 +1,4 @@
-// src/pages/LobbyPage.tsx - Usando endpoint /api/table que funciona
+// src/pages/LobbyPage.tsx - EXTENDIDO con MinBetPerRound display
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { signalRService } from '../services/signalr'
@@ -12,6 +12,9 @@ interface LobbyTable {
   minBet: number
   maxBet: number
   status: string
+  // NUEVO: Auto-betting
+  minBetPerRound?: number
+  autoBettingEnabled?: boolean
 }
 
 function formatMoney(amount: number): string {
@@ -30,6 +33,9 @@ export default function LobbyPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isConnected, setIsConnected] = useState(false)
+
+  // NUEVO: Filtro para auto-betting
+  const [showOnlyAffordable, setShowOnlyAffordable] = useState(false)
 
   // Verificar conexión SignalR
   useEffect(() => {
@@ -125,17 +131,20 @@ export default function LobbyPage() {
         maxPlayers: table.maxPlayers || 6,
         minBet: table.minBet || 10,
         maxBet: table.maxBet || 1000,
-        status: table.status || 'WaitingForPlayers'
+        status: table.status || 'WaitingForPlayers',
+        // NUEVO: Auto-betting fields - con valores por defecto si no vienen del API
+        minBetPerRound: table.minBetPerRound || table.minBet || 10,
+        autoBettingEnabled: table.autoBettingEnabled !== false // Default true
       })) : []
 
-      console.log('[LOBBY] Parsed tables:', tables)
+      console.log('[LOBBY] Parsed tables with auto-betting info:', tables)
       return tables
 
     } catch (error: any) {
       console.error('[LOBBY] Error loading from API:', error)
       
-      // Datos de respaldo
-      console.warn('[LOBBY] Using fallback data')
+      // Datos de respaldo con auto-betting
+      console.warn('[LOBBY] Using fallback data with auto-betting')
       return [
         {
           id: 'fallback-table-1',
@@ -144,27 +153,70 @@ export default function LobbyPage() {
           maxPlayers: 6,
           minBet: 10,
           maxBet: 1000,
-          status: 'WaitingForPlayers'
+          status: 'WaitingForPlayers',
+          minBetPerRound: 25,
+          autoBettingEnabled: true
+        },
+        {
+          id: 'fallback-table-2',
+          name: 'Mesa VIP (Fallback)',
+          playerCount: 2,
+          maxPlayers: 6,
+          minBet: 100,
+          maxBet: 5000,
+          status: 'WaitingForPlayers',
+          minBetPerRound: 200,
+          autoBettingEnabled: true
         }
       ]
     }
   }
 
-  // Filtrar mesas
+  // Filtrar mesas - EXTENDIDO con filtro de affordability
   const filteredTables = useMemo(() => {
     const query = nameQuery.trim().toLowerCase()
+    const userBalance = currentUser?.balance || 0
+    
     return allTables.filter(table => {
       if (query && !table.name.toLowerCase().includes(query)) return false
       if (table.minBet < minBet) return false
       if (table.maxBet > 0 && table.maxBet > maxBet) return false
+      
+      // NUEVO: Filtrar por affordability de auto-betting
+      if (showOnlyAffordable && table.minBetPerRound && userBalance < table.minBetPerRound) {
+        return false
+      }
+      
       return true
     })
-  }, [allTables, nameQuery, minBet, maxBet])
+  }, [allTables, nameQuery, minBet, maxBet, showOnlyAffordable, currentUser?.balance])
 
   // Crear nueva mesa usando TableController
   const handleCreateTable = async () => {
     const name = prompt('Nombre de la nueva mesa:', 'Mi Mesa VIP')
     if (!name?.trim()) return
+
+    // NUEVO: Preguntar por auto-betting configuration
+    const minBetPerRoundStr = prompt(
+      'Apuesta automática por ronda (en $):',
+      '50'
+    )
+    const minBetPerRound = parseFloat(minBetPerRoundStr || '50')
+
+    if (isNaN(minBetPerRound) || minBetPerRound <= 0) {
+      alert('La apuesta por ronda debe ser un número válido mayor a 0')
+      return
+    }
+
+    // Verificar que el usuario pueda costear la apuesta
+    const userBalance = currentUser?.balance || 0
+    if (userBalance < minBetPerRound) {
+      const proceed = confirm(
+        `Tu balance actual ($${userBalance}) es menor a la apuesta por ronda ($${minBetPerRound}). ` +
+        '¿Deseas crear la mesa de todos modos? Otros jugadores podrán unirse si tienen fondos suficientes.'
+      )
+      if (!proceed) return
+    }
     
     try {
       setCreating(true)
@@ -172,7 +224,7 @@ export default function LobbyPage() {
       
       const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:7102'
       
-      console.log('[LOBBY] Creating table:', name)
+      console.log('[LOBBY] Creating table:', name, 'with minBetPerRound:', minBetPerRound)
       console.log('[LOBBY] Using TableController POST endpoint')
       
       const response = await fetch(`${API_BASE}/api/table`, {
@@ -180,7 +232,10 @@ export default function LobbyPage() {
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ name: name.trim() })
+        body: JSON.stringify({ 
+          name: name.trim(),
+          minBetPerRound: minBetPerRound
+        })
       })
 
       console.log('[LOBBY] Create response status:', response.status)
@@ -202,13 +257,15 @@ export default function LobbyPage() {
         maxPlayers: newTable.maxPlayers || 6,
         minBet: newTable.minBet || 10,
         maxBet: newTable.maxBet || 1000,
-        status: newTable.status || 'WaitingForPlayers'
+        status: newTable.status || 'WaitingForPlayers',
+        minBetPerRound: newTable.minBetPerRound || minBetPerRound,
+        autoBettingEnabled: true
       }
 
       setAllTables(prev => [newLobbyTable, ...prev])
       
       // Navegar usando el ID de la mesa
-      console.log('[LOBBY] Navigating to table:', newLobbyTable.id)
+      console.log('[LOBBY] Navigating to created table:', newLobbyTable.id)
       navigate({ to: `/game/${newLobbyTable.id}` })
       
     } catch (e: any) {
@@ -220,16 +277,47 @@ export default function LobbyPage() {
     }
   }
 
-  // Navegar a mesa
-  const handleJoinTable = (tableId: string) => {
-    console.log('[LOBBY] Navigating to table:', tableId)
-    navigate({ to: `/game/${tableId}` })
+  // Navegar a mesa - NUEVO: Con confirmación de auto-betting
+  const handleJoinTable = (table: LobbyTable) => {
+    const userBalance = currentUser?.balance || 0
+    
+    // Verificar si puede costear la apuesta automática
+    if (table.autoBettingEnabled && table.minBetPerRound && userBalance < table.minBetPerRound) {
+      alert(
+        `No tienes fondos suficientes para unirte a esta mesa.\n\n` +
+        `Tu balance: ${formatMoney(userBalance)}\n` +
+        `Apuesta requerida por ronda: ${formatMoney(table.minBetPerRound)}\n\n` +
+        `Necesitas al menos ${formatMoney(table.minBetPerRound - userBalance)} más para jugar.`
+      )
+      return
+    }
+
+    // NUEVO: Confirmación explícita de auto-betting (opcional, para claridad)
+    if (table.autoBettingEnabled && table.minBetPerRound) {
+      const message = 
+        `🎰 MESA CON APUESTAS AUTOMÁTICAS 🎰\n\n` +
+        `Mesa: ${table.name}\n` +
+        `Costo por ronda: ${formatMoney(table.minBetPerRound)}\n` +
+        `Tu balance actual: ${formatMoney(userBalance)}\n\n` +
+        `Al unirte a esta mesa, aceptas:\n` +
+        `• Apuestas automáticas de ${formatMoney(table.minBetPerRound)} por ronda\n` +
+        `• Si te quedas sin fondos, serás removido automáticamente\n` +
+        `• Las apuestas se deducen al inicio de cada ronda\n\n` +
+        `¿Deseas continuar?`
+      
+      if (!confirm(message)) {
+        return
+      }
+    }
+
+    console.log('[LOBBY] Navigating to table:', table.id, 'with auto-betting:', table.autoBettingEnabled)
+    navigate({ to: `/game/${table.id}` })
   }
 
   // Navegar a mesa como viewer
-  const handleViewTable = (tableId: string) => {
-    console.log('[LOBBY] Navigating to viewer mode for table:', tableId)
-    navigate({ to: `/viewer/${tableId}` })
+  const handleViewTable = (table: LobbyTable) => {
+    console.log('[LOBBY] Navigating to viewer mode for table:', table.id)
+    navigate({ to: `/viewer/${table.id}` })
   }
 
   // Recargar mesas
@@ -256,6 +344,22 @@ export default function LobbyPage() {
     navigate({ to: '/' })
   }
 
+  // NUEVO: Calcular estadísticas de auto-betting
+  const autoBettingStats = useMemo(() => {
+    const userBalance = currentUser?.balance || 0
+    const tablesWithAutoBetting = allTables.filter(t => t.autoBettingEnabled && t.minBetPerRound)
+    const affordableTables = tablesWithAutoBetting.filter(t => userBalance >= (t.minBetPerRound || 0))
+    const cheapestTable = tablesWithAutoBetting.reduce((min, table) => 
+      (table.minBetPerRound || Infinity) < (min.minBetPerRound || Infinity) ? table : min
+    , tablesWithAutoBetting[0])
+
+    return {
+      totalWithAutoBetting: tablesWithAutoBetting.length,
+      affordableTables: affordableTables.length,
+      cheapestMinBet: cheapestTable?.minBetPerRound || 0
+    }
+  }, [allTables, currentUser?.balance])
+
   return (
     <div className="min-h-screen bg-slate-900 text-white">
       {/* Header */}
@@ -277,17 +381,25 @@ export default function LobbyPage() {
                 <span className="text-xl">♣</span>
               </div>
               <h1 className="text-xl font-bold">Lobby de Mesas</h1>
+              {/* NUEVO: Indicador de auto-betting */}
+              <span className="px-2 py-1 bg-yellow-600 text-black text-xs font-bold rounded-full">
+                🎰 AUTO-BET
+              </span>
             </div>
           </div>
 
           <div className="flex items-center gap-4">
-            {/* User info */}
+            {/* User info - MEJORADO con balance destacado */}
             <div className="text-right">
               <div className="text-white font-semibold">
                 {currentUser?.displayName || 'Usuario'}
               </div>
-              <div className="text-emerald-400 font-bold">
+              <div className="text-emerald-400 font-bold text-lg">
                 {formatMoney(currentUser?.balance || 0)}
+              </div>
+              {/* NUEVO: Indicador de mesas que puede costear */}
+              <div className="text-xs text-slate-400">
+                Puedes jugar en {autoBettingStats.affordableTables}/{autoBettingStats.totalWithAutoBetting} mesas
               </div>
             </div>
 
@@ -328,7 +440,7 @@ export default function LobbyPage() {
 
       <main className="max-w-7xl mx-auto px-4 py-6">
         <div className="grid grid-cols-12 gap-6">
-          {/* Sidebar - Filtros */}
+          {/* Sidebar - Filtros EXTENDIDOS */}
           <aside className="col-span-12 lg:col-span-3">
             <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
               <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
@@ -383,9 +495,25 @@ export default function LobbyPage() {
                     className="w-full accent-emerald-600"
                   />
                 </div>
+
+                {/* NUEVO: Filtro de affordability */}
+                <div>
+                  <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showOnlyAffordable}
+                      onChange={(e) => setShowOnlyAffordable(e.target.checked)}
+                      className="rounded bg-slate-700 border-slate-600 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span>Solo mesas que puedo costear</span>
+                  </label>
+                  <div className="text-xs text-slate-400 mt-1">
+                    Balance actual: {formatMoney(currentUser?.balance || 0)}
+                  </div>
+                </div>
               </div>
 
-              {/* Stats */}
+              {/* Stats EXTENDIDAS */}
               <div className="mt-6 pt-4 border-t border-slate-700">
                 <h4 className="font-semibold mb-3">Estadísticas</h4>
                 <div className="text-sm space-y-2 text-slate-300">
@@ -407,6 +535,40 @@ export default function LobbyPage() {
                       {filteredTables.length}
                     </span>
                   </div>
+                  {/* NUEVAS stats de auto-betting */}
+                  <div className="flex justify-between">
+                    <span>🎰 Con Auto-Betting:</span>
+                    <span className="text-yellow-400 font-semibold">
+                      {autoBettingStats.totalWithAutoBetting}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>💰 Puedes Costear:</span>
+                    <span className="text-green-400 font-semibold">
+                      {autoBettingStats.affordableTables}
+                    </span>
+                  </div>
+                  {autoBettingStats.cheapestMinBet > 0 && (
+                    <div className="flex justify-between">
+                      <span>💵 Mesa Más Barata:</span>
+                      <span className="text-blue-400 font-semibold">
+                        {formatMoney(autoBettingStats.cheapestMinBet)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* NUEVO: Auto-betting info */}
+              <div className="mt-4 p-3 bg-yellow-900/20 border border-yellow-700/50 rounded-lg">
+                <div className="flex items-center gap-2 text-yellow-400 font-semibold text-sm mb-2">
+                  🎰 Auto-Betting Activo
+                </div>
+                <div className="text-xs text-yellow-200 space-y-1">
+                  <div>• Las apuestas se deducen automáticamente</div>
+                  <div>• Se requiere balance suficiente</div>
+                  <div>• Remoción automática sin fondos</div>
+                  <div>• Aceptación implícita al unirse</div>
                 </div>
               </div>
             </div>
@@ -417,8 +579,16 @@ export default function LobbyPage() {
             <div className="mb-6">
               <h2 className="text-2xl font-bold mb-2">Mesas Disponibles</h2>
               <p className="text-slate-400">
-                Selecciona una mesa y comienza a jugar BlackJack en tiempo real
+                Selecciona una mesa y comienza a jugar BlackJack con apuestas automáticas en tiempo real
               </p>
+              {/* NUEVO: Info sobre auto-betting */}
+              <div className="flex items-center gap-4 mt-3 p-3 bg-blue-900/20 border border-blue-700/50 rounded-lg">
+                <div className="text-2xl">🎰</div>
+                <div className="text-sm text-blue-200">
+                  <div className="font-semibold">Sistema de Apuestas Automáticas</div>
+                  <div>Al unirte a una mesa, aceptas apuestas automáticas por ronda. Las apuestas se deducen al inicio de cada ronda.</div>
+                </div>
+              </div>
               <div className="text-xs text-slate-500 mt-2">
                 Usando endpoint: /api/table (TableController)
               </div>
@@ -477,8 +647,9 @@ export default function LobbyPage() {
                   <TableCard
                     key={table.id}
                     table={table}
-                    onJoin={() => handleJoinTable(table.id)}
-                    onView={() => handleViewTable(table.id)}
+                    currentUserBalance={currentUser?.balance || 0}
+                    onJoin={() => handleJoinTable(table)}
+                    onView={() => handleViewTable(table)}
                   />
                 ))}
               </div>
@@ -490,8 +661,18 @@ export default function LobbyPage() {
   )
 }
 
-// Componente para cada mesa
-function TableCard({ table, onJoin, onView }: { table: LobbyTable; onJoin: () => void; onView: () => void }) {
+// Componente para cada mesa - EXTENDIDO con auto-betting display
+function TableCard({ 
+  table, 
+  currentUserBalance, 
+  onJoin, 
+  onView 
+}: { 
+  table: LobbyTable
+  currentUserBalance: number
+  onJoin: () => void
+  onView: () => void 
+}) {
   const getStatusConfig = (status: string) => {
     switch (status.toLowerCase()) {
       case 'waitingforplayers':
@@ -523,9 +704,19 @@ function TableCard({ table, onJoin, onView }: { table: LobbyTable; onJoin: () =>
 
   const statusConfig = getStatusConfig(table.status)
   const isVip = table.maxBet >= 1000
+  
+  // NUEVO: Lógica de auto-betting
+  const autoBetAmount = table.minBetPerRound || 0
+  const canAffordAutoBet = currentUserBalance >= autoBetAmount
+  const fundingGap = autoBetAmount - currentUserBalance
+  const estimatedRounds = autoBetAmount > 0 ? Math.floor(currentUserBalance / autoBetAmount) : 0
 
   return (
-    <div className="bg-gradient-to-r from-slate-800 to-slate-700 border border-slate-600 rounded-xl p-6 hover:border-slate-500 transition-all shadow-lg">
+    <div className={`
+      bg-gradient-to-r from-slate-800 to-slate-700 border border-slate-600 rounded-xl p-6 
+      hover:border-slate-500 transition-all shadow-lg
+      ${!canAffordAutoBet ? 'opacity-75 border-red-600/30' : ''}
+    `}>
       <div className="flex items-center justify-between">
         {/* Mesa Info */}
         <div className="flex-1">
@@ -539,6 +730,20 @@ function TableCard({ table, onJoin, onView }: { table: LobbyTable; onJoin: () =>
             {isVip && (
               <span className="px-2 py-1 rounded-full bg-yellow-600 text-black text-xs font-bold">
                 👑 VIP
+              </span>
+            )}
+
+            {/* NUEVO: Indicador de auto-betting */}
+            {table.autoBettingEnabled && (
+              <span className="px-2 py-1 rounded-full bg-purple-600 text-white text-xs font-bold">
+                🎰 AUTO
+              </span>
+            )}
+
+            {/* NUEVO: Indicador de affordability */}
+            {!canAffordAutoBet && (
+              <span className="px-2 py-1 rounded-full bg-red-600 text-white text-xs font-bold">
+                ❌ Sin Fondos
               </span>
             )}
           </div>
@@ -559,6 +764,55 @@ function TableCard({ table, onJoin, onView }: { table: LobbyTable; onJoin: () =>
               <span>ID: {table.id.slice(0, 8)}...</span>
             </div>
           </div>
+
+          {/* NUEVO: Info de auto-betting destacada */}
+          {table.autoBettingEnabled && autoBetAmount > 0 && (
+            <div className="mt-3 p-3 bg-purple-900/20 border border-purple-600/30 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-purple-300 font-semibold text-sm flex items-center gap-2">
+                    🎰 Apuesta Automática por Ronda
+                  </div>
+                  <div className="text-white font-bold text-lg">
+                    {formatMoney(autoBetAmount)}
+                  </div>
+                </div>
+                <div className="text-right">
+                  {canAffordAutoBet ? (
+                    <div className="text-green-400 text-sm">
+                      ✅ Puedes jugar
+                      <div className="text-xs text-slate-400">
+                        ~{estimatedRounds} rondas
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-red-400 text-sm">
+                      ❌ Fondos insuficientes
+                      <div className="text-xs text-slate-400">
+                        Faltan {formatMoney(fundingGap)}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              {/* NUEVO: Detalles de balance */}
+              <div className="mt-2 text-xs text-purple-200 space-y-1">
+                <div className="flex justify-between">
+                  <span>Tu balance:</span>
+                  <span className={canAffordAutoBet ? 'text-green-400' : 'text-red-400'}>
+                    {formatMoney(currentUserBalance)}
+                  </span>
+                </div>
+                {canAffordAutoBet && estimatedRounds > 0 && (
+                  <div className="flex justify-between">
+                    <span>Rondas estimadas:</span>
+                    <span className="text-yellow-400">~{estimatedRounds}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Actions */}
@@ -576,16 +830,30 @@ function TableCard({ table, onJoin, onView }: { table: LobbyTable; onJoin: () =>
               disabled={!statusConfig.canJoin}
               className={`px-6 py-3 rounded-lg font-semibold transition-all ${
                 statusConfig.canJoin
-                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  ? canAffordAutoBet
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                    : 'bg-orange-600 hover:bg-orange-700 text-white'
                   : 'bg-gray-600 text-gray-400 cursor-not-allowed'
               }`}
+              title={
+                !statusConfig.canJoin 
+                  ? 'Mesa no disponible'
+                  : !canAffordAutoBet
+                    ? `Necesitas ${formatMoney(fundingGap)} más para jugar`
+                    : 'Unirse y aceptar apuestas automáticas'
+              }
             >
-              {statusConfig.canJoin ? 'Unirse' : 'Ocupado'}
+              {!statusConfig.canJoin 
+                ? 'Ocupado'
+                : !canAffordAutoBet
+                  ? 'Sin Fondos'
+                  : 'Unirse'}
             </button>
 
             <button
               onClick={onView}
               className="px-6 py-3 rounded-lg font-semibold transition-all bg-blue-600 hover:bg-blue-700 text-white"
+              title="Ver como espectador (sin apuestas)"
             >
               Ver
             </button>

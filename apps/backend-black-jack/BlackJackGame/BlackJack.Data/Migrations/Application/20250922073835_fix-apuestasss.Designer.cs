@@ -4,6 +4,7 @@ using BlackJack.Data.Context;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace BlackJack.Data.Migrations.Application
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250922073835_fix-apuestasss")]
+    partial class fixapuestasss
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -190,10 +193,6 @@ namespace BlackJack.Data.Migrations.Application
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
-                    b.Property<Guid>("PlayerEntityId")
-                        .HasColumnType("uniqueidentifier")
-                        .HasColumnName("PlayerEntityId");
-
                     b.Property<Guid>("PlayerId")
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("PlayerId");
@@ -211,9 +210,6 @@ namespace BlackJack.Data.Migrations.Application
                     b.HasKey("Id");
 
                     b.HasIndex("GameRoomId1");
-
-                    b.HasIndex("PlayerEntityId")
-                        .HasDatabaseName("IX_RoomPlayers_PlayerEntityId");
 
                     b.HasIndex("PlayerId")
                         .HasDatabaseName("IX_RoomPlayers_PlayerId");
@@ -435,15 +431,7 @@ namespace BlackJack.Data.Migrations.Application
                         .WithMany("SeatedPlayers")
                         .HasForeignKey("GameRoomId1");
 
-                    b.HasOne("BlackJack.Domain.Models.Users.Player", "Player")
-                        .WithMany()
-                        .HasForeignKey("PlayerEntityId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("GameRoom");
-
-                    b.Navigation("Player");
                 });
 
             modelBuilder.Entity("BlackJack.Domain.Models.Game.Seat", b =>

@@ -1,4 +1,4 @@
-﻿// BlackJack.Data.Repositories.Game/TableRepository.cs - CORREGIDO CON GUID
+﻿// BlackJack.Data.Repositories.Game/TableRepository.cs - LIMPIO (Spectators removidos)
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using BlackJack.Domain.Models.Game;
@@ -46,10 +46,10 @@ public class TableRepository : Repository<BlackjackTable>, ITableRepository
     {
         try
         {
+            // LIMPIADO: Removido .Include(t => t.Spectators) porque ya no existe
             var table = await _dbSet
                 .Include(t => t.Seats)
                     .ThenInclude(s => s.Player)
-                .Include(t => t.Spectators)
                 .FirstOrDefaultAsync(t => t.Id == tableId);
 
             Console.WriteLine($"[TableRepository] GetTableWithPlayersAsync for {tableId}: {(table != null ? "Found" : "Not found")}");
@@ -66,11 +66,10 @@ public class TableRepository : Repository<BlackjackTable>, ITableRepository
     {
         try
         {
-            // CAMBIO: Usar un approach más compatible que funcione en diferentes DBs
+            // LIMPIADO: Removido .Include(t => t.Spectators) porque ya no existe
             var table = await _dbSet
                 .Include(t => t.Seats)
                     .ThenInclude(s => s.Player)
-                .Include(t => t.Spectators)
                 .FirstOrDefaultAsync(t => t.Id == tableId);
 
             Console.WriteLine($"[TableRepository] GetTableWithPlayersForUpdateAsync for {tableId}: {(table != null ? "Found" : "Not found")}");
@@ -87,6 +86,7 @@ public class TableRepository : Repository<BlackjackTable>, ITableRepository
     {
         try
         {
+            // LIMPIO: Solo Seats, no Spectators
             var tables = await _dbSet
                 .Where(t => t.Status == status)
                 .Include(t => t.Seats)

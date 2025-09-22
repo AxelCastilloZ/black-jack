@@ -1,8 +1,9 @@
-﻿// GameRoomConfiguration.cs
+﻿// GameRoomConfiguration.cs - SIMPLIFICADO Y CORREGIDO
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
+using BlackJack.Domain.Models.Betting;
 
 namespace BlackJack.Data.Configurations.Game;
 
@@ -43,7 +44,17 @@ public class GameRoomConfiguration : IEntityTypeConfiguration<GameRoom>
         builder.Property(g => g.BlackjackTableId)
             .IsRequired(false);
 
-        // Relaciones
+        // NUEVO: Configuración para MinBetPerRound
+        builder.Property(g => g.MinBetPerRound)
+            .HasConversion(
+                money => money.Amount,              // Convertir Money a decimal para DB
+                value => new Money(value)           // Convertir decimal a Money desde DB
+            )
+            .HasColumnName("MinBetPerRound")
+            .HasColumnType("decimal(18,2)")         // Precisión para dinero
+            .IsRequired();                          // Default manejado en constructor de GameRoom
+
+        // SIMPLIFICADO: Relaciones normales con ICollection
         builder.HasMany(g => g.Players)
             .WithOne()
             .HasForeignKey("GameRoomId")
@@ -64,5 +75,8 @@ public class GameRoomConfiguration : IEntityTypeConfiguration<GameRoom>
 
         // Índice en HostPlayerId para consultas rápidas
         builder.HasIndex(g => g.HostPlayerId);
+
+        // NUEVO: Índice en MinBetPerRound para filtros por apuesta mínima
+        builder.HasIndex(g => g.MinBetPerRound);
     }
 }

@@ -28,11 +28,14 @@ public class ApplicationDbContext : DbContext
     {
         base.OnModelCreating(modelBuilder);
 
-        // CRÍTICO: Ignorar todos los tipos que no deben persistirse
+        // CRÍTICO: Ignorar solo tipos que realmente no deben persistirse
         IgnoreNonPersistentTypes(modelBuilder);
 
         // Aplicar configuraciones específicas
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
+
+        // NUEVO: Configuraciones adicionales para resolver conflictos de mapping
+        ConfigureSpecialMappings(modelBuilder);
     }
 
     private static void IgnoreNonPersistentTypes(ModelBuilder modelBuilder)
@@ -49,18 +52,78 @@ public class ApplicationDbContext : DbContext
         modelBuilder.Ignore<SpectatorLeftEvent>();
         modelBuilder.Ignore<TurnChangedEvent>();
 
-        // 2. Ignorar Value Objects
+        // 2. Ignorar SOLO Value Objects que no se usan en entities
         modelBuilder.Ignore<Card>();
         modelBuilder.Ignore<Deck>();
-        modelBuilder.Ignore<Money>();
+
+        // FIX CRÍTICO: NO ignorar PlayerId, Money, etc. porque SÍ se usan en entities
+        // Estos se manejan con HasConversion en las configuraciones específicas
+        // modelBuilder.Ignore<PlayerId>();  // REMOVIDO - causaba el conflicto
+        // modelBuilder.Ignore<Money>();     // REMOVIDO - se usa en GameRoom.MinBetPerRound
+
+        // Ignorar Value Objects que realmente no se persisten
         modelBuilder.Ignore<Bet>();
         modelBuilder.Ignore<Payout>();
-        modelBuilder.Ignore<PlayerId>();
 
-        // 3. CORREGIDO: NO ignorar enums - EF los maneja automáticamente
-        // Los enums no necesitan ser ignorados explícitamente
-
-        // 4. Ignorar interfaces
+        // 3. Ignorar interfaces
         modelBuilder.Ignore<IAggregateRoot>();
+    }
+
+    private static void ConfigureSpecialMappings(ModelBuilder modelBuilder)
+    {
+        // NUEVO: Configuración global para PlayerId si no está manejado por configuraciones específicas
+        // Esto asegura consistencia en todo el proyecto
+
+        // Configurar query splitting para mejorar performance con múltiples Includes
+        // Esto resuelve el warning sobre QuerySplittingBehavior
+        modelBuilder.HasDefaultSchema("dbo");
+
+        // CRÍTICO: Configurar comportamiento de query splitting para evitar problemas de performance
+        // con múltiples collections (Players y Spectators en GameRoom)
+        foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+        {
+            // Configurar tabla nombres consistentes
+            if (entityType.ClrType == typeof(GameRoom))
+            {
+                entityType.SetTableName("GameRooms");
+            }
+            else if (entityType.ClrType == typeof(RoomPlayer))
+            {
+                entityType.SetTableName("RoomPlayers");
+            }
+            else if (entityType.ClrType == typeof(Spectator))
+            {
+                entityType.SetTableName("Spectators");
+            }
+        }
+
+        // NUEVO: Configuración específica para prevenir ReadOnly collections
+        // Asegurar que las navigation properties se manejen correctamente
+        modelBuilder.Entity<GameRoom>()
+            .Navigation(e => e.Players)
+            .EnableLazyLoading(false); // Evitar lazy loading problemático
+
+        modelBuilder.Entity<GameRoom>()
+            .Navigation(e => e.Spectators)
+            .EnableLazyLoading(false); // Evitar lazy loading problemático
+    }
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        base.OnConfiguring(optionsBuilder);
+
+        // NUEVO: Configuración para debugging y performance
+        if (!optionsBuilder.IsConfigured)
+        {
+            // Solo para debugging - remover en producción
+            optionsBuilder.EnableSensitiveDataLogging()
+                         .EnableDetailedErrors();
+        }
+
+        // CRÍTICO: Configurar query splitting behavior para múltiples collections
+        optionsBuilder.UseSqlServer(o =>
+        {
+            o.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);
+        });
     }
 }
