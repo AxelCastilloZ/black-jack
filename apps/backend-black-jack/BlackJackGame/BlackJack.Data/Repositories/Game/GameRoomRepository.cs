@@ -404,6 +404,79 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
 
     #endregion
 
+    #region NUEVO: Limpieza de Datos - SOLUCIÓN AL PROBLEMA CRÍTICO
+
+    /// <summary>
+    /// MÉTODO CRÍTICO: Elimina completamente un RoomPlayer de la base de datos
+    /// Resuelve el problema de "datos fantasma" que causaba "Ya estás en otra sala"
+    /// </summary>
+    public async Task<bool> RemoveRoomPlayerAsync(string roomCode, PlayerId playerId)
+    {
+        var sql = @"
+            DELETE FROM RoomPlayers 
+            WHERE GameRoomId = (SELECT Id FROM GameRooms WHERE RoomCode = @RoomCode)
+              AND PlayerId = @PlayerId";
+
+        var parameters = new[]
+        {
+            new SqlParameter("@RoomCode", roomCode),
+            new SqlParameter("@PlayerId", playerId.Value)
+        };
+
+        var affectedRows = await _context.Database.ExecuteSqlRawAsync(sql, parameters);
+        return affectedRows > 0;
+    }
+
+    /// <summary>
+    /// MÉTODO DE LIMPIEZA COMPLETA: Elimina TODOS los registros de un jugador de TODAS las salas
+    /// Método de emergencia para casos extremos
+    /// </summary>
+    public async Task<int> ForceCleanupPlayerFromAllRoomsAsync(PlayerId playerId)
+    {
+        var sql = @"
+            DELETE FROM RoomPlayers 
+            WHERE PlayerId = @PlayerId";
+
+        var parameter = new SqlParameter("@PlayerId", playerId.Value);
+        return await _context.Database.ExecuteSqlRawAsync(sql, parameter);
+    }
+
+    /// <summary>
+    /// DIAGNÓSTICO: Obtiene todas las salas donde un jugador tiene registros huérfanos
+    /// </summary>
+    public async Task<List<string>> GetPlayerOrphanRoomsAsync(PlayerId playerId)
+    {
+        var sql = @"
+            SELECT gr.RoomCode
+            FROM RoomPlayers rp
+            INNER JOIN GameRooms gr ON rp.GameRoomId = gr.Id
+            WHERE rp.PlayerId = @PlayerId";
+
+        var parameter = new SqlParameter("@PlayerId", playerId.Value);
+
+        return await _context.Database
+            .SqlQueryRaw<string>(sql, parameter)
+            .ToListAsync();
+    }
+
+    /// <summary>
+    /// LIMPIEZA AUTOMÁTICA: Elimina salas vacías (sin jugadores)
+    /// </summary>
+    public async Task<int> CleanupEmptyRoomsAsync()
+    {
+        var sql = @"
+            DELETE FROM GameRooms 
+            WHERE Id NOT IN (
+                SELECT DISTINCT GameRoomId 
+                FROM RoomPlayers
+            )
+            AND Status IN (0, 2)"; // WaitingForPlayers o Finished
+
+        return await _context.Database.ExecuteSqlRawAsync(sql);
+    }
+
+    #endregion
+
     #region Override Methods with Immediate Persistence
 
     public override async Task AddAsync(GameRoom entity)
