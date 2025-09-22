@@ -1,4 +1,4 @@
-﻿// Services/Game/GameService.cs - COMPLETO Y CORREGIDO CON GUID
+﻿// Services/Game/GameService.cs - CON USERSERVICE SYNC - SIN ERRORES
 using System;
 using System.Linq;
 using System.Threading.Tasks;
@@ -10,6 +10,7 @@ using BlackJack.Domain.Models.Cards;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Services.Common;
+using BlackJack.Services.User;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -19,12 +20,14 @@ namespace BlackJack.Services.Game
     {
         private readonly ITableRepository _tables;
         private readonly IPlayerRepository _players;
+        private readonly IUserService _userService;
         private readonly ILogger<GameService> _logger;
 
-        public GameService(ITableRepository tables, IPlayerRepository players, ILogger<GameService> logger)
+        public GameService(ITableRepository tables, IPlayerRepository players, IUserService userService, ILogger<GameService> logger)
         {
             _tables = tables;
             _players = players;
+            _userService = userService;
             _logger = logger;
         }
 
@@ -107,7 +110,6 @@ namespace BlackJack.Services.Game
                 {
                     using var transaction = await _tables.BeginTransactionAsync();
 
-                    // Obtener tabla con lock
                     var table = await _tables.GetTableWithPlayersForUpdateAsync(tableId);
                     if (table is null)
                     {
@@ -115,7 +117,6 @@ namespace BlackJack.Services.Game
                         return Result.Failure("Table not found");
                     }
 
-                    // Verificar si ya está sentado EN CUALQUIER ASIENTO
                     var alreadySeated = table.Seats.FirstOrDefault(s =>
                         s.IsOccupied && s.Player != null && s.Player.PlayerId.Equals(playerId));
 
@@ -126,7 +127,6 @@ namespace BlackJack.Services.Game
                         return Result.Failure($"Ya estás sentado en el asiento {alreadySeated.Position + 1}. Sal de ese asiento primero.");
                     }
 
-                    // Verificar el asiento específico
                     var seat = table.Seats.FirstOrDefault(s => s.Position == seatPosition);
                     if (seat is null)
                     {
@@ -147,18 +147,45 @@ namespace BlackJack.Services.Game
                         return Result.Failure("No puedes unirte a la mesa mientras hay una partida en progreso");
                     }
 
-                    // Obtener o crear jugador
                     var player = await _players.GetByPlayerIdAsync(playerId);
                     if (player is null)
                     {
-                        var name = $"Player {playerId.Value.ToString()[..8]}";
-                        player = Player.Create(playerId, name, new Money(1000m));
-                        player.AddHandId(Guid.NewGuid()); // Crear ID de mano
+                        // NUEVA FUNCIONALIDAD: Obtener o crear UserProfile
+                        var userProfileResult = await _userService.GetOrCreateUserAsync(
+                            playerId,
+                            $"Player {playerId.Value.ToString()[..8]}",
+                            $"player{playerId.Value.ToString()[..8]}@blackjack.local"
+                        );
+
+                        if (!userProfileResult.IsSuccess)
+                        {
+                            await transaction.RollbackAsync();
+                            _logger.LogError($"[GameService] Error obteniendo/creando UserProfile: {userProfileResult.Error}");
+                            return Result.Failure("Error creating user profile");
+                        }
+
+                        var userProfile = userProfileResult.Value!;
+
+                        player = Player.Create(playerId, userProfile.DisplayName, userProfile.Balance);
+                        player.AddHandId(Guid.NewGuid());
                         await _players.AddAsync(player);
-                        _logger.LogInformation($"[GameService] Nuevo jugador creado: {playerId}");
+                        _logger.LogInformation($"[GameService] Nuevo jugador creado: {playerId} con balance {userProfile.Balance.Amount}");
+                    }
+                    else
+                    {
+                        // NUEVA FUNCIONALIDAD: Sincronizar balance del UserProfile al Player existente
+                        var userProfileResult = await _userService.GetUserAsync(playerId);
+                        if (userProfileResult.IsSuccess)
+                        {
+                            var userProfile = userProfileResult.Value!;
+                            if (player.Balance.Amount != userProfile.Balance.Amount)
+                            {
+                                player.SetBalance(userProfile.Balance);
+                                _logger.LogInformation($"[GameService] Balance sincronizado para {playerId}: {userProfile.Balance.Amount}");
+                            }
+                        }
                     }
 
-                    // Asignar jugador al asiento
                     seat.SeatPlayer(player);
                     await _tables.UpdateAsync(table);
                     await transaction.CommitAsync();
@@ -169,7 +196,7 @@ namespace BlackJack.Services.Game
                 catch (DbUpdateConcurrencyException ex) when (attempt < maxRetries)
                 {
                     _logger.LogWarning($"[GameService] Concurrencia en JoinTable (intento {attempt}): {ex.Message}");
-                    await Task.Delay(100 * attempt); // Backoff exponencial
+                    await Task.Delay(100 * attempt);
                     continue;
                 }
                 catch (Exception ex)
@@ -206,13 +233,23 @@ namespace BlackJack.Services.Game
                 {
                     await transaction.RollbackAsync();
                     _logger.LogWarning($"[GameService] Jugador {playerId} no encontrado en mesa {tableId}");
-                    return Result.Success(); // No es error si no estaba sentado
+                    return Result.Success();
                 }
 
-                // Remover jugador del asiento
+                // NUEVA FUNCIONALIDAD: Sincronizar balance final al UserProfile antes de salir
+                var player = seat.Player!;
+                var syncResult = await _userService.SyncPlayerBalanceAsync(playerId, player.Balance);
+                if (!syncResult.IsSuccess)
+                {
+                    _logger.LogWarning($"[GameService] Error sincronizando balance al salir: {syncResult.Error}");
+                }
+                else
+                {
+                    _logger.LogInformation($"[GameService] Balance sincronizado al salir: {playerId} -> {player.Balance.Amount}");
+                }
+
                 seat.ClearSeat();
 
-                // Si no quedan jugadores, resetear estado de mesa
                 if (!table.Seats.Any(s => s.IsOccupied))
                 {
                     table.SetWaitingForPlayers();
@@ -363,7 +400,6 @@ namespace BlackJack.Services.Game
                         return Result.Failure($"Se necesitan al menos 1 jugador para iniciar (tienes {seats.Count})");
                     }
 
-                    // Verificar que todos los jugadores tengan apuestas
                     var seatsWithoutBets = seats.Where(s => s.Player?.CurrentBet == null).ToList();
                     if (seatsWithoutBets.Any())
                     {
@@ -371,7 +407,6 @@ namespace BlackJack.Services.Game
                         return Result.Failure("Todos los jugadores deben apostar antes de iniciar la ronda");
                     }
 
-                    // Idempotente: si ya está en progreso, OK
                     if (table.Status == GameStatus.InProgress)
                     {
                         await transaction.RollbackAsync();
@@ -385,12 +420,11 @@ namespace BlackJack.Services.Game
                         return Result.Failure($"La mesa no está esperando jugadores (Estado actual: {table.Status})");
                     }
 
-                    // Preparar manos - crear nuevas manos para los jugadores
                     foreach (var s in seats)
                     {
                         var p = s.Player!;
                         p.ClearHandIds();
-                        p.AddHandId(Guid.NewGuid()); // Nueva mano para esta ronda
+                        p.AddHandId(Guid.NewGuid());
                     }
 
                     table.StartNewRound();
@@ -405,7 +439,6 @@ namespace BlackJack.Services.Game
                 {
                     _logger.LogWarning($"[GameService] Concurrency on StartRound (attempt {attempt}): {ex.Message}");
 
-                    // Si otro ya la arrancó mientras tanto, devolvemos OK
                     var latest = await _tables.GetTableWithPlayersAsync(tableId);
                     if (latest != null && latest.Status == GameStatus.InProgress)
                     {
@@ -413,7 +446,7 @@ namespace BlackJack.Services.Game
                         return Result.Success();
                     }
 
-                    await Task.Delay(100 * attempt); // backoff
+                    await Task.Delay(100 * attempt);
                     continue;
                 }
                 catch (Exception ex)
@@ -459,7 +492,6 @@ namespace BlackJack.Services.Game
 
                 var player = seat.Player;
 
-                // Para acciones básicas del juego
                 switch (action)
                 {
                     case PlayerAction.Hit:
@@ -473,7 +505,6 @@ namespace BlackJack.Services.Game
                     case PlayerAction.Double:
                         if (player.CurrentBet != null)
                         {
-                            // Duplicar apuesta si es posible
                             var doubleAmount = player.CurrentBet.Amount.Amount * 2;
                             if (player.CanAffordBet(new Money(doubleAmount)))
                             {
@@ -541,29 +572,84 @@ namespace BlackJack.Services.Game
                     .Where(s => s.IsOccupied && s.Player is not null && s.Player.CurrentBet is not null)
                     .ToList();
 
+                // NUEVA FUNCIONALIDAD: Procesar resultados y sincronizar con UserProfile
+                var syncTasks = new List<Task>();
+
                 foreach (var s in seatsToSettle)
                 {
                     var player = s.Player!;
                     var betAmount = player.CurrentBet!.Amount;
+                    var initialBalance = player.Balance.Amount;
 
                     // Lógica simplificada de payout
                     Money winnings = betAmount.Multiply(2m); // Payout 1:1 por simplicidad
+                    bool playerWon = true; // Simplificado - en realidad sería vs dealer
 
                     player.WinBet(winnings);
                     player.ClearBet();
+
+                    var finalBalance = player.Balance.Amount;
+                    var netGain = new Money(finalBalance - initialBalance);
+
+                    // NUEVA FUNCIONALIDAD: Sincronización asíncrona con UserProfile
+                    syncTasks.Add(SyncPlayerResultAsync(player.PlayerId, playerWon, netGain, player.Balance));
                 }
 
                 table.EndRound();
                 await _tables.UpdateAsync(table);
                 await transaction.CommitAsync();
 
-                _logger.LogInformation($"[GameService] Ronda terminada en mesa {tableId} - {seatsToSettle.Count} jugadores liquidados");
+                // Ejecutar sincronizaciones con UserProfile en paralelo
+                try
+                {
+                    await Task.WhenAll(syncTasks);
+                    _logger.LogInformation($"[GameService] Ronda terminada y sincronizada en mesa {tableId} - {seatsToSettle.Count} jugadores");
+                }
+                catch (Exception syncEx)
+                {
+                    _logger.LogError(syncEx, $"[GameService] Error sincronizando con UserProfile: {syncEx.Message}");
+                }
+
                 return Result.Success();
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"[GameService] Error en EndRoundAsync: {ex.Message}");
                 return Result.Failure($"Error terminando ronda: {ex.Message}");
+            }
+        }
+
+        // NUEVO MÉTODO: Sincronización individual de jugador con UserProfile
+        private async Task SyncPlayerResultAsync(PlayerId playerId, bool won, Money netGain, Money finalBalance)
+        {
+            try
+            {
+                var gameResultTask = _userService.RecordGameResultAsync(playerId, won, netGain);
+                var balanceTask = _userService.SyncPlayerBalanceAsync(playerId, finalBalance);
+
+                await Task.WhenAll(gameResultTask, balanceTask);
+
+                var gameResult = await gameResultTask;
+                var balanceResult = await balanceTask;
+
+                if (!gameResult.IsSuccess)
+                {
+                    _logger.LogWarning($"[GameService] Error registrando resultado para {playerId}: {gameResult.Error}");
+                }
+
+                if (!balanceResult.IsSuccess)
+                {
+                    _logger.LogWarning($"[GameService] Error sincronizando balance para {playerId}: {balanceResult.Error}");
+                }
+
+                if (gameResult.IsSuccess && balanceResult.IsSuccess)
+                {
+                    _logger.LogDebug($"[GameService] Sincronización exitosa para {playerId}: Won={won}, NetGain={netGain.Amount}, FinalBalance={finalBalance.Amount}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"[GameService] Error en SyncPlayerResultAsync para {playerId}: {ex.Message}");
             }
         }
 
@@ -614,9 +700,6 @@ namespace BlackJack.Services.Game
                     await transaction.RollbackAsync();
                     return Result.Failure("Table not found");
                 }
-
-                // Cambiar a paused si tuvieras ese estado
-                // table.Status = GameStatus.Paused;
 
                 await _tables.UpdateAsync(table);
                 await transaction.CommitAsync();
