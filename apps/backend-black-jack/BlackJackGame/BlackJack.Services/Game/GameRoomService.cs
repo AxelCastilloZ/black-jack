@@ -1,4 +1,4 @@
-﻿// GameRoomService.cs - CORREGIDO CON CREACIÓN DE PLAYER ENTITIES
+﻿// GameRoomService.cs - CORREGIDO CON CREACIÓN DE PLAYER ENTITIES Y LIMPIEZA COMPLETA
 using BlackJack.Data.Repositories.Game;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
@@ -405,39 +405,92 @@ public class GameRoomService : IGameRoomService
         }
     }
 
+    // SOLUCIÓN CRÍTICA: LeaveRoomAsync completamente corregido para eliminar datos fantasma
     public async Task<r> LeaveRoomAsync(string roomCode, PlayerId playerId)
     {
         try
         {
-            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
-            if (room == null)
-            {
-                return Result.Success();
-            }
+            _logger.LogInformation("[GameRoomService] === LEAVE ROOM START ===");
+            _logger.LogInformation("[GameRoomService] Player {PlayerId} leaving room {RoomCode}", playerId, roomCode);
 
-            if (!room.IsPlayerInRoom(playerId))
-            {
-                return Result.Success();
-            }
+            // PASO 1: CRÍTICO - Eliminar RoomPlayer de la base de datos PRIMERO
+            _logger.LogInformation("[GameRoomService] Step 1: Removing RoomPlayer from database...");
+            var roomPlayerRemoved = await _gameRoomRepository.RemoveRoomPlayerAsync(roomCode, playerId);
 
-            room.RemovePlayer(playerId);
-            await _gameRoomRepository.FreeSeatAsync(roomCode, playerId);
-
-            if (room.PlayerCount == 0)
+            if (roomPlayerRemoved)
             {
-                await _gameRoomRepository.DeleteAsync(room);
+                _logger.LogInformation("[GameRoomService] ✅ RoomPlayer removed from database successfully");
             }
             else
             {
-                await _gameRoomRepository.UpdateAsync(room);
-                await _eventDispatcher.DispatchEventsAsync(room);
+                _logger.LogWarning("[GameRoomService] ⚠️ RoomPlayer was not found in database or already removed");
             }
 
+            // PASO 2: Liberar asiento si estaba sentado
+            _logger.LogInformation("[GameRoomService] Step 2: Freeing seat if occupied...");
+            var seatFreed = await _gameRoomRepository.FreeSeatAsync(roomCode, playerId);
+            if (seatFreed)
+            {
+                _logger.LogInformation("[GameRoomService] ✅ Seat freed successfully");
+            }
+
+            // PASO 3: Obtener sala y verificar si existe
+            _logger.LogInformation("[GameRoomService] Step 3: Loading room for domain operations...");
+            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
+            if (room == null)
+            {
+                _logger.LogInformation("[GameRoomService] Room {RoomCode} no longer exists, cleanup complete", roomCode);
+                return Result.Success();
+            }
+
+            // PASO 4: Operación de dominio (ahora segura porque ya eliminamos de BD)
+            _logger.LogInformation("[GameRoomService] Step 4: Calling domain RemovePlayer...");
+            var wasPlayerInRoom = room.IsPlayerInRoom(playerId);
+            if (wasPlayerInRoom)
+            {
+                room.RemovePlayer(playerId);
+                _logger.LogInformation("[GameRoomService] ✅ Player removed from domain room object");
+            }
+            else
+            {
+                _logger.LogInformation("[GameRoomService] Player was not in room domain object");
+            }
+
+            // PASO 5: Gestionar sala vacía o actualizar
+            if (room.PlayerCount == 0)
+            {
+                _logger.LogInformation("[GameRoomService] Step 5: Room is now empty, deleting...");
+                await _gameRoomRepository.DeleteAsync(room);
+                _logger.LogInformation("[GameRoomService] ✅ Empty room deleted");
+            }
+            else
+            {
+                _logger.LogInformation("[GameRoomService] Step 5: Room still has {PlayerCount} players, updating...", room.PlayerCount);
+                await _gameRoomRepository.UpdateAsync(room);
+                await _eventDispatcher.DispatchEventsAsync(room);
+                _logger.LogInformation("[GameRoomService] ✅ Room updated successfully");
+            }
+
+            _logger.LogInformation("[GameRoomService] === LEAVE ROOM COMPLETED SUCCESSFULLY ===");
             return Result.Success();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[GameRoomService] Error leaving room: {Error}", ex.Message);
+            _logger.LogError(ex, "[GameRoomService] CRITICAL ERROR in LeaveRoomAsync - Player: {PlayerId}, Room: {RoomCode}",
+                playerId, roomCode);
+
+            // FALLBACK: En caso de error, intentar limpieza forzada
+            try
+            {
+                _logger.LogWarning("[GameRoomService] Attempting forced cleanup for player {PlayerId}", playerId);
+                await _gameRoomRepository.ForceCleanupPlayerFromAllRoomsAsync(playerId);
+                _logger.LogInformation("[GameRoomService] ✅ Forced cleanup completed");
+            }
+            catch (Exception cleanupEx)
+            {
+                _logger.LogError(cleanupEx, "[GameRoomService] Even forced cleanup failed for player {PlayerId}", playerId);
+            }
+
             return Result.Failure($"Error leaving room: {ex.Message}");
         }
     }
@@ -1315,6 +1368,73 @@ public class GameRoomService : IGameRoomService
             _logger.LogError(ex, "[AutoBetting] Error verificando fondos del jugador {PlayerId} en sala {RoomCode}",
                 playerId, roomCode);
             return Result<bool>.Failure($"Error verificando fondos: {ex.Message}");
+        }
+    }
+
+    #endregion
+
+    #region NUEVO: Métodos de Diagnóstico y Limpieza
+
+    /// <summary>
+    /// MÉTODO DE DIAGNÓSTICO: Obtiene información sobre registros huérfanos de un jugador
+    /// </summary>
+    public async Task<Result<List<string>>> DiagnosePlayerOrphanRoomsAsync(PlayerId playerId)
+    {
+        try
+        {
+            var orphanRooms = await _gameRoomRepository.GetPlayerOrphanRoomsAsync(playerId);
+            _logger.LogInformation("[GameRoomService] Player {PlayerId} has orphan records in {Count} rooms: {Rooms}",
+                playerId, orphanRooms.Count, string.Join(", ", orphanRooms));
+
+            return Result<List<string>>.Success(orphanRooms);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error diagnosing orphan rooms for player {PlayerId}", playerId);
+            return Result<List<string>>.Failure($"Error en diagnóstico: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// MÉTODO DE EMERGENCIA: Limpia completamente un jugador de TODAS las salas
+    /// </summary>
+    public async Task<Result<int>> ForceCleanupPlayerAsync(PlayerId playerId)
+    {
+        try
+        {
+            _logger.LogWarning("[GameRoomService] === FORCE CLEANUP INITIATED ===");
+            _logger.LogWarning("[GameRoomService] Forcing cleanup for player {PlayerId}", playerId);
+
+            var affectedRows = await _gameRoomRepository.ForceCleanupPlayerFromAllRoomsAsync(playerId);
+
+            _logger.LogInformation("[GameRoomService] Force cleanup completed: {AffectedRows} records removed for player {PlayerId}",
+                affectedRows, playerId);
+
+            return Result<int>.Success(affectedRows);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error in force cleanup for player {PlayerId}", playerId);
+            return Result<int>.Failure($"Error en limpieza forzada: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// MÉTODO DE MANTENIMIENTO: Limpia salas vacías automáticamente
+    /// </summary>
+    public async Task<Result<int>> CleanupEmptyRoomsAsync()
+    {
+        try
+        {
+            var removedRooms = await _gameRoomRepository.CleanupEmptyRoomsAsync();
+            _logger.LogInformation("[GameRoomService] Cleanup completed: {RemovedRooms} empty rooms removed", removedRooms);
+
+            return Result<int>.Success(removedRooms);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error cleaning up empty rooms");
+            return Result<int>.Failure($"Error en limpieza de salas vacías: {ex.Message}");
         }
     }
 
