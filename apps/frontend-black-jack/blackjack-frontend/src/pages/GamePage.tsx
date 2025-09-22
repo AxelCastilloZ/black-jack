@@ -3,6 +3,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
 import { signalRService } from '../services/signalr'
 import { authService } from '../services/auth'
+import { apiService } from '../api/apiService'
 
 // Componentes extraídos
 import GameHeader from '../components/game/GameHeader'
@@ -10,6 +11,19 @@ import GameTable from '../components/game/GameTable'
 import GameSeats from '../components/game/GameSeats'
 import GameChat from '../components/game/GameChat'
 import GameBettings from '../components/game/GameBettings'
+
+interface Card {
+  suit: 'Hearts' | 'Diamonds' | 'Clubs' | 'Spades'
+  rank: 'Ace' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'Jack' | 'Queen' | 'King'
+  value: number
+}
+
+interface Hand {
+  id: string
+  cards: Card[]
+  value: number
+  status: 'Active' | 'Stand' | 'Bust' | 'Blackjack'
+}
 
 interface GameState {
   roomCode: string
@@ -22,6 +36,9 @@ interface GameState {
   currentPlayerTurn?: string
   canStart: boolean
   createdAt: string
+  // New game state
+  dealerHand?: Hand | null
+  playerHand?: Hand | null
 }
 
 interface RoomPlayer {
@@ -376,6 +393,41 @@ export default function GamePage() {
     }
   }, [connectionStatus.gameControl, gameState?.roomCode])
 
+  // Game action handlers
+  const handleHit = useCallback(async () => {
+    if (!gameState?.roomCode || !isComponentMounted.current) {
+      console.log('[GamePage] Cannot hit - no room code')
+      return
+    }
+    
+    try {
+      setError(null)
+      console.log('[GamePage] Player hits')
+      await apiService.playerAction(gameState.roomCode, 'Hit')
+    } catch (error) {
+      if (!isComponentMounted.current) return
+      console.error('[GamePage] Error hitting:', error)
+      setError(error instanceof Error ? error.message : 'Error al pedir carta')
+    }
+  }, [gameState?.roomCode])
+
+  const handleStand = useCallback(async () => {
+    if (!gameState?.roomCode || !isComponentMounted.current) {
+      console.log('[GamePage] Cannot stand - no room code')
+      return
+    }
+    
+    try {
+      setError(null)
+      console.log('[GamePage] Player stands')
+      await apiService.playerAction(gameState.roomCode, 'Stand')
+    } catch (error) {
+      if (!isComponentMounted.current) return
+      console.error('[GamePage] Error standing:', error)
+      setError(error instanceof Error ? error.message : 'Error al plantarse')
+    }
+  }, [gameState?.roomCode])
+
   // Computed values
   const currentPlayer = gameState?.players?.find(p => p.playerId === currentUser.current?.id)
   const isPlayerSeated = !!currentPlayer
@@ -468,6 +520,11 @@ export default function GamePage() {
         isCurrentPlayerHost={currentPlayer?.isHost || false}
         gameControlConnected={connectionStatus.gameControl}
         onStartRound={handleStartRound}
+        dealerHand={gameState?.dealerHand}
+        playerHand={gameState?.playerHand}
+        isPlayerTurn={gameState?.currentPlayerTurn === currentPlayer?.name}
+        onHit={handleHit}
+        onStand={handleStand}
       />
 
       {/* Game Seats - All 6 player positions */}
@@ -485,15 +542,17 @@ export default function GamePage() {
         setSeatClickLoading={setSeatClickLoading}
       />
 
-      {/* Game Bettings */}
-      <GameBettings
-        isPlayerSeated={isPlayerSeated}
-        gameStatus={gameState?.status}
-        isViewer={isViewer}
-        currentPlayerBalance={1000} // TODO: Get from player data
-        isPlayerTurn={gameState?.currentPlayerTurn === currentPlayer?.name}
-        roomCode={gameState?.roomCode}
-      />
+      {/* Game Bettings - hidden for gameplay testing (handled by coworker) */}
+      {false && (
+        <GameBettings
+          isPlayerSeated={isPlayerSeated}
+          gameStatus={gameState?.status}
+          isViewer={isViewer}
+          currentPlayerBalance={1000}
+          isPlayerTurn={gameState?.currentPlayerTurn === currentPlayer?.name}
+          roomCode={gameState?.roomCode}
+        />
+      )}
 
       {/* Game Chat */}
       <GameChat

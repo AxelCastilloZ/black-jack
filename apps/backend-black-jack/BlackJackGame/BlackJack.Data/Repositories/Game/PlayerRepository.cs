@@ -15,8 +15,9 @@ public class PlayerRepository : Repository<Player>, IPlayerRepository
 
     public async Task<Player?> GetByPlayerIdAsync(PlayerId playerId)
     {
+        // Compare by underlying GUID to avoid EF Core owned-type member access issues
         return await _dbSet
-            .FirstOrDefaultAsync(p => p.PlayerId == playerId);
+            .FirstOrDefaultAsync(p => p.PlayerId.Value == playerId.Value);
     }
 
     public async Task<List<Player>> GetPlayersByTableAsync(Guid tableId)

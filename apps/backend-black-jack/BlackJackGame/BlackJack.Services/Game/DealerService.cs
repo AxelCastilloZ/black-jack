@@ -1,11 +1,22 @@
-﻿// BlackJack.Services.Game/DealerService.cs - CORREGIDO
+﻿// BlackJack.Services.Game/DealerService.cs - IMPLEMENTED
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Cards;
+using BlackJack.Data.Repositories.Game;
+using Microsoft.Extensions.Logging;
 
 namespace BlackJack.Services.Game;
 
 public class DealerService : IDealerService
 {
+    private readonly IHandRepository _handRepository;
+    private readonly ILogger<DealerService> _logger;
+
+    public DealerService(IHandRepository handRepository, ILogger<DealerService> logger)
+    {
+        _handRepository = handRepository;
+        _logger = logger;
+    }
+
     public bool ShouldHit(Hand dealerHand)
     {
         return dealerHand.Value < 17;
@@ -21,66 +32,55 @@ public class DealerService : IDealerService
         return dealerHand;
     }
 
-    public void DealInitialCards(BlackjackTable table)
+    public async Task DealInitialCardsAsync(BlackjackTable table)
     {
+        _logger.LogInformation("[DealerService] Dealing initial cards for table {TableId}", table.Id);
+
         var occupiedSeats = table.Seats.Where(s => s.IsOccupied).ToList();
 
-        // PROBLEMA: Tu modelo actual usa HandIds (List<Guid>) en lugar de objetos Hand
-        // Esta implementación necesita ser adaptada según tu arquitectura actual
+        // Create dealer hand
+        var dealerHand = Hand.Create();
+        await _handRepository.AddAsync(dealerHand);
+        table.SetDealerHandId(dealerHand.Id);
 
-        // Opción 1: Si tienes un servicio para manejar manos por HandId
-        foreach (var seat in occupiedSeats)
-        {
-            if (seat.Player != null && seat.Player.HandIds.Any())
-            {
-                var handId = seat.Player.HandIds.First();
-                // TODO: Necesitas un servicio o repositorio para obtener/actualizar Hand por handId
-                // var hand = await _handService.GetHandAsync(handId);
-                // var card = table.Deck.DealCard();
-                // hand.AddCard(card);
-                // await _handService.UpdateHandAsync(hand);
-            }
-        }
-
-        // PROBLEMA: BlackjackTable no tiene propiedad DealerHand
-        // Necesitas agregar esta propiedad al modelo o manejar el dealer de otra forma
-
-        // TODO: Agregar DealerHand a BlackjackTable o usar un approach diferente
-        // var dealerCard1 = table.Deck.DealCard();
-        // table.DealerHand.AddCard(dealerCard1);
-
-        // Segunda ronda de cartas para jugadores
-        foreach (var seat in occupiedSeats)
-        {
-            if (seat.Player != null && seat.Player.HandIds.Any())
-            {
-                var handId = seat.Player.HandIds.First();
-                // TODO: Misma lógica que arriba
-            }
-        }
-
-        // TODO: Segunda carta para el dealer
-        // var dealerCard2 = table.Deck.DealCard();
-        // table.DealerHand.AddCard(dealerCard2);
-    }
-
-    // MÉTODO ALTERNATIVO SIMPLIFICADO - Para que compile mientras defines la arquitectura
-    public void DealInitialCardsSimplified(BlackjackTable table)
-    {
-        var occupiedSeats = table.Seats.Where(s => s.IsOccupied).ToList();
-
-        // Por ahora, solo registra que las cartas fueron "repartidas"
-        // Necesitarás implementar la lógica real según tu arquitectura de manos
+        // Deal 2 cards to each player
         foreach (var seat in occupiedSeats)
         {
             if (seat.Player != null)
             {
-                // Simulación: crear nuevos HandIds si no existen
-                if (!seat.Player.HandIds.Any())
-                {
-                    seat.Player.AddHandId(Guid.NewGuid());
-                }
+                // Create player hand
+                var playerHand = Hand.Create();
+                await _handRepository.AddAsync(playerHand);
+                seat.Player.AddHandId(playerHand.Id);
+
+                // Deal 2 cards to player
+                var card1 = table.DealCard();
+                var card2 = table.DealCard();
+                playerHand.AddCard(card1);
+                playerHand.AddCard(card2);
+                await _handRepository.UpdateAsync(playerHand);
+
+                _logger.LogInformation("[DealerService] Dealt cards {Card1} and {Card2} to player {PlayerId}",
+                    card1.GetDisplayName(), card2.GetDisplayName(), seat.Player.PlayerId);
             }
         }
+
+        // Deal 2 cards to dealer
+        var dealerCard1 = table.DealCard();
+        var dealerCard2 = table.DealCard();
+        dealerHand.AddCard(dealerCard1);
+        dealerHand.AddCard(dealerCard2);
+        await _handRepository.UpdateAsync(dealerHand);
+
+        _logger.LogInformation("[DealerService] Dealt cards {Card1} and {Card2} to dealer",
+            dealerCard1.GetDisplayName(), dealerCard2.GetDisplayName());
+
+        _logger.LogInformation("[DealerService] Initial cards dealt successfully for table {TableId}", table.Id);
+    }
+
+    // Legacy method for backward compatibility
+    public void DealInitialCards(BlackjackTable table)
+    {
+        throw new InvalidOperationException("Use DealInitialCardsAsync instead of DealInitialCards");
     }
 }

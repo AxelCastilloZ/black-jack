@@ -1,5 +1,20 @@
 // src/components/game/GameTable.tsx
 import React from 'react'
+import HandDisplay from './HandDisplay'
+import GameActions from './GameActions'
+
+interface Card {
+  suit: 'Hearts' | 'Diamonds' | 'Clubs' | 'Spades'
+  rank: 'Ace' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'Jack' | 'Queen' | 'King'
+  value: number
+}
+
+interface Hand {
+  id: string
+  cards: Card[]
+  value: number
+  status: 'Active' | 'Stand' | 'Bust' | 'Blackjack'
+}
 
 interface GameTableProps {
   gameStatus?: 'WaitingForPlayers' | 'InProgress' | 'Finished'
@@ -9,6 +24,12 @@ interface GameTableProps {
   isCurrentPlayerHost: boolean
   gameControlConnected: boolean
   onStartRound: () => Promise<void>
+  // New game state props
+  dealerHand?: Hand | null
+  playerHand?: Hand | null
+  isPlayerTurn?: boolean
+  onHit?: () => void
+  onStand?: () => void
 }
 
 export default function GameTable({
@@ -18,7 +39,12 @@ export default function GameTable({
   isViewer,
   isCurrentPlayerHost,
   gameControlConnected,
-  onStartRound
+  onStartRound,
+  dealerHand,
+  playerHand,
+  isPlayerTurn = false,
+  onHit,
+  onStand
 }: GameTableProps) {
   const showStartButton = !isViewer && 
                           canStart && 
@@ -28,13 +54,40 @@ export default function GameTable({
 
   return (
     <>
-      {/* Dealer */}
-      <div className="absolute top-20 left-1/2 transform -translate-x-1/2 text-center">
-        <div className="w-[60px] h-[60px] rounded-full bg-amber-400 flex items-center justify-center text-2xl font-bold text-black mb-2 mx-auto">
-          D
-        </div>
-        <div className="text-amber-400 font-bold">Dealer</div>
+      {/* Dealer Hand */}
+      <div className="absolute top-20 left-1/2 transform -translate-x-1/2">
+        <HandDisplay
+          hand={dealerHand}
+          isDealer={true}
+          showAllCards={gameStatus !== 'InProgress' || !isPlayerTurn}
+        />
       </div>
+
+      {/* Player Hand */}
+      {isPlayerSeated && !isViewer && (
+        <div className="absolute bottom-32 left-1/2 transform -translate-x-1/2">
+          <HandDisplay
+            hand={playerHand}
+            isDealer={false}
+            showAllCards={true}
+            playerName="You"
+          />
+        </div>
+      )}
+
+      {/* Game Actions */}
+      {isPlayerSeated && !isViewer && gameStatus === 'InProgress' && onHit && onStand && (
+        <div className="absolute bottom-20 left-1/2 transform -translate-x-1/2">
+          <GameActions
+            isPlayerTurn={isPlayerTurn}
+            canHit={playerHand?.status === 'Active'}
+            canStand={playerHand?.status === 'Active'}
+            isGameActive={gameStatus === 'InProgress'}
+            onHit={onHit}
+            onStand={onStand}
+          />
+        </div>
+      )}
 
       {/* Banner Central */}
       <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white/95 border-l-4 border-amber-500 rounded-lg p-6 shadow-[0_10px_25px_rgba(0,0,0,0.3)] min-w-[400px] flex items-center">

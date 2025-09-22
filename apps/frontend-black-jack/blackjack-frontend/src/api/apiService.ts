@@ -122,6 +122,12 @@ export class ApiService {
   getInstance() {
     return this.api
   }
+
+  // ---- Game API calls ----
+  
+  async playerAction(roomCode: string, action: 'Hit' | 'Stand'): Promise<{ success: boolean; message?: string }> {
+    return this.post(`/gameroom/${roomCode}/action`, { action })
+  }
 }
 
 export const apiService = new ApiService()

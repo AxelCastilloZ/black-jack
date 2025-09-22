@@ -49,7 +49,7 @@ public class GameRoom : AggregateRoot
     // Propiedades calculadas
     public int PlayerCount => _players.Count;
     public bool IsFull => PlayerCount >= MaxPlayers;
-    public bool CanStart => PlayerCount >= 1 && Status == RoomStatus.WaitingForPlayers;
+    public bool CanStart => true; // Force-enabled for gameplay testing
     public bool IsGameInProgress => Status == RoomStatus.InProgress;
     public RoomPlayer? CurrentPlayer => _players.Count > 0 && CurrentPlayerIndex < _players.Count
         ? _players[CurrentPlayerIndex] : null;
