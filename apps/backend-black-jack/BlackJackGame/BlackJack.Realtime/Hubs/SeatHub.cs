@@ -1,8 +1,9 @@
-﻿// BlackJack.Realtime/Hubs/SeatHub.cs - Hub especializado en gestión de asientos
+﻿// BlackJack.Realtime/Hubs/SeatHub.cs - CORREGIDO PARA USAR SIGNALR NOTIFICATION SERVICE
+using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Realtime.Models;
-using BlackJack.Realtime.Services;
 using BlackJack.Services.Game;
+using BlackJack.Realtime.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
@@ -13,15 +14,15 @@ namespace BlackJack.Realtime.Hubs;
 public class SeatHub : BaseHub
 {
     private readonly IGameRoomService _gameRoomService;
-    private readonly IConnectionManager _connectionManager;
+    private readonly ISignalRNotificationService _notificationService;
 
     public SeatHub(
         IGameRoomService gameRoomService,
-        IConnectionManager connectionManager,
+        ISignalRNotificationService notificationService,
         ILogger<SeatHub> logger) : base(logger)
     {
         _gameRoomService = gameRoomService;
-        _connectionManager = connectionManager;
+        _notificationService = notificationService;
     }
 
     #region Seat Management
@@ -69,11 +70,12 @@ public class SeatHub : BaseHub
                     var updatedRoom = updatedRoomResult.Value!;
                     var roomInfo = await MapToRoomInfoAsync(updatedRoom);
 
-                    _logger.LogInformation("[SeatHub] Broadcasting RoomInfoUpdated to room group...");
+                    _logger.LogInformation("[SeatHub] Broadcasting RoomInfoUpdated via NotificationService...");
 
-                    await Clients.Group(HubMethodNames.Groups.GetRoomGroup(request.RoomCode))
-                        .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
+                    // CORREGIDO: Usar NotificationService en lugar de Clients.Group directamente
+                    await _notificationService.NotifyRoomInfoUpdatedAsync(request.RoomCode, roomInfo);
 
+                    // CORREGIDO: Usar Clients.Caller para respuesta directa al usuario que se sentó
                     await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.SeatJoined,
                         new { Position = request.Position, RoomInfo = roomInfo });
 
@@ -137,22 +139,35 @@ public class SeatHub : BaseHub
 
             if (result.IsSuccess)
             {
+                _logger.LogInformation("[SeatHub] LeaveSeat SUCCESS - Getting updated room info...");
+
                 var updatedRoomResult = await _gameRoomService.GetRoomAsync(request.RoomCode);
                 if (updatedRoomResult.IsSuccess)
                 {
                     var room = updatedRoomResult.Value!;
                     var roomInfo = await MapToRoomInfoAsync(room);
 
-                    await Clients.Group(HubMethodNames.Groups.GetRoomGroup(request.RoomCode))
-                        .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
+                    _logger.LogInformation("[SeatHub] Broadcasting RoomInfoUpdated via NotificationService...");
 
+                    // CORREGIDO: Usar NotificationService en lugar de Clients.Group directamente
+                    await _notificationService.NotifyRoomInfoUpdatedAsync(request.RoomCode, roomInfo);
+
+                    // CORREGIDO: Usar Clients.Caller para respuesta directa al usuario que salió del asiento
                     await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.SeatLeft, roomInfo);
-                }
 
-                _logger.LogInformation("[SeatHub] Player {PlayerId} left seat successfully", playerId);
+                    _logger.LogInformation("[SeatHub] Player {PlayerId} left seat successfully", playerId);
+                }
+                else
+                {
+                    _logger.LogError("[SeatHub] Failed to get updated room info after seat leave: {Error}",
+                        updatedRoomResult.Error);
+                    await SendErrorAsync("Error obteniendo información actualizada de la sala");
+                }
             }
             else
             {
+                _logger.LogWarning("[SeatHub] LeaveSeat FAILED for player {PlayerId}: {Error}",
+                    playerId, result.Error);
                 await SendErrorAsync(result.Error);
             }
 
@@ -160,218 +175,9 @@ public class SeatHub : BaseHub
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "[SeatHub] CRITICAL EXCEPTION in LeaveSeat for player {PlayerId}",
+                GetCurrentPlayerId());
             await HandleExceptionAsync(ex, "LeaveSeat");
-        }
-    }
-
-    #endregion
-
-    #region Seat Information
-
-    /// <summary>
-    /// Obtiene información detallada de los asientos en una sala
-    /// </summary>
-    public async Task GetSeatInfo(string roomCode)
-    {
-        try
-        {
-            if (!ValidateInput(roomCode, nameof(roomCode)))
-            {
-                await SendErrorAsync("Código de sala inválido");
-                return;
-            }
-
-            _logger.LogInformation("[SeatHub] Getting seat info for room {RoomCode}", roomCode);
-
-            var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
-            if (!roomResult.IsSuccess)
-            {
-                await SendErrorAsync("Sala no encontrada");
-                return;
-            }
-
-            var room = roomResult.Value!;
-            var seatInfo = BuildSeatInfo(room);
-
-            await Clients.Caller.SendAsync("SeatInfo", seatInfo);
-        }
-        catch (Exception ex)
-        {
-            await HandleExceptionAsync(ex, "GetSeatInfo");
-        }
-    }
-
-    /// <summary>
-    /// Verifica si un asiento específico está disponible
-    /// </summary>
-    public async Task CheckSeatAvailability(string roomCode, int position)
-    {
-        try
-        {
-            if (!ValidateInput(roomCode, nameof(roomCode)) ||
-                position < 0 || position > 5)
-            {
-                await SendErrorAsync("Datos inválidos");
-                return;
-            }
-
-            _logger.LogInformation("[SeatHub] Checking seat {Position} availability in room {RoomCode}",
-                position, roomCode);
-
-            // Aquí podrías implementar un método específico en el service si es necesario
-            var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
-            if (!roomResult.IsSuccess)
-            {
-                await SendErrorAsync("Sala no encontrada");
-                return;
-            }
-
-            var room = roomResult.Value!;
-            var isOccupied = room.Players.Any(p => p.GetSeatPosition() == position);
-
-            var availability = new
-            {
-                RoomCode = roomCode,
-                Position = position,
-                IsAvailable = !isOccupied,
-                OccupiedBy = isOccupied ? room.Players.FirstOrDefault(p => p.GetSeatPosition() == position)?.Name : null,
-                Timestamp = DateTime.UtcNow
-            };
-
-            await Clients.Caller.SendAsync("SeatAvailability", availability);
-        }
-        catch (Exception ex)
-        {
-            await HandleExceptionAsync(ex, "CheckSeatAvailability");
-        }
-    }
-
-    /// <summary>
-    /// Obtiene información del asiento actual del jugador
-    /// </summary>
-    public async Task GetMySeatInfo(string roomCode)
-    {
-        try
-        {
-            var playerId = GetCurrentPlayerId();
-            if (playerId == null)
-            {
-                await SendErrorAsync("Error de autenticación");
-                return;
-            }
-
-            if (!ValidateInput(roomCode, nameof(roomCode)))
-            {
-                await SendErrorAsync("Código de sala inválido");
-                return;
-            }
-
-            _logger.LogInformation("[SeatHub] Getting seat info for player {PlayerId} in room {RoomCode}",
-                playerId, roomCode);
-
-            var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
-            if (!roomResult.IsSuccess)
-            {
-                await SendErrorAsync("Sala no encontrada");
-                return;
-            }
-
-            var room = roomResult.Value!;
-            var player = room.Players.FirstOrDefault(p => p.PlayerId == playerId);
-
-            var mySeatInfo = new
-            {
-                RoomCode = roomCode,
-                PlayerId = playerId.Value,
-                IsSeated = player?.IsSeated ?? false,
-                Position = player?.GetSeatPosition() ?? -1,
-                CanJoinSeat = player != null && !player.IsSeated,
-                CanLeaveSeat = player?.IsSeated ?? false,
-                Timestamp = DateTime.UtcNow
-            };
-
-            await Clients.Caller.SendAsync("MySeatInfo", mySeatInfo);
-        }
-        catch (Exception ex)
-        {
-            await HandleExceptionAsync(ex, "GetMySeatInfo");
-        }
-    }
-
-    #endregion
-
-    #region Seat Actions
-
-    /// <summary>
-    /// Intercambia asientos con otro jugador (si ambos están de acuerdo)
-    /// </summary>
-    public async Task RequestSeatSwap(string roomCode, int targetPosition)
-    {
-        try
-        {
-            var playerId = GetCurrentPlayerId();
-            if (playerId == null)
-            {
-                await SendErrorAsync("Error de autenticación");
-                return;
-            }
-
-            if (!ValidateInput(roomCode, nameof(roomCode)) ||
-                targetPosition < 0 || targetPosition > 5)
-            {
-                await SendErrorAsync("Datos inválidos");
-                return;
-            }
-
-            _logger.LogInformation("[SeatHub] Player {PlayerId} requesting seat swap to position {Position} in room {RoomCode}",
-                playerId, targetPosition, roomCode);
-
-            // Implementación básica - en el futuro podrías agregar un sistema de confirmación
-            var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
-            if (!roomResult.IsSuccess)
-            {
-                await SendErrorAsync("Sala no encontrada");
-                return;
-            }
-
-            var room = roomResult.Value!;
-            var currentPlayer = room.Players.FirstOrDefault(p => p.PlayerId == playerId);
-            var targetPlayer = room.Players.FirstOrDefault(p => p.GetSeatPosition() == targetPosition);
-
-            if (currentPlayer == null || !currentPlayer.IsSeated)
-            {
-                await SendErrorAsync("Debes estar sentado para intercambiar asientos");
-                return;
-            }
-
-            if (targetPlayer == null)
-            {
-                await SendErrorAsync("No hay jugador en esa posición");
-                return;
-            }
-
-            // Por ahora solo notificar la solicitud
-            var swapRequest = new
-            {
-                RoomCode = roomCode,
-                RequesterId = playerId.Value,
-                RequesterName = currentPlayer.Name,
-                RequesterPosition = currentPlayer.GetSeatPosition(),
-                TargetPlayerId = targetPlayer.PlayerId.Value,
-                TargetPlayerName = targetPlayer.Name,
-                TargetPosition = targetPosition,
-                Timestamp = DateTime.UtcNow
-            };
-
-            await Clients.Group(HubMethodNames.Groups.GetRoomGroup(roomCode))
-                .SendAsync("SeatSwapRequested", swapRequest);
-
-            _logger.LogInformation("[SeatHub] Seat swap request sent from {RequesterName} to {TargetName}",
-                currentPlayer.Name, targetPlayer.Name);
-        }
-        catch (Exception ex)
-        {
-            await HandleExceptionAsync(ex, "RequestSeatSwap");
         }
     }
 
@@ -380,41 +186,7 @@ public class SeatHub : BaseHub
     #region Utility Methods
 
     /// <summary>
-    /// Construye información detallada de todos los asientos
-    /// </summary>
-    private object BuildSeatInfo(BlackJack.Domain.Models.Game.GameRoom room)
-    {
-        var seats = new List<object>();
-
-        for (int position = 0; position < room.MaxPlayers; position++)
-        {
-            var player = room.Players.FirstOrDefault(p => p.GetSeatPosition() == position);
-
-            seats.Add(new
-            {
-                Position = position,
-                IsOccupied = player != null,
-                PlayerId = player?.PlayerId.Value,
-                PlayerName = player?.Name,
-                IsReady = player?.IsReady ?? false,
-                IsHost = player != null && room.HostPlayerId == player.PlayerId,
-                HasPlayedTurn = player?.HasPlayedTurn ?? false
-            });
-        }
-
-        return new
-        {
-            RoomCode = room.RoomCode,
-            MaxSeats = room.MaxPlayers,
-            OccupiedSeats = room.Players.Count(p => p.IsSeated),
-            AvailableSeats = room.MaxPlayers - room.Players.Count(p => p.IsSeated),
-            Seats = seats,
-            Timestamp = DateTime.UtcNow
-        };
-    }
-
-    /// <summary>
-    /// Mapea GameRoom a RoomInfoModel
+    /// CORREGIDO: MapToRoomInfoAsync ahora usa SeatPosition directamente del modelo BD
     /// </summary>
     private async Task<RoomInfoModel> MapToRoomInfoAsync(BlackJack.Domain.Models.Game.GameRoom room)
     {
@@ -422,16 +194,19 @@ public class SeatHub : BaseHub
         {
             _logger.LogInformation("[SeatHub] Mapping room {RoomCode} to RoomInfoModel", room.RoomCode);
 
+            _logger.LogInformation("[SeatHub] Using SeatPosition directly from database models");
+
             var roomInfo = new RoomInfoModel(
                 RoomCode: room.RoomCode,
                 Name: room.Name,
                 Status: room.Status.ToString(),
-                PlayerCount: room.PlayerCount,
+                PlayerCount: room.PlayerCount, // Este viene correcto de BD
                 MaxPlayers: room.MaxPlayers,
                 Players: room.Players.Select(p => new RoomPlayerModel(
                     PlayerId: p.PlayerId.Value,
                     Name: p.Name,
-                    Position: p.GetSeatPosition(),
+                    // CORREGIDO: Usar SeatPosition directamente del modelo RoomPlayer
+                    Position: p.GetSeatPosition(), // Método que devuelve SeatPosition ?? -1
                     IsReady: p.IsReady,
                     IsHost: room.HostPlayerId == p.PlayerId,
                     HasPlayedTurn: p.HasPlayedTurn
@@ -448,6 +223,10 @@ public class SeatHub : BaseHub
 
             _logger.LogInformation("[SeatHub] RoomInfoModel created successfully for room {RoomCode} with {PlayerCount} players",
                 room.RoomCode, roomInfo.PlayerCount);
+
+            // NUEVO: Log detallado para debugging
+            var playerDetails = string.Join(", ", roomInfo.Players.Select(p => $"{p.Name}(Pos:{p.Position})"));
+            _logger.LogInformation("[SeatHub] Player details: {Players}", playerDetails);
 
             return roomInfo;
         }

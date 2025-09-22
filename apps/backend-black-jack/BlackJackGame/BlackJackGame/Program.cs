@@ -119,9 +119,16 @@ app.MapControllers();
 app.MapHealthChecks("/api/health").AllowAnonymous();
 
 Console.WriteLine($"[STARTUP-DEBUG] Mapping SignalR hubs...");
-// Mapear hubs CON autorización (JWT ya configurado en SignalR)
-app.MapHub<GameHub>("/hubs/game");
-app.MapHub<LobbyHub>("/hubs/lobby");
+// HUB COORDINADOR PRINCIPAL (compatibilidad)
+app.MapHub<GameHub>("/hubs/game");                  // Hub coordinador principal
+
+// HUBS ESPECIALIZADOS
+app.MapHub<ConnectionHub>("/hubs/connection");      // Manejo de conexiones y reconexión
+app.MapHub<RoomHub>("/hubs/room");                  // Manejo de salas
+app.MapHub<SpectatorHub>("/hubs/spectator");        // Manejo de espectadores
+app.MapHub<SeatHub>("/hubs/seat");                  // Manejo de asientos
+app.MapHub<GameControlHub>("/hubs/game-control");   // Control del juego
+app.MapHub<LobbyHub>("/hubs/lobby");                // Hub de lobby (existente)
 
 Console.WriteLine($"[STARTUP-DEBUG] Adding utility endpoints...");
 // Endpoints de utilidad
@@ -221,7 +228,7 @@ if (app.Environment.IsDevelopment())
         return Results.Ok(result);
     }).AllowAnonymous();
 
-    // NUEVO: Endpoint específico para debug JWT en SignalR
+    // Endpoint específico para debug JWT en SignalR
     app.MapGet("/api/debug/jwt-claims", (HttpContext context) =>
     {
         Console.WriteLine($"[JWT-CLAIMS-DEBUG] JWT claims debug endpoint called");
@@ -254,7 +261,32 @@ if (app.Environment.IsDevelopment())
 
         return Results.Ok(result);
     }).RequireAuthorization();
+
+    // NUEVO: Endpoint para listar todos los hubs disponibles
+    app.MapGet("/api/debug/hubs", () =>
+    {
+        Console.WriteLine($"[DEBUG-HUBS] Hub endpoints requested");
+        var hubs = new
+        {
+            SpecializedHubs = new
+            {
+                Connection = "/hubs/connection",
+                Room = "/hubs/room",
+                Spectator = "/hubs/spectator",
+                Seat = "/hubs/seat",
+                GameControl = "/hubs/game-control"
+            },
+            ExistingHubs = new
+            {
+                Lobby = "/hubs/lobby"
+            },
+            Description = "Specialized hubs for different BlackJack functionalities",
+            Timestamp = DateTime.UtcNow
+        };
+
+        return Results.Ok(hubs);
+    }).AllowAnonymous();
 }
 
-Console.WriteLine($"[STARTUP-DEBUG] Application configured, starting...");
+Console.WriteLine($"[STARTUP-DEBUG] Application configured with specialized hubs, starting...");
 app.Run();

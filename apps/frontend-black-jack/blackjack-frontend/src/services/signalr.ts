@@ -1,4 +1,4 @@
-// src/services/signalr.ts - ARCHIVO COMPLETO CORREGIDO
+// src/services/signalr.ts - REFACTORIZADO para hubs especializados
 import {
   HubConnection,
   HubConnectionBuilder,
@@ -12,8 +12,14 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:7102'
 export type ConnectionState = 'Disconnected' | 'Connecting' | 'Connected' | 'Reconnecting'
 
 class SignalRService {
+  // HUBS ESPECIALIZADOS
   private lobbyConnection?: HubConnection
-  private gameConnection?: HubConnection
+  private connectionHub?: HubConnection
+  private roomHub?: HubConnection
+  private spectatorHub?: HubConnection
+  private seatHub?: HubConnection
+  private gameControlHub?: HubConnection
+  
   private isStarting = false
   private isDestroying = false
 
@@ -130,112 +136,115 @@ class SignalRService {
       }
     })
 
-    // Handlers específicos para LobbyHub
-    if (name === 'Lobby') {
-      connection.on('ActiveRoomsUpdated', (response: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 ActiveRoomsUpdated event:', response)
-      })
+    // Handlers comunes para todos los hubs
+    connection.on('Success', (successData: any) => {
+      if (this.isDestroying) return
+      const message = successData?.message || successData
+      console.log(`[SignalR] 📥 ✅ ${name} success:`, message)
+    })
 
-      connection.on('Success', (successData: any) => {
-        if (this.isDestroying) return
-        const message = successData?.message || successData
-        console.log('[SignalR] 📥 ✅ Lobby success:', message)
-      })
+    connection.on('Error', (errorData: any) => {
+      if (this.isDestroying) return
+      const message = errorData?.message || errorData
+      console.error(`[SignalR] 📥 ❌ ${name} error:`, message)
+      this.onError?.(message)
+    })
 
-      connection.on('Error', (errorData: any) => {
-        if (this.isDestroying) return
-        const message = errorData?.message || errorData
-        console.error('[SignalR] 📥 ❌ Lobby error:', message)
-        this.onError?.(message)
-      })
+    connection.on('TestResponse', (data: any) => {
+      if (this.isDestroying) return
+      console.log(`[SignalR] 📥 ${name} TestResponse:`, data)
+    })
 
-      connection.on('TestResponse', (data: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 Lobby TestResponse:', data)
-      })
-    }
+    // Handlers específicos por hub
+    this.setupSpecificHandlers(connection, name)
+  }
 
-    // Eventos del servidor para GameHub
-    if (name === 'Game') {
-      connection.on('PlayerJoined', (data: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 PlayerJoined event:', data)
-        this.onPlayerJoined?.(data)
-      })
-      
-      connection.on('PlayerLeft', (data: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 PlayerLeft event:', data)
-        this.onPlayerLeft?.(data)
-      })
-      
-      connection.on('RoomInfo', (roomData: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 RoomInfo event:', roomData)
-        this.onRoomInfo?.(roomData)
-      })
+  private setupSpecificHandlers(connection: HubConnection, name: string) {
+    switch (name) {
+      case 'Lobby':
+        connection.on('ActiveRoomsUpdated', (response: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 ActiveRoomsUpdated event:', response)
+        })
+        break
 
-      connection.on('RoomCreated', (response: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 RoomCreated event:', response)
-        this.onRoomCreated?.(response?.data || response)
-      })
+      case 'Connection':
+        connection.on('AutoReconnectAttempt', (data: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 AutoReconnectAttempt:', data)
+        })
+        break
 
-      connection.on('RoomJoined', (response: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 RoomJoined event:', response)
-        this.onRoomJoined?.(response?.data || response)
-      })
+      case 'Room':
+        connection.on('RoomCreated', (response: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 RoomCreated event:', response)
+          this.onRoomCreated?.(response?.data || response)
+        })
 
-      connection.on('RoomInfoUpdated', (roomData: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 RoomInfoUpdated event:', roomData)
-        const data = roomData?.data || roomData
-        this.onRoomInfoUpdated?.(data)
-      })
+        connection.on('RoomJoined', (response: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 RoomJoined event:', response)
+          this.onRoomJoined?.(response?.data || response)
+        })
 
-      connection.on('SeatJoined', (response: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 SeatJoined event:', response)
-        this.onSeatJoined?.(response?.data || response)
-      })
+        connection.on('RoomInfoUpdated', (roomData: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 RoomInfoUpdated event:', roomData)
+          const data = roomData?.data || roomData
+          this.onRoomInfoUpdated?.(data)
+        })
 
-      connection.on('SeatLeft', (response: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 SeatLeft event:', response)
-        this.onSeatLeft?.(response?.data || response)
-      })
+        connection.on('RoomInfo', (roomData: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 RoomInfo event:', roomData)
+          this.onRoomInfo?.(roomData)
+        })
 
-      connection.on('GameStateChanged', (gameState: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 GameStateChanged event:', gameState)
-        this.onGameStateChanged?.(gameState)
-      })
+        connection.on('PlayerJoined', (data: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 PlayerJoined event:', data)
+          this.onPlayerJoined?.(data)
+        })
+        
+        connection.on('PlayerLeft', (data: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 PlayerLeft event:', data)
+          this.onPlayerLeft?.(data)
+        })
+        break
 
-      connection.on('GameStarted', (gameData: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 GameStarted event:', gameData)
-        this.onGameStateChanged?.(gameData)
-      })
+      case 'Seat':
+        connection.on('SeatJoined', (response: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 SeatJoined event:', response)
+          this.onSeatJoined?.(response?.data || response)
+        })
 
-      connection.on('Error', (errorData: any) => {
-        if (this.isDestroying) return
-        const message = errorData?.message || errorData
-        console.error('[SignalR] 📥 ❌ Server error:', message)
-        this.onError?.(message)
-      })
+        connection.on('SeatLeft', (response: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 SeatLeft event:', response)
+          this.onSeatLeft?.(response?.data || response)
+        })
+        break
 
-      connection.on('Success', (successData: any) => {
-        if (this.isDestroying) return
-        const message = successData?.message || successData
-        console.log('[SignalR] 📥 ✅ Server success:', message)
-      })
+      case 'GameControl':
+        connection.on('GameStarted', (gameData: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 GameStarted event:', gameData)
+          this.onGameStateChanged?.(gameData)
+        })
 
-      connection.on('TestResponse', (data: any) => {
-        if (this.isDestroying) return
-        console.log('[SignalR] 📥 TestResponse:', data)
-      })
+        connection.on('GameStateChanged', (gameState: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 GameStateChanged event:', gameState)
+          this.onGameStateChanged?.(gameState)
+        })
+        break
+
+      case 'Spectator':
+        // Eventos específicos para espectadores si los hay
+        break
     }
   }
 
@@ -249,7 +258,7 @@ class SignalRService {
         attempts++
       }
       
-      return this.isLobbyConnected && this.isGameConnected
+      return this.areAllConnected
     }
     
     if (!authService.isAuthenticated()) {
@@ -257,65 +266,60 @@ class SignalRService {
       return false
     }
 
-    console.log('[SignalR] ✅ User is authenticated, starting connections...')
+    console.log('[SignalR] ✅ User is authenticated, starting specialized hub connections...')
 
     this.isStarting = true
     this.isDestroying = false
 
     try {
-      console.log('[SignalR] 🚀 Starting SignalR connections...')
+      console.log('[SignalR] 🚀 Starting specialized SignalR connections...')
 
-      if (!this.lobbyConnection || this.lobbyConnection.state === HubConnectionState.Disconnected) {
-        console.log('[SignalR] 🏗️ Creating lobby connection...')
-        this.lobbyConnection = this.buildConnection('/hubs/lobby')
-        this.setupConnectionHandlers(this.lobbyConnection, 'Lobby')
-      }
-
-      if (!this.gameConnection || this.gameConnection.state === HubConnectionState.Disconnected) {
-        console.log('[SignalR] 🏗️ Creating game connection...')
-        this.gameConnection = this.buildConnection('/hubs/game')
-        this.setupConnectionHandlers(this.gameConnection, 'Game')
-      }
+      // Crear conexiones a hubs especializados
+      const hubsToCreate = [
+        { name: 'Lobby', path: '/hubs/lobby', prop: 'lobbyConnection' },
+        { name: 'Connection', path: '/hubs/connection', prop: 'connectionHub' },
+        { name: 'Room', path: '/hubs/room', prop: 'roomHub' },
+        { name: 'Spectator', path: '/hubs/spectator', prop: 'spectatorHub' },
+        { name: 'Seat', path: '/hubs/seat', prop: 'seatHub' },
+        { name: 'GameControl', path: '/hubs/game-control', prop: 'gameControlHub' }
+      ]
 
       const tasks: Promise<void>[] = []
 
-      if (this.lobbyConnection.state === HubConnectionState.Disconnected) {
-        console.log('[SignalR] 🔌 Starting lobby connection...')
-        tasks.push(
-          this.lobbyConnection.start().then(() => {
-            console.log('[SignalR] ✅ Lobby connection started successfully')
-          }).catch(error => {
-            console.error('[SignalR] ❌ Lobby connection failed:', error)
-            throw error
-          })
-        )
-      } else {
-        console.log('[SignalR] Lobby connection already active:', this.lobbyConnection.state)
-      }
+      for (const hub of hubsToCreate) {
+        const connection = (this as any)[hub.prop]
+        
+        if (!connection || connection.state === HubConnectionState.Disconnected) {
+          console.log(`[SignalR] 🏗️ Creating ${hub.name} connection...`)
+          ;(this as any)[hub.prop] = this.buildConnection(hub.path)
+          this.setupConnectionHandlers((this as any)[hub.prop], hub.name)
+        }
 
-      if (this.gameConnection.state === HubConnectionState.Disconnected) {
-        console.log('[SignalR] 🔌 Starting game connection...')
-        tasks.push(
-          this.gameConnection.start().then(() => {
-            console.log('[SignalR] ✅ Game connection started successfully')
-          }).catch(error => {
-            console.error('[SignalR] ❌ Game connection failed:', error)
-            throw error
-          })
-        )
-      } else {
-        console.log('[SignalR] Game connection already active:', this.gameConnection.state)
+        if ((this as any)[hub.prop].state === HubConnectionState.Disconnected) {
+          console.log(`[SignalR] 🔌 Starting ${hub.name} connection...`)
+          tasks.push(
+            (this as any)[hub.prop].start().then(() => {
+              console.log(`[SignalR] ✅ ${hub.name} connection started successfully`)
+            }).catch((error: any) => {
+              console.error(`[SignalR] ❌ ${hub.name} connection failed:`, error)
+              throw error
+            })
+          )
+        } else {
+          console.log(`[SignalR] ${hub.name} connection already active:`, (this as any)[hub.prop].state)
+        }
       }
 
       if (tasks.length > 0) {
-        console.log('[SignalR] ⏳ Waiting for connections to start...')
+        console.log('[SignalR] ⏳ Waiting for specialized hub connections to start...')
         await Promise.all(tasks)
-        console.log('[SignalR] ✅ All connections started successfully')
+        console.log('[SignalR] ✅ All specialized hub connections started successfully')
       } else {
-        console.log('[SignalR] ✅ All connections already active')
+        console.log('[SignalR] ✅ All specialized hub connections already active')
       }
 
-      if (!this.isDestroying && this.lobbyConnection.state === HubConnectionState.Connected) {
+      // Unirse al lobby si está conectado
+      if (!this.isDestroying && this.lobbyConnection?.state === HubConnectionState.Connected) {
         try {
           console.log('[SignalR] 🏛️ Joining lobby group...')
           await this.lobbyConnection.invoke('JoinLobby')
@@ -325,11 +329,11 @@ class SignalRService {
         }
       }
 
-      console.log('[SignalR] 🎉 All connections ready and configured')
+      console.log('[SignalR] 🎉 All specialized hub connections ready and configured')
       return true
 
     } catch (error: any) {
-      console.error('[SignalR] ❌ Failed to start connections:', error)
+      console.error('[SignalR] ❌ Failed to start specialized hub connections:', error)
       
       if (error.message?.includes('401') || error.message?.includes('Unauthorized')) {
         console.error('[SignalR] 🔐 AUTHENTICATION ERROR - JWT token issue')
@@ -368,11 +372,12 @@ class SignalRService {
   }
 
   async stopConnections() {
-    console.log('[SignalR] 🛑 Stopping all connections...')
+    console.log('[SignalR] 🛑 Stopping all specialized hub connections...')
     this.isDestroying = true
     
     const tasks: Promise<void>[] = []
 
+    // Salir del lobby si está conectado
     if (this.lobbyConnection?.state === HubConnectionState.Connected) {
       try {
         await this.lobbyConnection.invoke('LeaveLobby')
@@ -382,17 +387,34 @@ class SignalRService {
       tasks.push(this.lobbyConnection.stop())
     }
 
-    if (this.gameConnection?.state === HubConnectionState.Connected) {
-      tasks.push(this.gameConnection.stop())
+    // Detener todas las conexiones especializadas
+    const connections = [
+      this.connectionHub,
+      this.roomHub,
+      this.spectatorHub,
+      this.seatHub,
+      this.gameControlHub
+    ]
+
+    for (const connection of connections) {
+      if (connection?.state === HubConnectionState.Connected) {
+        tasks.push(connection.stop())
+      }
     }
 
     if (tasks.length > 0) {
       await Promise.all(tasks)
     }
 
+    // Limpiar referencias
     this.lobbyConnection = undefined
-    this.gameConnection = undefined
+    this.connectionHub = undefined
+    this.roomHub = undefined
+    this.spectatorHub = undefined
+    this.seatHub = undefined
+    this.gameControlHub = undefined
     
+    // Limpiar callbacks
     this.onPlayerJoined = undefined
     this.onPlayerLeft = undefined
     this.onRoomInfo = undefined
@@ -404,49 +426,114 @@ class SignalRService {
     this.onGameStateChanged = undefined
     this.onError = undefined
     
-    console.log('[SignalR] ✅ All connections stopped and cleaned')
+    console.log('[SignalR] ✅ All specialized hub connections stopped and cleaned')
   }
 
   async verifyConnections(): Promise<boolean> {
-    if (!this.isLobbyConnected || !this.isGameConnected) {
-      console.log('[SignalR] Connections not ready, attempting to start...')
+    if (!this.areAllConnected) {
+      console.log('[SignalR] Specialized hub connections not ready, attempting to start...')
       return await this.startConnections()
     }
     return true
   }
 
+  // MÉTODOS QUE USAN ROOMHUB
   async joinOrCreateRoomForTable(tableId: string, playerName?: string): Promise<void> {
-    if (!(await this.verifyConnections())) {
-      throw new Error('No hay conexión de juego disponible')
+    if (!this.roomHub || this.roomHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('RoomHub no está disponible')
+      }
     }
 
     const user = authService.getCurrentUser()
     const finalPlayerName = playerName || user?.displayName || 'Jugador'
 
-    console.log(`[SignalR] 🎯 Joining/creating room for table: ${tableId}, playerName: ${finalPlayerName}`)
+    console.log(`[SignalR] 🎯 [RoomHub] Joining/creating room for table: ${tableId}, playerName: ${finalPlayerName}`)
     
     try {
-      await this.gameConnection!.invoke('JoinOrCreateRoomForTable', tableId, finalPlayerName)
-      console.log(`[SignalR] ✅ Successfully invoked JoinOrCreateRoomForTable`)
+      await this.roomHub!.invoke('JoinOrCreateRoomForTable', tableId, finalPlayerName)
+      console.log(`[SignalR] ✅ Successfully invoked JoinOrCreateRoomForTable via RoomHub`)
     } catch (error) {
       console.error(`[SignalR] ❌ Error in JoinOrCreateRoomForTable:`, error)
       throw error
     }
   }
 
-  async joinSeat(roomCode: string, position: number): Promise<void> {
-    if (!(await this.verifyConnections())) {
-      throw new Error('No hay conexión de juego disponible')
+  async joinRoom(roomCode: string): Promise<void> {
+    if (!this.roomHub || this.roomHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('RoomHub no está disponible')
+      }
     }
 
-    console.log(`[SignalR] 💺 Joining seat ${position} in room: ${roomCode}`)
+    const user = authService.getCurrentUser()
+    if (!user) {
+      throw new Error('Usuario no autenticado')
+    }
+
+    console.log(`[SignalR] 🚪 [RoomHub] Joining existing room: ${roomCode}`)
+
+    await this.roomHub!.invoke('JoinRoom', {
+      roomCode: roomCode,
+      playerName: user.displayName
+    })
+  }
+
+  async createRoom(roomName: string): Promise<void> {
+    if (!this.roomHub || this.roomHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('RoomHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] 🏗️ [RoomHub] Creating room: ${roomName}`)
+
+    await this.roomHub!.invoke('CreateRoom', {
+      roomName: roomName,
+      maxPlayers: 6
+    })
+  }
+
+  async leaveRoom(roomCode: string): Promise<void> {
+    if (!this.roomHub || this.roomHub.state !== HubConnectionState.Connected) {
+      return
+    }
 
     try {
-      await this.gameConnection!.invoke('JoinSeat', {
+      console.log(`[SignalR] 🚪 [RoomHub] EXPLICIT LeaveRoom called for: ${roomCode}`)
+      await this.roomHub.invoke('LeaveRoom', roomCode)
+    } catch (error) {
+      console.warn('[SignalR] ⚠️ Error leaving room:', error)
+    }
+  }
+
+  async getRoomInfo(roomCode: string): Promise<void> {
+    if (!this.roomHub || this.roomHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('RoomHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] 📋 [RoomHub] Getting room info: ${roomCode}`)
+    await this.roomHub!.invoke('GetRoomInfo', roomCode)
+  }
+
+  // MÉTODOS QUE USAN SEATHUB
+  async joinSeat(roomCode: string, position: number): Promise<void> {
+    if (!this.seatHub || this.seatHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('SeatHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] 💺 [SeatHub] Joining seat ${position} in room: ${roomCode}`)
+
+    try {
+      await this.seatHub!.invoke('JoinSeat', {
         RoomCode: roomCode,
         Position: position
       })
-      console.log(`[SignalR] ✅ Successfully invoked JoinSeat`)
+      console.log(`[SignalR] ✅ Successfully invoked JoinSeat via SeatHub`)
     } catch (error) {
       console.error(`[SignalR] ❌ Error in JoinSeat:`, error)
       throw error
@@ -454,60 +541,31 @@ class SignalRService {
   }
 
   async leaveSeat(roomCode: string): Promise<void> {
-    if (!(await this.verifyConnections())) {
-      throw new Error('No hay conexión de juego disponible')
+    if (!this.seatHub || this.seatHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('SeatHub no está disponible')
+      }
     }
 
-    console.log(`[SignalR] 🚪 Leaving seat in room: ${roomCode}`)
+    console.log(`[SignalR] 🚪 [SeatHub] Leaving seat in room: ${roomCode}`)
 
     try {
-      await this.gameConnection!.invoke('LeaveSeat', {
+      await this.seatHub!.invoke('LeaveSeat', {
         RoomCode: roomCode
       })
-      console.log(`[SignalR] ✅ Successfully invoked LeaveSeat`)
+      console.log(`[SignalR] ✅ Successfully invoked LeaveSeat via SeatHub`)
     } catch (error) {
       console.error(`[SignalR] ❌ Error in LeaveSeat:`, error)
       throw error
     }
   }
 
-  async testConnection(): Promise<void> {
-    if (!(await this.verifyConnections())) {
-      throw new Error('No hay conexión de juego disponible')
-    }
-
-    console.log('[SignalR] 🧪 Testing connection...')
-    
-    try {
-      await this.gameConnection!.invoke('TestConnection')
-      console.log('[SignalR] ✅ Test connection successful')
-    } catch (error) {
-      console.error('[SignalR] ❌ Test connection failed:', error)
-      throw error
-    }
-  }
-
-  async joinRoom(roomCode: string): Promise<void> {
-    if (!(await this.verifyConnections())) {
-      throw new Error('No hay conexión de juego disponible')
-    }
-
-    const user = authService.getCurrentUser()
-    if (!user) {
-      throw new Error('Usuario no autenticado')
-    }
-
-    console.log(`[SignalR] 🚪 Joining existing room: ${roomCode}`)
-
-    await this.gameConnection!.invoke('JoinRoom', {
-      roomCode: roomCode,
-      playerName: user.displayName
-    })
-  }
-
+  // MÉTODOS QUE USAN SPECTATORHUB
   async joinAsViewer(tableId: string, playerName: string): Promise<void> {
-    if (!(await this.verifyConnections())) {
-      throw new Error('No hay conexión de juego disponible')
+    if (!this.spectatorHub || this.spectatorHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('SpectatorHub no está disponible')
+      }
     }
 
     const user = authService.getCurrentUser()
@@ -515,121 +573,150 @@ class SignalRService {
       throw new Error('Usuario no autenticado')
     }
 
-    console.log(`[SignalR] 👁️ Joining as viewer: ${playerName} to table: ${tableId}`)
+    console.log(`[SignalR] 👁️ [SpectatorHub] Joining as viewer: ${playerName} to table: ${tableId}`)
 
-    // Convert tableId to roomCode (assuming tableId is the roomCode for now)
     const roomCode = tableId
 
-    await this.gameConnection!.invoke('JoinAsViewer', {
+    await this.spectatorHub!.invoke('JoinAsViewer', {
       roomCode: roomCode,
       playerName: playerName
     })
   }
 
   async joinOrCreateRoomForTableAsViewer(tableId: string, playerName?: string): Promise<void> {
-    if (!(await this.verifyConnections())) {
-      throw new Error('No hay conexión de juego disponible')
+    if (!this.spectatorHub || this.spectatorHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('SpectatorHub no está disponible')
+      }
     }
 
     const user = authService.getCurrentUser()
     const finalPlayerName = playerName || user?.displayName || 'Viewer'
 
-    console.log(`[SignalR] 👁️ Joining/creating room as viewer for table: ${tableId}, playerName: ${finalPlayerName}`)
+    console.log(`[SignalR] 👁️ [SpectatorHub] Joining/creating room as viewer for table: ${tableId}, playerName: ${finalPlayerName}`)
     
     try {
-      await this.gameConnection!.invoke('JoinOrCreateRoomForTableAsViewer', tableId, finalPlayerName)
-      console.log(`[SignalR] ✅ Successfully invoked JoinOrCreateRoomForTableAsViewer`)
+      await this.spectatorHub!.invoke('JoinOrCreateRoomForTableAsViewer', tableId, finalPlayerName)
+      console.log(`[SignalR] ✅ Successfully invoked JoinOrCreateRoomForTableAsViewer via SpectatorHub`)
     } catch (error) {
       console.error(`[SignalR] ❌ Error in JoinOrCreateRoomForTableAsViewer:`, error)
       throw error
     }
   }
 
-  async createRoom(roomName: string): Promise<void> {
-    if (!(await this.verifyConnections())) {
-      throw new Error('No hay conexión de juego disponible')
-    }
-
-    console.log(`[SignalR] 🏗️ Creating room: ${roomName}`)
-
-    await this.gameConnection!.invoke('CreateRoom', {
-      roomName: roomName,
-      maxPlayers: 6
-    })
-  }
-
-  // CORREGIDO: leaveRoom solo cuando es EXPLÍCITO
-  async leaveRoom(roomCode: string): Promise<void> {
-    if (!this.gameConnection || this.gameConnection.state !== HubConnectionState.Connected) {
-      return
-    }
-
-    try {
-      console.log(`[SignalR] 🚪 EXPLICIT LeaveRoom called for: ${roomCode}`)
-      await this.gameConnection.invoke('LeaveRoom', roomCode)
-    } catch (error) {
-      console.warn('[SignalR] ⚠️ Error leaving room:', error)
-    }
-  }
-
-  async getRoomInfo(roomCode: string): Promise<void> {
-    if (!(await this.verifyConnections())) {
-      throw new Error('No hay conexión de juego disponible')
-    }
-
-    console.log(`[SignalR] 📋 Getting room info: ${roomCode}`)
-    await this.gameConnection!.invoke('GetRoomInfo', roomCode)
-  }
-
+  // MÉTODOS QUE USAN GAMECONTROLHUB
   async startGame(roomCode: string): Promise<void> {
-    if (!(await this.verifyConnections())) {
-      throw new Error('No hay conexión de juego disponible')
+    if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameControlHub no está disponible')
+      }
     }
 
-    await this.gameConnection!.invoke('StartGame', roomCode)
+    console.log(`[SignalR] 🎮 [GameControlHub] Starting game for room: ${roomCode}`)
+    await this.gameControlHub!.invoke('StartGame', roomCode)
   }
 
-  async placeBet(roomCode: string, amount: number): Promise<void> {
-    if (!(await this.verifyConnections())) {
-      throw new Error('No hay conexión de juego disponible')
+  // MÉTODOS DE TEST
+  async testConnection(): Promise<void> {
+    if (!this.connectionHub || this.connectionHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('ConnectionHub no está disponible')
+      }
     }
 
-    await this.gameConnection!.invoke('PlaceBet', {
+    console.log('[SignalR] 🧪 [ConnectionHub] Testing connection...')
+    
+    try {
+      await this.connectionHub!.invoke('TestConnection')
+      console.log('[SignalR] ✅ Test connection successful via ConnectionHub')
+    } catch (error) {
+      console.error('[SignalR] ❌ Test connection failed:', error)
+      throw error
+    }
+  }
+
+  // MÉTODOS DE JUEGO (pueden ir a GameControlHub en el futuro)
+  async placeBet(roomCode: string, amount: number): Promise<void> {
+    if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameControlHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] 💰 [GameControlHub] Placing bet: ${amount} for room: ${roomCode}`)
+    await this.gameControlHub!.invoke('PlaceBet', {
       roomCode: roomCode,
       amount: amount
     })
   }
 
   async playerAction(roomCode: string, action: string): Promise<void> {
-    if (!(await this.verifyConnections())) {
-      throw new Error('No hay conexión de juego disponible')
+    if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameControlHub no está disponible')
+      }
     }
 
-    await this.gameConnection!.invoke('PlayerAction', {
+    console.log(`[SignalR] 🎯 [GameControlHub] Player action: ${action} for room: ${roomCode}`)
+    await this.gameControlHub!.invoke('PlayerAction', {
       roomCode: roomCode,
       action: action
     })
   }
 
+  // GETTERS DE ESTADO
   get isLobbyConnected(): boolean {
     return this.lobbyConnection?.state === HubConnectionState.Connected
   }
 
-  get isGameConnected(): boolean {
-    return this.gameConnection?.state === HubConnectionState.Connected
+  get isConnectionHubConnected(): boolean {
+    return this.connectionHub?.state === HubConnectionState.Connected
+  }
+
+  get isRoomHubConnected(): boolean {
+    return this.roomHub?.state === HubConnectionState.Connected
+  }
+
+  get isSpectatorHubConnected(): boolean {
+    return this.spectatorHub?.state === HubConnectionState.Connected
+  }
+
+  get isSeatHubConnected(): boolean {
+    return this.seatHub?.state === HubConnectionState.Connected
+  }
+
+  get isGameControlHubConnected(): boolean {
+    return this.gameControlHub?.state === HubConnectionState.Connected
+  }
+
+  get areAllConnected(): boolean {
+    return this.isLobbyConnected && 
+           this.isConnectionHubConnected && 
+           this.isRoomHubConnected && 
+           this.isSpectatorHubConnected && 
+           this.isSeatHubConnected && 
+           this.isGameControlHubConnected
   }
 
   get connectionState(): ConnectionState {
-    const lobbyState = this.lobbyConnection?.state
-    const gameState = this.gameConnection?.state
+    const connections = [
+      this.lobbyConnection,
+      this.connectionHub,
+      this.roomHub,
+      this.spectatorHub,
+      this.seatHub,
+      this.gameControlHub
+    ]
 
-    if (lobbyState === HubConnectionState.Connected || gameState === HubConnectionState.Connected) {
+    const states = connections.map(conn => conn?.state).filter(Boolean)
+
+    if (states.some(state => state === HubConnectionState.Connected)) {
       return 'Connected'
     }
-    if (lobbyState === HubConnectionState.Connecting || gameState === HubConnectionState.Connecting) {
+    if (states.some(state => state === HubConnectionState.Connecting)) {
       return 'Connecting'
     }
-    if (lobbyState === HubConnectionState.Reconnecting || gameState === HubConnectionState.Reconnecting) {
+    if (states.some(state => state === HubConnectionState.Reconnecting)) {
       return 'Reconnecting'
     }
     return 'Disconnected'
