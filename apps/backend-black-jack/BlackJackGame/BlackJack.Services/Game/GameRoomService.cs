@@ -1,4 +1,4 @@
-﻿// GameRoomService.cs - COMPLETO CON AUTO-BETTING IMPLEMENTADO
+﻿// GameRoomService.cs - CORREGIDO CON CREACIÓN DE PLAYER ENTITIES
 using BlackJack.Data.Repositories.Game;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
@@ -42,7 +42,7 @@ public class GameRoomService : IGameRoomService
 
     #region Gestión de Salas
 
-    // CORREGIDO: Método CreateRoomAsync ahora acepta BlackjackTableId opcional
+    // CORREGIDO: CreateRoomAsync ahora crea Player entity antes de AddPlayer
     public async Task<Result<GameRoom>> CreateRoomAsync(string roomName, PlayerId hostPlayerId, Guid? blackjackTableId = null)
     {
         try
@@ -63,6 +63,14 @@ public class GameRoomService : IGameRoomService
             }
             while (await _gameRoomRepository.RoomCodeExistsAsync(roomCode));
 
+            // PASO 1: Crear/obtener Player entity ANTES de crear GameRoom
+            var player = await EnsurePlayerExistsAsync(hostPlayerId, $"Host-{hostPlayerId.Value.ToString()[..8]}");
+            if (player == null)
+            {
+                return Result<GameRoom>.Failure("Error creando jugador");
+            }
+
+            // PASO 2: Crear GameRoom (SIN AddPlayer todavía)
             var gameRoom = GameRoom.Create(roomName, hostPlayerId, roomCode);
 
             if (blackjackTableId.HasValue)
@@ -72,9 +80,18 @@ public class GameRoomService : IGameRoomService
                     blackjackTableId.Value, roomCode);
             }
 
-            gameRoom.AddPlayer(hostPlayerId, $"Host-{hostPlayerId.Value.ToString()[..8]}", false);
+            // PASO 3: Agregar player con PlayerEntityId correcto
+            await AddPlayerToRoomAsync(gameRoom, hostPlayerId, player.Id, $"Host-{hostPlayerId.Value.ToString()[..8]}", false);
+
+            // PASO 4: Guardar en base de datos
+            // PASO 4: Guardar en base de datos
             await _gameRoomRepository.AddAsync(gameRoom);
-            await _eventDispatcher.DispatchEventsAsync(gameRoom);
+
+            // TEMPORAL: Comentar para diagnosticar
+            // await _eventDispatcher.DispatchEventsAsync(gameRoom);
+
+            _logger.LogInformation("[GameRoomService] Room created successfully: {RoomCode}", roomCode);
+            // await _eventDispatcher.DispatchEventsAsync(gameRoom);
 
             _logger.LogInformation("[GameRoomService] Room created successfully: {RoomCode}", roomCode);
             return Result<GameRoom>.Success(gameRoom);
@@ -340,6 +357,7 @@ public class GameRoomService : IGameRoomService
 
     #region Gestión de Jugadores
 
+    // CORREGIDO: JoinRoomAsync ahora crea Player entity antes de AddPlayer
     public async Task<r> JoinRoomAsync(string roomCode, PlayerId playerId, string playerName, bool isViewer = false)
     {
         try
@@ -364,7 +382,16 @@ public class GameRoomService : IGameRoomService
                 return Result.Success();
             }
 
-            room.AddPlayer(playerId, playerName, isViewer);
+            // NUEVO: Crear/obtener Player entity antes de AddPlayer
+            var player = await EnsurePlayerExistsAsync(playerId, playerName);
+            if (player == null)
+            {
+                return Result.Failure("Error creando jugador");
+            }
+
+            // NUEVO: Usar AddPlayerToRoomAsync en lugar de room.AddPlayer() directamente
+            await AddPlayerToRoomAsync(room, playerId, player.Id, playerName, isViewer);
+
             await _gameRoomRepository.UpdateAsync(room);
             await _eventDispatcher.DispatchEventsAsync(room);
 
@@ -477,6 +504,79 @@ public class GameRoomService : IGameRoomService
 
     #endregion
 
+    #region NUEVOS: Métodos auxiliares para manejo de Player entities
+
+    /// <summary>
+    /// Crea o obtiene un Player entity existente para un PlayerId dado
+    /// </summary>
+    private async Task<Player?> EnsurePlayerExistsAsync(PlayerId playerId, string playerName, decimal initialBalance = 1000m)
+    {
+        try
+        {
+            _logger.LogInformation("[GameRoomService] Ensuring Player entity exists for PlayerId: {PlayerId}", playerId);
+
+            // 1. Intentar obtener Player existente
+            var existingPlayer = await _playerRepository.GetByPlayerIdAsync(playerId);
+            if (existingPlayer != null)
+            {
+                _logger.LogInformation("[GameRoomService] Found existing Player entity with Id: {PlayerId}", existingPlayer.Id);
+                return existingPlayer;
+            }
+
+            // 2. Crear nuevo Player si no existe
+            _logger.LogInformation("[GameRoomService] Creating new Player entity for PlayerId: {PlayerId}", playerId);
+            var newPlayer = Player.Create(playerId, playerName, initialBalance);
+            await _playerRepository.AddAsync(newPlayer);
+
+            _logger.LogInformation("[GameRoomService] Created new Player entity with Id: {PlayerId}", newPlayer.Id);
+            return newPlayer;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error ensuring Player entity exists for PlayerId: {PlayerId}", playerId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Agrega un jugador a una sala con PlayerEntityId correcto
+    /// </summary>
+    private async Task AddPlayerToRoomAsync(GameRoom gameRoom, PlayerId playerId, Guid playerEntityId, string playerName, bool isViewer = false)
+    {
+        try
+        {
+            _logger.LogInformation("[GameRoomService] Adding player to room - PlayerId: {PlayerId}, PlayerEntityId: {PlayerEntityId}",
+                playerId, playerEntityId);
+
+            // 1. Llamar al método de dominio para agregar el jugador (esto crea RoomPlayer con PlayerEntityId = Guid.Empty)
+            gameRoom.AddPlayer(playerId, playerName, isViewer);
+
+            // 2. Obtener el RoomPlayer recién creado y asignar el PlayerEntityId correcto
+            var roomPlayer = gameRoom.GetPlayer(playerId);
+            if (roomPlayer != null)
+            {
+                // Asignar PlayerEntityId correcto directamente
+                roomPlayer.PlayerEntityId = playerEntityId;
+                roomPlayer.UpdatedAt = DateTime.UtcNow; // CORREGIDO: Usar UpdatedAt directamente
+
+                _logger.LogInformation("[GameRoomService] Assigned PlayerEntityId {PlayerEntityId} to RoomPlayer for PlayerId: {PlayerId}",
+                    playerEntityId, playerId);
+            }
+            else
+            {
+                _logger.LogError("[GameRoomService] Failed to find RoomPlayer after adding to GameRoom for PlayerId: {PlayerId}", playerId);
+                throw new InvalidOperationException("Failed to add player to room");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error adding player to room - PlayerId: {PlayerId}", playerId);
+            throw;
+        }
+    }
+
+    #endregion
+
     #region Gestión de Asientos
 
     public async Task<Result<bool>> JoinSeatAsync(string roomCode, PlayerId playerId, int position)
@@ -565,12 +665,12 @@ public class GameRoomService : IGameRoomService
         {
             _logger.LogError(ex, "[GameRoomService] CRITICAL ERROR in JoinSeatAsync for player {PlayerId} in room {RoomCode}",
                 playerId, roomCode);
-            return Result<bool>.Failure("Error interno del servidor");
+
+            // TEMPORAL: Mostrar error específico en lugar de genérico
+            return Result<bool>.Failure($"Error: {ex.Message} - {ex.InnerException?.Message}");
         }
     }
 
-    // FIX DEFINITIVO: LeaveSeatAsync sin cargar GameRoom completo
-    // FIX DEFINITIVO: LeaveSeatAsync sin cargar GameRoom completo (reemplaza líneas ~574-594)
     public async Task<Result<bool>> LeaveSeatAsync(string roomCode, PlayerId playerId)
     {
         try

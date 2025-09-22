@@ -1,10 +1,11 @@
-﻿// BlackJack.Data/Repositories/Game/GameRoomRepository.cs - FIX DEFINITIVO COMPLETO
-using Microsoft.EntityFrameworkCore;
-using BlackJack.Domain.Models.Game;
-using BlackJack.Domain.Models.Users;
+﻿// BlackJack.Data/Repositories/Game/GameRoomRepository.cs - SOLUCIÓN DEFINITIVA CON CONEXIÓN DIRECTA
 using BlackJack.Data.Context;
 using BlackJack.Data.Repositories.Common;
+using BlackJack.Domain.Models.Game;
+using BlackJack.Domain.Models.Users;
 using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
+using System.Data;
 
 namespace BlackJack.Data.Repositories.Game;
 
@@ -16,42 +17,51 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
 
     #region GameRoom Basic Operations
 
+    // CORREGIDO: ThenInclude Player para obtener balance data
     public async Task<GameRoom?> GetByRoomCodeAsync(string roomCode)
     {
         return await _dbSet
             .Include(r => r.Players)
+                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
             .Include(r => r.Spectators)
             .AsNoTracking()
             .FirstOrDefaultAsync(r => r.RoomCode == roomCode);
     }
 
+    // CORREGIDO: ThenInclude Player para obtener balance data
     public async Task<GameRoom?> GetRoomWithPlayersAsync(string roomCode)
     {
         return await _dbSet
             .Include(r => r.Players)
+                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
             .Include(r => r.Spectators)
             .AsNoTracking()
             .FirstOrDefaultAsync(r => r.RoomCode == roomCode);
     }
 
+    // CORREGIDO: ThenInclude Player para obtener balance data
     public async Task<GameRoom?> GetRoomWithPlayersAsync(Guid roomId)
     {
         return await _dbSet
             .Include(r => r.Players)
-            .AsNoTracking()
+                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
             .Include(r => r.Spectators)
+            .AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == roomId);
     }
 
+    // CORREGIDO: ThenInclude Player para obtener balance data
     public async Task<GameRoom?> GetRoomWithPlayersReadOnlyAsync(string roomCode)
     {
         return await _dbSet
             .Include(r => r.Players)
+                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
             .Include(r => r.Spectators)
             .AsNoTracking()
             .FirstOrDefaultAsync(r => r.RoomCode == roomCode);
     }
 
+    // CORREGIDO: ThenInclude Player para obtener balance data
     public async Task<List<GameRoom>> GetActiveRoomsAsync()
     {
         await _context.SaveChangesAsync();
@@ -59,12 +69,14 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return await _dbSet
             .Where(r => r.Status == RoomStatus.WaitingForPlayers || r.Status == RoomStatus.InProgress)
             .Include(r => r.Players)
+                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
             .Include(r => r.Spectators)
             .AsNoTracking()
             .OrderBy(r => r.CreatedAt)
             .ToListAsync();
     }
 
+    // CORREGIDO: ThenInclude Player para obtener balance data
     public async Task<List<GameRoom>> GetActiveRoomsReadOnlyAsync()
     {
         await _context.SaveChangesAsync();
@@ -72,17 +84,20 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return await _dbSet
             .Where(r => r.Status == RoomStatus.WaitingForPlayers || r.Status == RoomStatus.InProgress)
             .Include(r => r.Players)
+                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
             .Include(r => r.Spectators)
             .AsNoTracking()
             .OrderBy(r => r.CreatedAt)
             .ToListAsync();
     }
 
+    // CORREGIDO: ThenInclude Player para obtener balance data
     public async Task<List<GameRoom>> GetRoomsByStatusAsync(RoomStatus status)
     {
         return await _dbSet
             .Where(r => r.Status == status)
             .Include(r => r.Players)
+                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
             .Include(r => r.Spectators)
             .AsNoTracking()
             .OrderBy(r => r.CreatedAt)
@@ -94,37 +109,69 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return await _dbSet.AnyAsync(r => r.RoomCode == roomCode);
     }
 
+    // SOLUCIÓN DEFINITIVA: SQL directo para evitar completamente problemas de traducción de LINQ
     public async Task<GameRoom?> GetPlayerCurrentRoomAsync(PlayerId playerId)
     {
         await _context.SaveChangesAsync();
 
+        // APPROACH DEFINITIVO: SQL directo para evitar problemas de value object translation
+        var sql = @"
+            SELECT TOP(1) gr.Id 
+            FROM GameRooms gr
+            INNER JOIN RoomPlayers rp ON gr.Id = rp.GameRoomId
+            WHERE rp.PlayerId = @PlayerId";
+
+        var parameter = new SqlParameter("@PlayerId", playerId.Value);
+
+        var roomIds = await _context.Database
+            .SqlQueryRaw<Guid>(sql, parameter)
+            .ToListAsync();
+
+        if (!roomIds.Any())
+            return null;
+
+        var roomId = roomIds.First();
+
+        // Cargar la GameRoom completa con todas las navegaciones usando EF
         return await _dbSet
             .Include(r => r.Players)
+                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
             .Include(r => r.Spectators)
             .AsNoTracking()
-            .Where(r => r.Players.Any(p => p.PlayerId == playerId))
-            .FirstOrDefaultAsync();
+            .FirstOrDefaultAsync(r => r.Id == roomId);
     }
 
+    // SOLUCIÓN FINAL: Conexión directa para evitar CUALQUIER problema de traducción
     public async Task<bool> IsPlayerInRoomAsync(PlayerId playerId, string roomCode)
     {
-        await _context.SaveChangesAsync();
+        var sql = @"
+            SELECT COUNT(1) 
+            FROM RoomPlayers rp
+            INNER JOIN GameRooms gr ON rp.GameRoomId = gr.Id
+            WHERE gr.RoomCode = @RoomCode AND rp.PlayerId = @PlayerId";
 
-        // FIX: JOIN explícito para evitar lazy loading problemático
-        return await (from rp in _context.Set<RoomPlayer>()
-                      join gr in _context.Set<GameRoom>() on rp.GameRoomId equals gr.Id
-                      where gr.RoomCode == roomCode && rp.PlayerId == playerId
-                      select rp).AnyAsync();
+        using var command = _context.Database.GetDbConnection().CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add(new SqlParameter("@RoomCode", roomCode));
+        command.Parameters.Add(new SqlParameter("@PlayerId", playerId.Value));
+
+        if (_context.Database.GetDbConnection().State != ConnectionState.Open)
+            await _context.Database.OpenConnectionAsync();
+
+        var result = (int)await command.ExecuteScalarAsync();
+        return result > 0;
     }
 
+    // CORREGIDO: ThenInclude Player para obtener balance data
     public async Task<GameRoom?> GetRoomByTableIdAsync(Guid tableId)
     {
         await _context.SaveChangesAsync();
 
         return await _dbSet
             .Include(r => r.Players)
+                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
             .Include(r => r.Spectators)
-            .AsNoTracking()  // ← AGREGAR ESTA LÍNEA (consistente con otros métodos)
+            .AsNoTracking()
             .Where(r => r.BlackjackTableId == tableId)
             .FirstOrDefaultAsync();
     }
@@ -137,6 +184,12 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
             await entry.ReloadAsync();
             await entry.Collection(r => r.Players).LoadAsync();
             await entry.Collection(r => r.Spectators).LoadAsync();
+
+            // NUEVO: También recargar datos de Player para balance actualizado
+            foreach (var player in room.Players)
+            {
+                await _context.Entry(player).Reference(rp => rp.Player).LoadAsync();
+            }
         }
         return room;
     }
@@ -150,16 +203,38 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
 
     #region RoomPlayer and SeatPosition Operations
 
-    // FIX DEFINITIVO: GetRoomPlayerAsync con JOIN explícito sin lazy loading
+    // CORREGIDO: SQL directo para evitar problemas de traducción LINQ
     public async Task<RoomPlayer?> GetRoomPlayerAsync(string roomCode, PlayerId playerId)
     {
         await _context.SaveChangesAsync();
 
-        // SOLUCIÓN: Join explícito evitando navigation property que causa lazy loading
-        return await (from rp in _context.Set<RoomPlayer>()
-                      join gr in _context.Set<GameRoom>() on rp.GameRoomId equals gr.Id
-                      where gr.RoomCode == roomCode && rp.PlayerId == playerId
-                      select rp).FirstOrDefaultAsync();
+        // SOLUCIÓN: SQL directo para obtener el RoomPlayer ID
+        var sql = @"
+            SELECT rp.Id
+            FROM RoomPlayers rp
+            INNER JOIN GameRooms gr ON rp.GameRoomId = gr.Id
+            WHERE gr.RoomCode = @RoomCode AND rp.PlayerId = @PlayerId";
+
+        var parameters = new[]
+        {
+            new SqlParameter("@RoomCode", roomCode),
+            new SqlParameter("@PlayerId", playerId.Value)
+        };
+
+        var roomPlayerIds = await _context.Database
+            .SqlQueryRaw<Guid>(sql, parameters)
+            .ToListAsync();
+
+        if (!roomPlayerIds.Any())
+            return null;
+
+        var roomPlayerId = roomPlayerIds.First();
+
+        // Cargar el RoomPlayer completo con navegaciones usando EF
+        return await _context.Set<RoomPlayer>()
+            .Include(rp => rp.Player)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(rp => rp.Id == roomPlayerId);
     }
 
     // FIX DEFINITIVO: UpdateRoomPlayerAsync completamente aislado
@@ -184,41 +259,104 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         await _context.SaveChangesAsync();
     }
 
+    // SOLUCIÓN FINAL: Conexión directa para evitar CUALQUIER problema de traducción
     public async Task<bool> IsSeatOccupiedAsync(string roomCode, int seatPosition)
     {
-        await _context.SaveChangesAsync();
+        var sql = @"
+            SELECT COUNT(1)
+            FROM RoomPlayers rp
+            INNER JOIN GameRooms gr ON rp.GameRoomId = gr.Id
+            WHERE gr.RoomCode = @RoomCode AND rp.SeatPosition = @SeatPosition";
 
-        // FIX: Join explícito para evitar lazy loading
-        return await (from rp in _context.Set<RoomPlayer>()
-                      join gr in _context.Set<GameRoom>() on rp.GameRoomId equals gr.Id
-                      where gr.RoomCode == roomCode && rp.SeatPosition == seatPosition
-                      select rp).AnyAsync();
+        using var command = _context.Database.GetDbConnection().CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add(new SqlParameter("@RoomCode", roomCode));
+        command.Parameters.Add(new SqlParameter("@SeatPosition", seatPosition));
+
+        if (_context.Database.GetDbConnection().State != ConnectionState.Open)
+            await _context.Database.OpenConnectionAsync();
+
+        var result = (int)await command.ExecuteScalarAsync();
+        return result > 0;
     }
 
-    // FIX DEFINITIVO: GetPlayerInSeatAsync con join explícito
+    // CORREGIDO: SQL directo para evitar problemas de traducción LINQ
     public async Task<RoomPlayer?> GetPlayerInSeatAsync(string roomCode, int seatPosition)
     {
         await _context.SaveChangesAsync();
 
-        // SOLUCIÓN: Join explícito evitando navigation property
-        return await (from rp in _context.Set<RoomPlayer>()
-                      join gr in _context.Set<GameRoom>() on rp.GameRoomId equals gr.Id
-                      where gr.RoomCode == roomCode && rp.SeatPosition == seatPosition
-                      select rp).FirstOrDefaultAsync();
+        // SOLUCIÓN: SQL directo para obtener el RoomPlayer ID
+        var sql = @"
+            SELECT rp.Id
+            FROM RoomPlayers rp
+            INNER JOIN GameRooms gr ON rp.GameRoomId = gr.Id
+            WHERE gr.RoomCode = @RoomCode AND rp.SeatPosition = @SeatPosition";
+
+        var parameters = new[]
+        {
+            new SqlParameter("@RoomCode", roomCode),
+            new SqlParameter("@SeatPosition", seatPosition)
+        };
+
+        var roomPlayerIds = await _context.Database
+            .SqlQueryRaw<Guid>(sql, parameters)
+            .ToListAsync();
+
+        if (!roomPlayerIds.Any())
+            return null;
+
+        var roomPlayerId = roomPlayerIds.First();
+
+        // Cargar el RoomPlayer completo con navegaciones usando EF
+        return await _context.Set<RoomPlayer>()
+            .Include(rp => rp.Player)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(rp => rp.Id == roomPlayerId);
     }
 
+    // CORREGIDO: SQL directo para evitar problemas de traducción LINQ
     public async Task<Dictionary<Guid, int>> GetSeatPositionsAsync(string roomCode)
     {
         await _context.SaveChangesAsync();
 
-        // FIX: Join explícito para evitar lazy loading
-        var seatData = await (from rp in _context.Set<RoomPlayer>()
-                              join gr in _context.Set<GameRoom>() on rp.GameRoomId equals gr.Id
-                              where gr.RoomCode == roomCode && rp.SeatPosition.HasValue
-                              select new { PlayerId = rp.PlayerId.Value, SeatPosition = rp.SeatPosition.Value })
-                              .ToListAsync();
+        // SOLUCIÓN SIMPLE: SQL directo con múltiples consultas
+        var sql = @"
+            SELECT rp.PlayerId, rp.SeatPosition
+            FROM RoomPlayers rp
+            INNER JOIN GameRooms gr ON rp.GameRoomId = gr.Id
+            WHERE gr.RoomCode = @RoomCode AND rp.SeatPosition IS NOT NULL";
 
-        return seatData.ToDictionary(x => x.PlayerId, x => x.SeatPosition);
+        var parameter = new SqlParameter("@RoomCode", roomCode);
+
+        // Ejecutar SQL y procesar resultados manualmente
+        var connection = _context.Database.GetDbConnection();
+        var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add(parameter);
+
+        var result = new Dictionary<Guid, int>();
+
+        if (connection.State != ConnectionState.Open)
+            await connection.OpenAsync();
+
+        try
+        {
+            var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var playerId = reader.GetGuid("PlayerId");
+                var seatPosition = reader.GetInt32("SeatPosition");
+                result[playerId] = seatPosition;
+            }
+            await reader.CloseAsync();
+        }
+        finally
+        {
+            if (connection.State == ConnectionState.Open)
+                await connection.CloseAsync();
+        }
+
+        return result;
     }
 
     // SOLUCIÓN DEFINITIVA: FreeSeatAsync con SQL directo para evitar EF Collection issues
@@ -243,17 +381,25 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return affectedRows > 0;
     }
 
+    // SOLUCIÓN FINAL: Conexión directa para evitar CUALQUIER problema de traducción
     public async Task<bool> IsPlayerSeatedAsync(string roomCode, PlayerId playerId)
     {
-        await _context.SaveChangesAsync();
+        var sql = @"
+            SELECT COUNT(1)
+            FROM RoomPlayers rp
+            INNER JOIN GameRooms gr ON rp.GameRoomId = gr.Id
+            WHERE gr.RoomCode = @RoomCode AND rp.PlayerId = @PlayerId AND rp.SeatPosition IS NOT NULL";
 
-        // FIX: Join explícito para evitar lazy loading
-        return await (from rp in _context.Set<RoomPlayer>()
-                      join gr in _context.Set<GameRoom>() on rp.GameRoomId equals gr.Id
-                      where gr.RoomCode == roomCode &&
-                            rp.PlayerId == playerId &&
-                            rp.SeatPosition.HasValue
-                      select rp).AnyAsync();
+        using var command = _context.Database.GetDbConnection().CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add(new SqlParameter("@RoomCode", roomCode));
+        command.Parameters.Add(new SqlParameter("@PlayerId", playerId.Value));
+
+        if (_context.Database.GetDbConnection().State != ConnectionState.Open)
+            await _context.Database.OpenConnectionAsync();
+
+        var result = (int)await command.ExecuteScalarAsync();
+        return result > 0;
     }
 
     #endregion

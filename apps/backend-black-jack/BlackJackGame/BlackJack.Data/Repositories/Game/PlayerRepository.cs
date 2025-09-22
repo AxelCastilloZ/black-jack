@@ -1,4 +1,4 @@
-﻿// BlackJack.Data.Repositories.Game/PlayerRepository.cs - EXTENDIDO PARA APUESTAS
+﻿// BlackJack.Data.Repositories.Game/PlayerRepository.cs - CORREGIDO PARA VALUE OBJECTS
 using Microsoft.EntityFrameworkCore;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
@@ -14,11 +14,11 @@ public class PlayerRepository : Repository<Player>, IPlayerRepository
     {
     }
 
-    // Métodos existentes
+    // CORREGIDO: Métodos existentes con comparaciones de value objects
     public async Task<Player?> GetByPlayerIdAsync(PlayerId playerId)
     {
         return await _dbSet
-            .FirstOrDefaultAsync(p => p.PlayerId == playerId);
+            .FirstOrDefaultAsync(p => p.PlayerId.Value == playerId.Value);
     }
 
     public async Task<List<Player>> GetPlayersByTableAsync(Guid tableId)
@@ -38,7 +38,7 @@ public class PlayerRepository : Repository<Player>, IPlayerRepository
             .ToList();
     }
 
-    // NUEVOS: Métodos para apuestas automáticas
+    // CORREGIDOS: Métodos para apuestas automáticas con comparaciones correctas
     public async Task<List<Player>> GetPlayersByIdsAsync(List<PlayerId> playerIds)
     {
         if (playerIds == null || !playerIds.Any())
@@ -64,7 +64,7 @@ public class PlayerRepository : Repository<Player>, IPlayerRepository
     public async Task<bool> HasSufficientFundsAsync(PlayerId playerId, Money amount)
     {
         var balance = await _dbSet
-            .Where(p => p.PlayerId == playerId)
+            .Where(p => p.PlayerId.Value == playerId.Value)
             .Select(p => p.Balance.Amount)
             .FirstOrDefaultAsync();
 
@@ -74,7 +74,7 @@ public class PlayerRepository : Repository<Player>, IPlayerRepository
     public async Task<Money?> GetPlayerBalanceAsync(PlayerId playerId)
     {
         var balanceAmount = await _dbSet
-            .Where(p => p.PlayerId == playerId)
+            .Where(p => p.PlayerId.Value == playerId.Value)
             .Select(p => p.Balance.Amount)
             .FirstOrDefaultAsync();
 
@@ -85,7 +85,7 @@ public class PlayerRepository : Repository<Player>, IPlayerRepository
     {
         try
         {
-            var player = await _dbSet.FirstOrDefaultAsync(p => p.PlayerId == playerId);
+            var player = await _dbSet.FirstOrDefaultAsync(p => p.PlayerId.Value == playerId.Value);
             if (player == null)
                 return false;
 
@@ -139,7 +139,7 @@ public class PlayerRepository : Repository<Player>, IPlayerRepository
         using var transaction = await _context.Database.BeginTransactionAsync();
         try
         {
-            var player = await _dbSet.FirstOrDefaultAsync(p => p.PlayerId == playerId);
+            var player = await _dbSet.FirstOrDefaultAsync(p => p.PlayerId.Value == playerId.Value);
             if (player == null)
                 return false;
 
@@ -165,7 +165,7 @@ public class PlayerRepository : Repository<Player>, IPlayerRepository
     {
         try
         {
-            var player = await _dbSet.FirstOrDefaultAsync(p => p.PlayerId == playerId);
+            var player = await _dbSet.FirstOrDefaultAsync(p => p.PlayerId.Value == playerId.Value);
             if (player == null)
                 return false;
 

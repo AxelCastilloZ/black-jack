@@ -1,4 +1,4 @@
-﻿// BlackJack.Realtime/Hubs/RoomHub.cs - CORREGIDO PARA USAR SIGNALR NOTIFICATION SERVICE
+﻿// BlackJack.Realtime/Hubs/RoomHub.cs - CORREGIDO CON auto-betting integrado
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Realtime.Models;
@@ -451,53 +451,72 @@ public class RoomHub : BaseHub
     #region Utility Methods
 
     /// <summary>
-    /// CORREGIDO: MapToRoomInfoAsync ahora usa SeatPosition directamente del modelo BD
+    /// CORREGIDO: MapToRoomInfoAsync ahora incluye datos de auto-betting y balance de jugadores
     /// </summary>
     private async Task<RoomInfoModel> MapToRoomInfoAsync(BlackJack.Domain.Models.Game.GameRoom room)
     {
         try
         {
-            _logger.LogInformation("[RoomHub] Mapping room {RoomCode} to RoomInfoModel", room.RoomCode);
+            _logger.LogInformation("[RoomHub] Mapping room {RoomCode} to RoomInfoModel with auto-betting data", room.RoomCode);
 
-            _logger.LogInformation("[RoomHub] Using SeatPosition directly from database models");
+            // NUEVO: Calcular datos de auto-betting
+            var seatedPlayersCount = room.Players.Count(p => p.IsSeated);
+            var isAutoBettingActive = room.MinBetPerRound?.Amount > 0 && seatedPlayersCount > 0;
+
+            _logger.LogInformation("[RoomHub] Auto-betting calculation: MinBetPerRound={MinBet}, SeatedPlayers={SeatedCount}, Active={Active}",
+                room.MinBetPerRound?.Amount ?? 0, seatedPlayersCount, isAutoBettingActive);
 
             var roomInfo = new RoomInfoModel(
                 RoomCode: room.RoomCode,
                 Name: room.Name,
                 Status: room.Status.ToString(),
-                PlayerCount: room.PlayerCount, // Este viene correcto de BD
+                PlayerCount: room.PlayerCount,
                 MaxPlayers: room.MaxPlayers,
+
+                // NUEVO: Datos de auto-betting incluidos
+                MinBetPerRound: room.MinBetPerRound?.Amount ?? 0,
+                AutoBettingActive: isAutoBettingActive,
+
                 Players: room.Players.Select(p => new RoomPlayerModel(
                     PlayerId: p.PlayerId.Value,
                     Name: p.Name,
-                    // CORREGIDO: Usar SeatPosition directamente del modelo RoomPlayer
-                    Position: p.GetSeatPosition(), // Método que devuelve SeatPosition ?? -1
+                    Position: p.GetSeatPosition(), // Usar SeatPosition para el layout
                     IsReady: p.IsReady,
                     IsHost: room.HostPlayerId == p.PlayerId,
-                    HasPlayedTurn: p.HasPlayedTurn
+                    HasPlayedTurn: p.HasPlayedTurn,
+
+                    // NUEVO: Datos de balance y auto-betting del jugador
+                    CurrentBalance: p.Player?.Balance?.Amount ?? 0,
+                    TotalBetThisSession: p.TotalBetThisSession,
+                    CanAffordBet: p.Player?.Balance != null && room.MinBetPerRound != null
+                        ? p.Player.Balance.Amount >= room.MinBetPerRound.Amount
+                        : false
                 )).ToList(),
+
                 Spectators: room.Spectators.Select(s => new SpectatorModel(
                     PlayerId: s.PlayerId.Value,
                     Name: s.Name,
                     JoinedAt: s.JoinedAt
                 )).ToList(),
+
                 CurrentPlayerTurn: room.CurrentPlayer?.Name,
                 CanStart: room.CanStart,
                 CreatedAt: room.CreatedAt
             );
 
-            _logger.LogInformation("[RoomHub] RoomInfoModel created successfully for room {RoomCode} with {PlayerCount} players",
-                room.RoomCode, roomInfo.PlayerCount);
+            _logger.LogInformation("[RoomHub] RoomInfoModel created successfully for room {RoomCode} with {PlayerCount} players, MinBetPerRound={MinBet}",
+                room.RoomCode, roomInfo.PlayerCount, roomInfo.MinBetPerRound);
 
-            // NUEVO: Log detallado para debugging
-            var playerDetails = string.Join(", ", roomInfo.Players.Select(p => $"{p.Name}(Pos:{p.Position})"));
-            _logger.LogInformation("[RoomHub] Player details: {Players}", playerDetails);
+            // NUEVO: Log detallado para debugging auto-betting
+            var playerDetails = string.Join(", ", roomInfo.Players.Select(p =>
+                $"{p.Name}(Pos:{p.Position}, Balance:${p.CurrentBalance}, CanAfford:{p.CanAffordBet})"));
+            _logger.LogInformation("[RoomHub] Player balance details: {Players}", playerDetails);
 
             return roomInfo;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[RoomHub] Error mapping room {RoomCode} to RoomInfoModel", room.RoomCode);
+            _logger.LogError(ex, "[RoomHub] Error mapping room {RoomCode} to RoomInfoModel with auto-betting data", room.RoomCode);
             throw;
         }
     }

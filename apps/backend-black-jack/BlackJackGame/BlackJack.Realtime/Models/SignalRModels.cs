@@ -1,4 +1,4 @@
-﻿// BlackJack.Realtime/Models/SignalRModels.cs - ARCHIVO COMPLETO CON TODOS LOS MODELOS
+﻿// BlackJack.Realtime/Models/SignalRModels.cs - ARCHIVO COMPLETO CON auto-betting integrado
 namespace BlackJack.Realtime.Models;
 
 #region Response Wrappers
@@ -68,6 +68,7 @@ public record PlayerActionRequest(
 
 #region Response Models (Server -> Client)
 
+// CORREGIDO: RoomInfoModel con campos de auto-betting agregados
 public record RoomInfoModel(
     string RoomCode,
     string Name,
@@ -78,16 +79,26 @@ public record RoomInfoModel(
     List<SpectatorModel> Spectators,
     string? CurrentPlayerTurn,
     bool CanStart,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+
+    // NUEVOS: Campos de auto-betting
+    decimal MinBetPerRound,
+    bool AutoBettingActive
 );
 
+// CORREGIDO: RoomPlayerModel con campos de balance y auto-betting agregados
 public record RoomPlayerModel(
     Guid PlayerId,
     string Name,
     int Position, // -1 = no seat assigned
     bool IsReady,
     bool IsHost,
-    bool HasPlayedTurn
+    bool HasPlayedTurn,
+
+    // NUEVOS: Campos de balance y auto-betting
+    decimal CurrentBalance,
+    decimal TotalBetThisSession,
+    bool CanAffordBet
 );
 
 public record SpectatorModel(
