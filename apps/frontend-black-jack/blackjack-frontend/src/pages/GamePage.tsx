@@ -1,15 +1,23 @@
-// src/pages/GamePage.tsx - CORREGIDO: Estado de loading centralizado
+// src/pages/GamePage.tsx - CORREGIDO: Estados sincronizados, lógica de auto-betting consistente
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
-import { signalRService } from '../services/signalr'
+import { 
+  signalRService, 
+  AutoBetProcessedEvent, 
+  AutoBetStatistics, 
+  PlayerRemovedFromSeatEvent,
+  PlayerBalanceUpdatedEvent,
+  InsufficientFundsWarningEvent,
+  AutoBetProcessingStartedEvent,
+  AutoBetRoundSummaryEvent 
+} from '../services/signalr'
 import { authService } from '../services/auth'
 
-// Componentes extraídos
+// Componentes (GameBettings REMOVIDO)
 import GameHeader from '../components/game/GameHeader'
 import GameTable from '../components/game/GameTable'
 import GameSeats from '../components/game/GameSeats'
 import GameChat from '../components/game/GameChat'
-import GameBettings from '../components/game/GameBettings'
 
 interface GameState {
   roomCode: string
@@ -22,6 +30,9 @@ interface GameState {
   currentPlayerTurn?: string
   canStart: boolean
   createdAt: string
+  // Auto-betting - UNIFICADO: Solo una fuente de verdad
+  minBetPerRound?: number
+  autoBettingActive?: boolean
 }
 
 interface RoomPlayer {
@@ -31,6 +42,30 @@ interface RoomPlayer {
   isReady: boolean
   isHost: boolean
   hasPlayedTurn: boolean
+  // Auto-betting stats
+  currentBalance?: number
+  totalBetThisSession?: number
+  canAffordBet?: boolean
+}
+
+// Estados de Auto-Betting - SIMPLIFICADO: Sin duplicar isActive
+interface AutoBettingState {
+  isProcessing: boolean
+  statistics: AutoBetStatistics | null
+  lastProcessedResult: AutoBetProcessedEvent | null
+  processingStartedAt: Date | null
+  roundSummary: AutoBetRoundSummaryEvent | null
+}
+
+// Notificaciones
+interface Notification {
+  id: string
+  type: 'success' | 'warning' | 'error' | 'info'
+  title: string
+  message: string
+  timestamp: Date
+  autoClose?: boolean
+  duration?: number
 }
 
 export default function GamePage() {
@@ -50,13 +85,59 @@ export default function GamePage() {
   const [isJoining, setIsJoining] = useState(false)
   const [error, setError] = useState<string | null>(null)
   
-  // CORREGIDO: Estado de loading centralizado aquí
+  // Estado de loading centralizado
   const [seatClickLoading, setSeatClickLoading] = useState<number | null>(null)
+  
+  // Estados de Auto-Betting - SIMPLIFICADO: Sin isActive duplicado
+  const [autoBettingState, setAutoBettingState] = useState<AutoBettingState>({
+    isProcessing: false,
+    statistics: null,
+    lastProcessedResult: null,
+    processingStartedAt: null,
+    roundSummary: null
+  })
+  
+  // Notificaciones
+  const [notifications, setNotifications] = useState<Notification[]>([])
   
   // Refs
   const hasJoinedTable = useRef(false)
   const currentUser = useRef(authService.getCurrentUser())
   const isComponentMounted = useRef(true)
+
+  // COMPUTED: Lógica centralizada de auto-betting
+  const isAutoBettingActive = useCallback(() => {
+    if (!gameState || !gameState.minBetPerRound || gameState.minBetPerRound <= 0) {
+      return false
+    }
+    // Auto-betting está activo si hay jugadores sentados (position >= 0) y hay minBetPerRound
+    const seatedPlayers = gameState.players?.filter(p => p.position >= 0) || []
+    return seatedPlayers.length > 0
+  }, [gameState])
+
+  // Helper para agregar notificaciones
+  const addNotification = useCallback((notification: Omit<Notification, 'id' | 'timestamp'>) => {
+    if (!isComponentMounted.current) return
+    
+    const newNotification: Notification = {
+      ...notification,
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date()
+    }
+    
+    setNotifications(prev => [newNotification, ...prev].slice(0, 5))
+    
+    if (notification.autoClose !== false) {
+      const duration = notification.duration || 5000
+      setTimeout(() => {
+        removeNotification(newNotification.id)
+      }, duration)
+    }
+  }, [])
+
+  const removeNotification = useCallback((id: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== id))
+  }, [])
 
   // Detectar modo viewer y inicializar componente
   useEffect(() => {
@@ -98,7 +179,7 @@ export default function GamePage() {
     }
     
     checkConnections()
-    const interval = setInterval(checkConnections, 10000) // 10 segundos
+    const interval = setInterval(checkConnections, 10000)
     
     return () => {
       mounted = false
@@ -106,7 +187,7 @@ export default function GamePage() {
     }
   }, [])
 
-  // Handlers para eventos SignalR
+  // Handlers para eventos SignalR existentes
   const handleRoomInfo = useCallback((response: any) => {
     if (!isComponentMounted.current) return
     const roomData = response?.data || response
@@ -134,7 +215,12 @@ export default function GamePage() {
   const handleRoomInfoUpdated = useCallback((roomData: any) => {
     if (!isComponentMounted.current) return
     console.log('[GamePage] Room info updated via RoomHub:', roomData)
-    setGameState(roomData)
+    setGameState(prev => ({
+      ...roomData,
+      // CORREGIDO: Mantener continuidad con datos existentes si no vienen en el update
+      autoBettingActive: roomData.autoBettingActive !== undefined ? roomData.autoBettingActive : prev?.autoBettingActive,
+      minBetPerRound: roomData.minBetPerRound !== undefined ? roomData.minBetPerRound : prev?.minBetPerRound
+    }))
     setError(null)
   }, [])
 
@@ -146,8 +232,6 @@ export default function GamePage() {
       setGameState(roomInfo)
     }
     setError(null)
-    
-    // CORREGIDO: Resetear loading state cuando operación es exitosa
     setSeatClickLoading(null)
     console.log('[GamePage] Loading state reset after successful seat join')
   }, [])
@@ -160,8 +244,6 @@ export default function GamePage() {
       setGameState(roomData)
     }
     setError(null)
-    
-    // CORREGIDO: Resetear loading state cuando operación es exitosa
     setSeatClickLoading(null)
     console.log('[GamePage] Loading state reset after successful seat leave')
   }, [])
@@ -185,7 +267,10 @@ export default function GamePage() {
         position: eventData.position || -1,
         isReady: false,
         isHost: false,
-        hasPlayedTurn: false
+        hasPlayedTurn: false,
+        currentBalance: eventData.currentBalance || 0,
+        totalBetThisSession: eventData.totalBetThisSession || 0,
+        canAffordBet: eventData.canAffordBet || false
       }]
 
       console.log('[GamePage] Adding new player to local state:', eventData.playerName)
@@ -225,18 +310,241 @@ export default function GamePage() {
     if (!isComponentMounted.current) return
     console.error('[GamePage] SignalR Error from any hub:', errorMessage)
     setError(errorMessage)
-    
-    // CORREGIDO: Resetear loading state en caso de error
     setSeatClickLoading(null)
     console.log('[GamePage] Loading state reset after error')
   }, [])
+
+  // Handlers para Auto-Betting Events
+  const handleAutoBetProcessed = useCallback((event: AutoBetProcessedEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 🎰 AutoBetProcessed event:', event)
+    
+    setAutoBettingState(prev => ({
+      ...prev,
+      isProcessing: false,
+      lastProcessedResult: event,
+      processingStartedAt: null
+    }))
+
+    const { successfulBets, failedBets, totalAmountProcessed, playersRemovedFromSeats } = event
+    
+    addNotification({
+      type: failedBets > 0 ? 'warning' : 'success',
+      title: 'Apuestas Automáticas Procesadas',
+      message: `Exitosas: ${successfulBets}, Fallidas: ${failedBets}, Total: $${totalAmountProcessed}${
+        playersRemovedFromSeats > 0 ? `, ${playersRemovedFromSeats} removidos por fondos` : ''
+      }`,
+      duration: 6000
+    })
+  }, [addNotification])
+
+  const handleAutoBetStatistics = useCallback((event: AutoBetStatistics) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 📊 AutoBetStatistics event:', event)
+    
+    setAutoBettingState(prev => ({
+      ...prev,
+      statistics: event
+    }))
+
+    // CORREGIDO: Actualizar gameState con datos del evento
+    setGameState(prev => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        minBetPerRound: event.minBetPerRound,
+        // LÓGICA CORREGIDA: autoBettingActive se determina por jugadores sentados, no por el evento
+        autoBettingActive: event.seatedPlayersCount > 0 && event.minBetPerRound > 0
+      }
+    })
+  }, [])
+
+  const handleAutoBetProcessingStarted = useCallback((event: AutoBetProcessingStartedEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 🚀 AutoBetProcessingStarted event:', event)
+    
+    setAutoBettingState(prev => ({
+      ...prev,
+      isProcessing: true,
+      processingStartedAt: new Date(event.startedAt)
+    }))
+
+    addNotification({
+      type: 'info',
+      title: 'Procesando Apuestas Automáticas',
+      message: `${event.seatedPlayersCount} jugadores sentados, apuesta total: $${event.totalBetAmount}`,
+      duration: 3000
+    })
+  }, [addNotification])
+
+  const handleAutoBetRoundSummary = useCallback((event: AutoBetRoundSummaryEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 📋 AutoBetRoundSummary event:', event)
+    
+    setAutoBettingState(prev => ({
+      ...prev,
+      roundSummary: event
+    }))
+
+    event.notifications.forEach(notification => {
+      addNotification({
+        type: 'info',
+        title: `Ronda ${event.roundNumber} Completada`,
+        message: notification,
+        duration: 4000
+      })
+    })
+  }, [addNotification])
+
+  const handlePlayerRemovedFromSeat = useCallback((event: PlayerRemovedFromSeatEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 🚪 PlayerRemovedFromSeat event:', event)
+    
+    addNotification({
+      type: 'warning',
+      title: 'Jugador Removido',
+      message: `${event.playerName} fue removido del asiento ${event.seatPosition} - ${event.reason}`,
+      duration: 7000
+    })
+
+    setGameState(prev => {
+      if (!prev) return prev
+      
+      const updatedPlayers = prev.players.map(player => {
+        if (player.playerId === event.playerId) {
+          return { ...player, position: -1 }
+        }
+        return player
+      })
+      
+      return {
+        ...prev,
+        players: updatedPlayers
+      }
+    })
+  }, [addNotification])
+
+  const handlePlayerBalanceUpdated = useCallback((event: PlayerBalanceUpdatedEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 💰 PlayerBalanceUpdated event:', event)
+    
+    setGameState(prev => {
+      if (!prev) return prev
+      
+      const updatedPlayers = prev.players.map(player => {
+        if (player.playerId === event.playerId) {
+          return { 
+            ...player, 
+            currentBalance: event.newBalance,
+            canAffordBet: prev.minBetPerRound ? event.newBalance >= prev.minBetPerRound : true
+          }
+        }
+        return player
+      })
+      
+      return {
+        ...prev,
+        players: updatedPlayers
+      }
+    })
+
+    if (event.playerId === currentUser.current?.id) {
+      const amountText = event.amountChanged > 0 
+        ? `+$${event.amountChanged}` 
+        : `-$${Math.abs(event.amountChanged)}`
+      
+      addNotification({
+        type: event.amountChanged > 0 ? 'success' : 'warning',
+        title: 'Balance Actualizado',
+        message: `${amountText} (${event.changeReason}). Nuevo balance: $${event.newBalance}`,
+        duration: 5000
+      })
+    }
+  }, [addNotification])
+
+  const handleInsufficientFundsWarning = useCallback((event: InsufficientFundsWarningEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] ⚠️ InsufficientFundsWarning event:', event)
+    
+    addNotification({
+      type: 'warning',
+      title: 'Advertencia: Fondos Insuficientes',
+      message: `${event.playerName} no tiene fondos suficientes. Balance: $${event.currentBalance}, Requerido: $${event.requiredAmount}`,
+      duration: 8000
+    })
+  }, [addNotification])
+
+  const handleAutoBetFailed = useCallback((event: any) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] ❌ AutoBetFailed event:', event)
+    
+    setAutoBettingState(prev => ({
+      ...prev,
+      isProcessing: false,
+      processingStartedAt: null
+    }))
+
+    addNotification({
+      type: 'error',
+      title: 'Error en Apuestas Automáticas',
+      message: event.errorMessage || 'Error desconocido en el procesamiento',
+      duration: 10000,
+      autoClose: false
+    })
+  }, [addNotification])
+
+  // Handlers para eventos personales
+  const handleYouWereRemovedFromSeat = useCallback((event: PlayerRemovedFromSeatEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 🔴 YouWereRemovedFromSeat event:', event)
+    
+    addNotification({
+      type: 'error',
+      title: 'Fuiste Removido del Asiento',
+      message: `Removido del asiento ${event.seatPosition}: ${event.reason}. Balance: $${event.availableBalance}, Requerido: $${event.requiredAmount}`,
+      duration: 12000,
+      autoClose: false
+    })
+  }, [addNotification])
+
+  const handleYourBalanceUpdated = useCallback((event: PlayerBalanceUpdatedEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 💳 YourBalanceUpdated event:', event)
+    
+    const amountText = event.amountChanged > 0 
+      ? `+$${event.amountChanged}` 
+      : `-$${Math.abs(event.amountChanged)}`
+    
+    addNotification({
+      type: event.amountChanged > 0 ? 'success' : 'info',
+      title: 'Tu Balance Actualizado',
+      message: `${amountText} (${event.changeReason}). Nuevo balance: $${event.newBalance}`,
+      duration: 6000
+    })
+  }, [addNotification])
+
+  const handleInsufficientFundsWarningPersonal = useCallback((event: InsufficientFundsWarningEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 🟠 InsufficientFundsWarningPersonal event:', event)
+    
+    addNotification({
+      type: 'warning',
+      title: 'Fondos Insuficientes',
+      message: `Tu balance ($${event.currentBalance}) es menor al requerido ($${event.requiredAmount}). ${
+        event.willBeRemovedNextRound ? 'Serás removido en la próxima ronda.' : `Te quedan ${event.roundsRemaining} rondas.`
+      }`,
+      duration: 10000,
+      autoClose: false
+    })
+  }, [addNotification])
 
   // Setup de listeners SignalR
   useEffect(() => {
     if (!isComponentMounted.current) return
     
-    console.log('[GamePage] Setting up hub listeners...')
+    console.log('[GamePage] Setting up hub listeners including auto-betting...')
     
+    // Listeners existentes
     signalRService.onRoomInfo = handleRoomInfo
     signalRService.onRoomCreated = handleRoomCreated
     signalRService.onRoomJoined = handleRoomJoined
@@ -248,8 +556,24 @@ export default function GamePage() {
     signalRService.onGameStateChanged = handleGameStateChanged
     signalRService.onError = handleError
 
+    // Listeners de auto-betting
+    signalRService.onAutoBetProcessed = handleAutoBetProcessed
+    signalRService.onAutoBetStatistics = handleAutoBetStatistics
+    signalRService.onAutoBetProcessingStarted = handleAutoBetProcessingStarted
+    signalRService.onAutoBetRoundSummary = handleAutoBetRoundSummary
+    signalRService.onPlayerRemovedFromSeat = handlePlayerRemovedFromSeat
+    signalRService.onPlayerBalanceUpdated = handlePlayerBalanceUpdated
+    signalRService.onInsufficientFundsWarning = handleInsufficientFundsWarning
+    signalRService.onAutoBetFailed = handleAutoBetFailed
+    
+    // Listeners personales
+    signalRService.onYouWereRemovedFromSeat = handleYouWereRemovedFromSeat
+    signalRService.onYourBalanceUpdated = handleYourBalanceUpdated
+    signalRService.onInsufficientFundsWarningPersonal = handleInsufficientFundsWarningPersonal
+
     return () => {
-      console.log('[GamePage] Cleaning up hub listeners...')
+      console.log('[GamePage] Cleaning up hub listeners including auto-betting...')
+      
       signalRService.onRoomInfo = undefined
       signalRService.onRoomCreated = undefined
       signalRService.onRoomJoined = undefined
@@ -260,10 +584,22 @@ export default function GamePage() {
       signalRService.onPlayerLeft = undefined
       signalRService.onGameStateChanged = undefined
       signalRService.onError = undefined
+      
+      signalRService.onAutoBetProcessed = undefined
+      signalRService.onAutoBetStatistics = undefined
+      signalRService.onAutoBetProcessingStarted = undefined
+      signalRService.onAutoBetRoundSummary = undefined
+      signalRService.onPlayerRemovedFromSeat = undefined
+      signalRService.onPlayerBalanceUpdated = undefined
+      signalRService.onInsufficientFundsWarning = undefined
+      signalRService.onAutoBetFailed = undefined
+      signalRService.onYouWereRemovedFromSeat = undefined
+      signalRService.onYourBalanceUpdated = undefined
+      signalRService.onInsufficientFundsWarningPersonal = undefined
     }
   }, [])
 
-  // Auto-join logic
+  // Auto-join logic - CORREGIDO: Sin auto-activar auto-betting
   useEffect(() => {
     let mounted = true
     
@@ -303,6 +639,8 @@ export default function GamePage() {
           await signalRService.joinOrCreateRoomForTableAsViewer(tableId, playerName)
         } else {
           await signalRService.joinOrCreateRoomForTable(tableId, playerName)
+          // CORREGIDO: NO auto-activar auto-betting aquí
+          console.log('[GamePage] Player joined table, auto-betting status will be determined by game state')
         }
         
         console.log('[GamePage] Successfully joined table')
@@ -327,6 +665,26 @@ export default function GamePage() {
       clearTimeout(timeoutId)
     }
   }, [connectionStatus.overall, connectionStatus.room, connectionStatus.spectator, tableId, isViewer])
+
+  // Obtener estadísticas de auto-betting - CORREGIDO: Usar lógica centralizada
+  useEffect(() => {
+    const autoBettingActive = isAutoBettingActive()
+    
+    if (
+      gameState?.roomCode && 
+      connectionStatus.gameControl && 
+      autoBettingActive &&
+      !autoBettingState.statistics &&
+      !isViewer
+    ) {
+      console.log('[GamePage] Getting auto-bet statistics for room:', gameState.roomCode)
+      
+      signalRService.getAutoBetStatistics(gameState.roomCode)
+        .catch(error => {
+          console.warn('[GamePage] Could not get auto-bet statistics:', error)
+        })
+    }
+  }, [gameState?.roomCode, connectionStatus.gameControl, isAutoBettingActive, autoBettingState.statistics, isViewer])
 
   // Cleanup en beforeunload
   useEffect(() => {
@@ -378,7 +736,7 @@ export default function GamePage() {
 
   // Computed values
   const currentPlayer = gameState?.players?.find(p => p.playerId === currentUser.current?.id)
-  const isPlayerSeated = !!currentPlayer
+  const isPlayerSeated = !!currentPlayer && currentPlayer.position >= 0
 
   // Loading screen
   if (!connectionStatus.overall || isJoining) {
@@ -443,6 +801,38 @@ export default function GamePage() {
         onLeaveRoom={handleLeaveRoom}
       />
 
+      {/* Notificaciones */}
+      <div className="fixed top-20 right-4 space-y-2 z-30 max-w-md">
+        {notifications.map((notification) => (
+          <div
+            key={notification.id}
+            className={`
+              rounded-lg shadow-lg p-4 border-l-4 transform transition-all duration-300 ease-in-out
+              ${notification.type === 'success' ? 'bg-green-800/90 border-green-400 text-green-100' :
+                notification.type === 'warning' ? 'bg-yellow-800/90 border-yellow-400 text-yellow-100' :
+                notification.type === 'error' ? 'bg-red-800/90 border-red-400 text-red-100' :
+                'bg-blue-800/90 border-blue-400 text-blue-100'}
+            `}
+          >
+            <div className="flex items-start justify-between">
+              <div className="flex-1">
+                <div className="font-semibold text-sm">{notification.title}</div>
+                <div className="text-xs mt-1 opacity-90">{notification.message}</div>
+                <div className="text-xs mt-1 opacity-70">
+                  {notification.timestamp.toLocaleTimeString()}
+                </div>
+              </div>
+              <button
+                onClick={() => removeNotification(notification.id)}
+                className="ml-2 text-white/70 hover:text-white text-lg leading-none"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
       {/* Error Banner */}
       {error && (
         <div className="absolute top-16 left-1/2 transform -translate-x-1/2 bg-red-600/90 text-white px-6 py-3 rounded-lg shadow-lg z-20 max-w-md">
@@ -470,7 +860,7 @@ export default function GamePage() {
         onStartRound={handleStartRound}
       />
 
-      {/* Game Seats - All 6 player positions */}
+      {/* Game Seats - CORREGIDO: Props sincronizados */}
       <GameSeats
         players={gameState?.players || []}
         roomCode={gameState?.roomCode}
@@ -483,16 +873,9 @@ export default function GamePage() {
         onError={setError}
         seatClickLoading={seatClickLoading}
         setSeatClickLoading={setSeatClickLoading}
-      />
-
-      {/* Game Bettings */}
-      <GameBettings
-        isPlayerSeated={isPlayerSeated}
-        gameStatus={gameState?.status}
-        isViewer={isViewer}
-        currentPlayerBalance={1000} // TODO: Get from player data
-        isPlayerTurn={gameState?.currentPlayerTurn === currentPlayer?.name}
-        roomCode={gameState?.roomCode}
+        // CORREGIDO: Usar función centralizada para determinar estado
+        autoBettingActive={isAutoBettingActive()}
+        minBetPerRound={gameState?.minBetPerRound || 0}
       />
 
       {/* Game Chat */}
