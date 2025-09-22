@@ -1,8 +1,9 @@
-﻿// BlackJack.Realtime/Hubs/RoomHub.cs - Hub especializado en gestión de salas
+﻿// BlackJack.Realtime/Hubs/RoomHub.cs - CORREGIDO PARA USAR SIGNALR NOTIFICATION SERVICE
+using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Realtime.Models;
-using BlackJack.Realtime.Services;
 using BlackJack.Services.Game;
+using BlackJack.Realtime.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
@@ -14,17 +15,20 @@ public class RoomHub : BaseHub
 {
     private readonly IGameRoomService _gameRoomService;
     private readonly IConnectionManager _connectionManager;
+    private readonly ISignalRNotificationService _notificationService;
 
     public RoomHub(
         IGameRoomService gameRoomService,
         IConnectionManager connectionManager,
+        ISignalRNotificationService notificationService,
         ILogger<RoomHub> logger) : base(logger)
     {
         _gameRoomService = gameRoomService;
         _connectionManager = connectionManager;
+        _notificationService = notificationService;
     }
 
-    #region Room Creation
+    #region Room Management
 
     public async Task CreateRoom(CreateRoomRequest request)
     {
@@ -70,6 +74,8 @@ public class RoomHub : BaseHub
                 await _connectionManager.AddToGroupAsync(Context.ConnectionId, roomGroupName);
 
                 var roomInfo = await MapToRoomInfoAsync(room);
+
+                // CORREGIDO: Usar Clients.Caller directamente para el creador
                 await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomCreated, roomInfo);
 
                 _logger.LogInformation("[RoomHub] Room {RoomCode} created successfully", room.RoomCode);
@@ -86,10 +92,6 @@ public class RoomHub : BaseHub
             await HandleExceptionAsync(ex, "CreateRoom");
         }
     }
-
-    #endregion
-
-    #region Room Joining
 
     public async Task JoinOrCreateRoomForTable(string tableId, string playerName)
     {
@@ -130,7 +132,7 @@ public class RoomHub : BaseHub
             _logger.LogInformation("[RoomHub] Input validation passed");
             _logger.LogInformation("[RoomHub] Calling GameRoomService.JoinOrCreateRoomForTableAsync...");
 
-            // Primero ejecutar la lógica de unión/creación
+            // CORREGIDO: Primero ejecutar la lógica de unión/creación
             var result = await _gameRoomService.JoinOrCreateRoomForTableAsync(tableId, playerId, playerName);
 
             if (!result.IsSuccess)
@@ -144,7 +146,7 @@ public class RoomHub : BaseHub
             _logger.LogInformation("[RoomHub] Service SUCCESS - Room: {RoomCode} for table {TableId}",
                 room.RoomCode, tableId);
 
-            // Solo unirse a grupos de SignalR DESPUÉS de confirmar éxito
+            // CORREGIDO: Solo unirse a grupos de SignalR DESPUÉS de confirmar éxito
             var tableGroupName = $"Table_{tableId}";
             var roomGroupName = HubMethodNames.Groups.GetRoomGroup(room.RoomCode);
 
@@ -154,7 +156,7 @@ public class RoomHub : BaseHub
             await JoinGroupAsync(tableGroupName);
             await JoinGroupAsync(roomGroupName);
 
-            // Registrar en ConnectionManager para reconexión
+            // NUEVO: Registrar en ConnectionManager para reconexión
             await _connectionManager.AddToGroupAsync(Context.ConnectionId, tableGroupName);
             await _connectionManager.AddToGroupAsync(Context.ConnectionId, roomGroupName);
 
@@ -169,12 +171,14 @@ public class RoomHub : BaseHub
                 var eventMethod = isNewRoom ? HubMethodNames.ServerMethods.RoomCreated : HubMethodNames.ServerMethods.RoomJoined;
 
                 _logger.LogInformation("[RoomHub] Sending {EventMethod} event to caller (isNewRoom: {IsNewRoom})", eventMethod, isNewRoom);
+
+                // CORREGIDO: Usar Clients.Caller directamente para respuesta al usuario
                 await Clients.Caller.SendAsync(eventMethod, roomInfo);
 
                 // Solo notificar si se unió a sala existente
                 if (!isNewRoom)
                 {
-                    _logger.LogInformation("[RoomHub] Notifying other users about player join");
+                    _logger.LogInformation("[RoomHub] Notifying other users about player join via NotificationService");
 
                     var playerJoinedEvent = new PlayerJoinedEventModel(
                         RoomCode: room.RoomCode,
@@ -185,11 +189,13 @@ public class RoomHub : BaseHub
                         Timestamp: DateTime.UtcNow
                     );
 
-                    await Clients.OthersInGroup(roomGroupName)
-                        .SendAsync(HubMethodNames.ServerMethods.PlayerJoined, playerJoinedEvent);
+                    // CORREGIDO: Usar NotificationService en lugar de Clients directamente
+                    // Pero excluir al usuario actual para evitar duplicación
+                    await _notificationService.NotifyRoomExceptAsync(room.RoomCode, Context.ConnectionId,
+                        HubMethodNames.ServerMethods.PlayerJoined, playerJoinedEvent);
 
-                    await Clients.OthersInGroup(roomGroupName)
-                        .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
+                    await _notificationService.NotifyRoomExceptAsync(room.RoomCode, Context.ConnectionId,
+                        HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
                 }
 
                 _logger.LogInformation("[RoomHub] Successfully {Action} room {RoomCode} for table {TableId}. Total players: {PlayerCount}",
@@ -199,7 +205,7 @@ public class RoomHub : BaseHub
             {
                 _logger.LogError("[RoomHub] Failed to get updated room info: {Error}", roomInfoResult.Error);
 
-                // Si falla, remover de grupos de SignalR
+                // CORREGIDO: Si falla, remover de grupos de SignalR
                 await LeaveGroupAsync(roomGroupName);
                 await LeaveGroupAsync(tableGroupName);
                 await _connectionManager.RemoveFromGroupAsync(Context.ConnectionId, roomGroupName);
@@ -261,7 +267,7 @@ public class RoomHub : BaseHub
 
             var room = roomResult.Value!;
 
-            // Primero ejecutar JoinRoom, DESPUÉS unirse a grupos
+            // CORREGIDO: Primero ejecutar JoinRoom, DESPUÉS unirse a grupos
             var joinResult = await _gameRoomService.JoinRoomAsync(request.RoomCode, playerId, request.PlayerName);
 
             if (!joinResult.IsSuccess)
@@ -290,10 +296,8 @@ public class RoomHub : BaseHub
             {
                 var roomInfo = await MapToRoomInfoAsync(updatedRoomResult.Value!);
 
+                // CORREGIDO: Usar Clients.Caller para respuesta directa
                 await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomJoined, roomInfo);
-
-                await Clients.OthersInGroup(roomGroupName)
-                    .SendAsync(HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
 
                 var playerJoinedEvent = new PlayerJoinedEventModel(
                     RoomCode: request.RoomCode,
@@ -304,8 +308,12 @@ public class RoomHub : BaseHub
                     Timestamp: DateTime.UtcNow
                 );
 
-                await Clients.OthersInGroup(roomGroupName)
-                    .SendAsync(HubMethodNames.ServerMethods.PlayerJoined, playerJoinedEvent);
+                // CORREGIDO: Usar NotificationService para notificar a otros, excluyendo al caller
+                await _notificationService.NotifyRoomExceptAsync(request.RoomCode, Context.ConnectionId,
+                    HubMethodNames.ServerMethods.PlayerJoined, playerJoinedEvent);
+
+                await _notificationService.NotifyRoomExceptAsync(request.RoomCode, Context.ConnectionId,
+                    HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
 
                 _logger.LogInformation("[RoomHub] Player {PlayerId} joined room {RoomCode} successfully",
                     playerId, request.RoomCode);
@@ -332,10 +340,6 @@ public class RoomHub : BaseHub
             await HandleExceptionAsync(ex, "JoinRoom");
         }
     }
-
-    #endregion
-
-    #region Room Leaving
 
     public async Task LeaveRoom(string roomCode)
     {
@@ -380,6 +384,7 @@ public class RoomHub : BaseHub
 
             if (result.IsSuccess)
             {
+                // CORREGIDO: Usar Clients.Caller para respuesta directa
                 await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomLeft,
                     new { message = "Has salido de la sala exitosamente" });
 
@@ -392,8 +397,8 @@ public class RoomHub : BaseHub
                     Timestamp: DateTime.UtcNow
                 );
 
-                await Clients.Group(roomGroupName)
-                    .SendAsync(HubMethodNames.ServerMethods.PlayerLeft, playerLeftEvent);
+                // CORREGIDO: Usar NotificationService para notificar a todos en la sala
+                await _notificationService.NotifyPlayerLeftAsync(roomCode, playerLeftEvent);
 
                 // Limpiar información de reconexión (salida explícita)
                 await _connectionManager.ClearReconnectionInfoAsync(playerId);
@@ -412,10 +417,6 @@ public class RoomHub : BaseHub
         }
     }
 
-    #endregion
-
-    #region Room Information
-
     public async Task GetRoomInfo(string roomCode)
     {
         try
@@ -431,6 +432,7 @@ public class RoomHub : BaseHub
             if (result.IsSuccess)
             {
                 var roomInfo = await MapToRoomInfoAsync(result.Value!);
+                // CORREGIDO: Usar Clients.Caller para respuesta directa
                 await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomInfo, roomInfo);
             }
             else
@@ -444,69 +446,12 @@ public class RoomHub : BaseHub
         }
     }
 
-    /// <summary>
-    /// Obtiene lista de salas activas para el lobby
-    /// </summary>
-    public async Task GetActiveRooms()
-    {
-        try
-        {
-            _logger.LogInformation("[RoomHub] Getting active rooms for lobby");
-
-            // Nota: Necesitarías implementar este método en IGameRoomService
-            // var result = await _gameRoomService.GetActiveRoomsAsync();
-
-            // Por ahora, enviar lista vacía
-            var activeRooms = new List<ActiveRoomModel>();
-
-            await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.ActiveRoomsUpdated, activeRooms);
-        }
-        catch (Exception ex)
-        {
-            await HandleExceptionAsync(ex, "GetActiveRooms");
-        }
-    }
-
-    /// <summary>
-    /// Obtiene el estado actual de la sala del jugador
-    /// </summary>
-    public async Task GetMyCurrentRoom()
-    {
-        try
-        {
-            var playerId = GetCurrentPlayerId();
-            if (playerId == null)
-            {
-                await SendErrorAsync("Error de autenticación");
-                return;
-            }
-
-            var currentRoomResult = await _gameRoomService.GetPlayerCurrentRoomCodeAsync(playerId);
-            if (currentRoomResult.IsSuccess && !string.IsNullOrEmpty(currentRoomResult.Value))
-            {
-                var roomResult = await _gameRoomService.GetRoomAsync(currentRoomResult.Value);
-                if (roomResult.IsSuccess)
-                {
-                    var roomInfo = await MapToRoomInfoAsync(roomResult.Value!);
-                    await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomInfo, roomInfo);
-                    return;
-                }
-            }
-
-            await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.RoomInfo, null);
-        }
-        catch (Exception ex)
-        {
-            await HandleExceptionAsync(ex, "GetMyCurrentRoom");
-        }
-    }
-
     #endregion
 
     #region Utility Methods
 
     /// <summary>
-    /// Mapea GameRoom a RoomInfoModel
+    /// CORREGIDO: MapToRoomInfoAsync ahora usa SeatPosition directamente del modelo BD
     /// </summary>
     private async Task<RoomInfoModel> MapToRoomInfoAsync(BlackJack.Domain.Models.Game.GameRoom room)
     {
@@ -514,16 +459,19 @@ public class RoomHub : BaseHub
         {
             _logger.LogInformation("[RoomHub] Mapping room {RoomCode} to RoomInfoModel", room.RoomCode);
 
+            _logger.LogInformation("[RoomHub] Using SeatPosition directly from database models");
+
             var roomInfo = new RoomInfoModel(
                 RoomCode: room.RoomCode,
                 Name: room.Name,
                 Status: room.Status.ToString(),
-                PlayerCount: room.PlayerCount,
+                PlayerCount: room.PlayerCount, // Este viene correcto de BD
                 MaxPlayers: room.MaxPlayers,
                 Players: room.Players.Select(p => new RoomPlayerModel(
                     PlayerId: p.PlayerId.Value,
                     Name: p.Name,
-                    Position: p.GetSeatPosition(),
+                    // CORREGIDO: Usar SeatPosition directamente del modelo RoomPlayer
+                    Position: p.GetSeatPosition(), // Método que devuelve SeatPosition ?? -1
                     IsReady: p.IsReady,
                     IsHost: room.HostPlayerId == p.PlayerId,
                     HasPlayedTurn: p.HasPlayedTurn
@@ -540,6 +488,10 @@ public class RoomHub : BaseHub
 
             _logger.LogInformation("[RoomHub] RoomInfoModel created successfully for room {RoomCode} with {PlayerCount} players",
                 room.RoomCode, roomInfo.PlayerCount);
+
+            // NUEVO: Log detallado para debugging
+            var playerDetails = string.Join(", ", roomInfo.Players.Select(p => $"{p.Name}(Pos:{p.Position})"));
+            _logger.LogInformation("[RoomHub] Player details: {Players}", playerDetails);
 
             return roomInfo;
         }

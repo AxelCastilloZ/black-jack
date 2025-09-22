@@ -1,4 +1,4 @@
-﻿// ConnectionManager.cs - MEJORADO PARA RECONEXIÓN ROBUSTA Y MANTENIMIENTO DE ESTADO (USANDO MODELOS EXISTENTES)
+﻿// ConnectionManager.cs - SIMPLIFICADO PARA NO INTERFERIR CON GRUPOS SIGNALR
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using BlackJack.Domain.Models.Users;
@@ -19,11 +19,8 @@ public class ConnectionManager : IConnectionManager
     // Mapeo de ConnectionId a PlayerId para búsquedas rápidas
     private readonly ConcurrentDictionary<string, Guid> _connectionToPlayer = new();
 
-    // MEJORADO: Información de reconexión más robusta
+    // SIMPLIFICADO: Solo información de reconexión básica
     private readonly ConcurrentDictionary<Guid, ReconnectionInfo> _reconnectionInfo = new();
-
-    // NUEVO: Cache de estado de salas por jugador para reconexión rápida
-    private readonly ConcurrentDictionary<Guid, PlayerRoomState> _playerRoomStates = new();
 
     public ConnectionManager(ILogger<ConnectionManager> logger)
     {
@@ -40,11 +37,12 @@ public class ConnectionManager : IConnectionManager
             _logger.LogInformation("[ConnectionManager] ConnectionId: {ConnectionId}, PlayerId: {PlayerId}, UserName: {UserName}",
                 connectionId, playerId, userName);
 
+            // SIMPLIFICADO: Solo trackear conexión, NO grupos
             var connectionInfo = new ConnectionInfo(
                 ConnectionId: connectionId,
                 PlayerId: playerId.Value,
                 UserName: userName,
-                Groups: new List<string>(),
+                Groups: new List<string>(), // Inicializar vacío - NO manejar grupos aquí
                 ConnectedAt: DateTime.UtcNow
             );
 
@@ -70,13 +68,6 @@ public class ConnectionManager : IConnectionManager
 
             _logger.LogInformation("[ConnectionManager] ✅ Added connection {ConnectionId} for player {PlayerId} ({UserName})",
                 connectionId, playerId, userName);
-
-            // NUEVO: Actualizar estado de reconexión si existe
-            if (_reconnectionInfo.ContainsKey(playerId.Value))
-            {
-                _logger.LogInformation("[ConnectionManager] Player {PlayerId} has reconnection info - will be handled by hub",
-                    playerId);
-            }
 
             return Task.CompletedTask;
         }
@@ -122,8 +113,8 @@ public class ConnectionManager : IConnectionManager
                             _playerConnections.TryRemove(playerId, out _);
                             _logger.LogInformation("[ConnectionManager] Player {PlayerId} has no more connections", playerId);
 
-                            // MEJORADO: Guardar estado completo para reconexión
-                            SavePlayerStateForReconnection(connectionInfo, playerId);
+                            // SIMPLIFICADO: Solo guardar información básica de reconexión
+                            SaveBasicReconnectionInfo(playerId);
                         }
                         else
                         {
@@ -148,155 +139,37 @@ public class ConnectionManager : IConnectionManager
     }
 
     /// <summary>
-    /// NUEVO: Guarda estado completo del jugador para reconexión
+    /// SIMPLIFICADO: Solo guarda timestamp de desconexión, no estado de grupos
     /// </summary>
-    private void SavePlayerStateForReconnection(ConnectionInfo connectionInfo, Guid playerId)
+    private void SaveBasicReconnectionInfo(Guid playerId)
     {
         try
         {
-            _logger.LogInformation("[ConnectionManager] === SAVING PLAYER STATE FOR RECONNECTION ===");
-            _logger.LogInformation("[ConnectionManager] PlayerId: {PlayerId}", playerId);
+            _logger.LogInformation("[ConnectionManager] Saving basic reconnection info for player {PlayerId}", playerId);
 
-            // Determinar sala actual basándose en los grupos
-            var roomGroups = connectionInfo.Groups
-                .Where(g => g.StartsWith("Room_"))
-                .ToList();
+            var reconnectionInfo = new ReconnectionInfo(
+                PlayerId: playerId,
+                LastRoomCode: null, // Se determinará por otros medios
+                LastSeen: DateTime.UtcNow,
+                WasInGame: false // Se determinará por otros medios
+            );
 
-            var tableGroups = connectionInfo.Groups
-                .Where(g => g.StartsWith("Table_"))
-                .ToList();
+            _reconnectionInfo[playerId] = reconnectionInfo;
 
-            string? lastRoomCode = null;
-            string? lastTableId = null;
-
-            if (roomGroups.Any())
-            {
-                // Extraer RoomCode del grupo "Room_{RoomCode}"
-                lastRoomCode = roomGroups.First().Replace("Room_", "");
-                _logger.LogInformation("[ConnectionManager] Found room group: {RoomCode}", lastRoomCode);
-            }
-
-            if (tableGroups.Any())
-            {
-                // Extraer TableId del grupo "Table_{TableId}"
-                lastTableId = tableGroups.First().Replace("Table_", "");
-                _logger.LogInformation("[ConnectionManager] Found table group: {TableId}", lastTableId);
-            }
-
-            // Guardar información de reconexión si está en una sala
-            if (!string.IsNullOrEmpty(lastRoomCode))
-            {
-                var reconnectionInfo = new ReconnectionInfo(
-                    PlayerId: playerId,
-                    LastRoomCode: lastRoomCode,
-                    LastSeen: DateTime.UtcNow,
-                    WasInGame: true
-                );
-
-                _reconnectionInfo[playerId] = reconnectionInfo;
-
-                // NUEVO: Guardar estado de sala más detallado
-                var playerRoomState = new PlayerRoomState(
-                    PlayerId: playerId,
-                    RoomCode: lastRoomCode,
-                    TableId: lastTableId,
-                    Groups: connectionInfo.Groups.ToList(),
-                    LastActivity: DateTime.UtcNow,
-                    ConnectionLostAt: DateTime.UtcNow
-                );
-
-                _playerRoomStates[playerId] = playerRoomState;
-
-                _logger.LogInformation("[ConnectionManager] ✅ Saved reconnection info for player {PlayerId} - Room: {RoomCode}, Table: {TableId}",
-                    playerId, lastRoomCode, lastTableId ?? "None");
-            }
-            else
-            {
-                _logger.LogInformation("[ConnectionManager] Player {PlayerId} was not in any room - no reconnection info saved", playerId);
-            }
+            _logger.LogInformation("[ConnectionManager] ✅ Saved basic reconnection info for player {PlayerId}", playerId);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[ConnectionManager] Error saving player state for reconnection: {Error}", ex.Message);
+            _logger.LogError(ex, "[ConnectionManager] Error saving reconnection info: {Error}", ex.Message);
         }
     }
 
     public Task UpdateConnectionAsync(string connectionId, string? roomCode = null)
     {
-        try
-        {
-            if (_connections.TryGetValue(connectionId, out var connectionInfo))
-            {
-                var updatedGroups = new List<string>(connectionInfo.Groups);
-
-                if (!string.IsNullOrEmpty(roomCode))
-                {
-                    var roomGroup = HubMethodNames.Groups.GetRoomGroup(roomCode);
-                    if (!updatedGroups.Contains(roomGroup))
-                    {
-                        updatedGroups.Add(roomGroup);
-                    }
-
-                    // NUEVO: Actualizar estado de sala del jugador
-                    if (connectionInfo.PlayerId.HasValue)
-                    {
-                        UpdatePlayerRoomState(connectionInfo.PlayerId.Value, roomCode);
-                    }
-                }
-
-                var updatedInfo = connectionInfo with { Groups = updatedGroups };
-                _connections[connectionId] = updatedInfo;
-
-                _logger.LogDebug("[ConnectionManager] Updated connection {ConnectionId} with room {RoomCode}",
-                    connectionId, roomCode);
-            }
-
-            return Task.CompletedTask;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[ConnectionManager] Error updating connection {ConnectionId}: {Error}",
-                connectionId, ex.Message);
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// NUEVO: Actualiza el estado de sala del jugador
-    /// </summary>
-    private void UpdatePlayerRoomState(Guid playerId, string roomCode)
-    {
-        try
-        {
-            if (_playerRoomStates.TryGetValue(playerId, out var existingState))
-            {
-                var updatedState = existingState with
-                {
-                    RoomCode = roomCode,
-                    LastActivity = DateTime.UtcNow
-                };
-                _playerRoomStates[playerId] = updatedState;
-            }
-            else
-            {
-                var newState = new PlayerRoomState(
-                    PlayerId: playerId,
-                    RoomCode: roomCode,
-                    TableId: null,
-                    Groups: new List<string> { HubMethodNames.Groups.GetRoomGroup(roomCode) },
-                    LastActivity: DateTime.UtcNow,
-                    ConnectionLostAt: null
-                );
-                _playerRoomStates[playerId] = newState;
-            }
-
-            _logger.LogDebug("[ConnectionManager] Updated room state for player {PlayerId} - Room: {RoomCode}",
-                playerId, roomCode);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[ConnectionManager] Error updating player room state: {Error}", ex.Message);
-        }
+        // SIMPLIFICADO: NO trackear cambios de sala aquí
+        // Esto debe manejarse a nivel de hub/servicio
+        _logger.LogDebug("[ConnectionManager] UpdateConnection called but not tracking room changes internally");
+        return Task.CompletedTask;
     }
 
     #endregion
@@ -329,13 +202,10 @@ public class ConnectionManager : IConnectionManager
     {
         try
         {
-            var roomGroup = HubMethodNames.Groups.GetRoomGroup(roomCode);
-            var connectionsInRoom = _connections.Values
-                .Where(c => c.Groups.Contains(roomGroup))
-                .Select(c => c.ConnectionId)
-                .ToList();
-
-            return Task.FromResult(connectionsInRoom);
+            // SIMPLIFICADO: No podemos determinar esto sin estado de grupos
+            // Este método debería moverse a SignalR nativo o un servicio especializado
+            _logger.LogWarning("[ConnectionManager] GetConnectionsInRoomAsync not supported in simplified version");
+            return Task.FromResult(new List<string>());
         }
         catch (Exception ex)
         {
@@ -381,109 +251,27 @@ public class ConnectionManager : IConnectionManager
 
     #endregion
 
-    #region Gestión de grupos/salas
+    #region Gestión de grupos - SIMPLIFICADO (NO HACER NADA)
 
     public Task AddToGroupAsync(string connectionId, string groupName)
     {
-        try
-        {
-            if (_connections.TryGetValue(connectionId, out var connectionInfo))
-            {
-                var updatedGroups = new List<string>(connectionInfo.Groups);
-                if (!updatedGroups.Contains(groupName))
-                {
-                    updatedGroups.Add(groupName);
-                    var updatedInfo = connectionInfo with { Groups = updatedGroups };
-                    _connections[connectionId] = updatedInfo;
-
-                    _logger.LogDebug("[ConnectionManager] Added connection {ConnectionId} to group {GroupName}",
-                        connectionId, groupName);
-
-                    // NUEVO: Actualizar estado si es un grupo de sala
-                    if (groupName.StartsWith("Room_") && connectionInfo.PlayerId.HasValue)
-                    {
-                        var roomCode = groupName.Replace("Room_", "");
-                        UpdatePlayerRoomState(connectionInfo.PlayerId.Value, roomCode);
-                    }
-                }
-            }
-
-            return Task.CompletedTask;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[ConnectionManager] Error adding connection {ConnectionId} to group {GroupName}: {Error}",
-                connectionId, groupName, ex.Message);
-            throw;
-        }
+        // CRÍTICO: NO hacer nada aquí - los grupos se manejan en SignalR nativo
+        _logger.LogDebug("[ConnectionManager] AddToGroupAsync called but ignored - groups handled by SignalR natively");
+        return Task.CompletedTask;
     }
 
     public Task RemoveFromGroupAsync(string connectionId, string groupName)
     {
-        try
-        {
-            if (_connections.TryGetValue(connectionId, out var connectionInfo))
-            {
-                var updatedGroups = new List<string>(connectionInfo.Groups);
-                if (updatedGroups.Remove(groupName))
-                {
-                    var updatedInfo = connectionInfo with { Groups = updatedGroups };
-                    _connections[connectionId] = updatedInfo;
-
-                    _logger.LogDebug("[ConnectionManager] Removed connection {ConnectionId} from group {GroupName}",
-                        connectionId, groupName);
-
-                    // NUEVO: Limpiar estado si sale de un grupo de sala
-                    if (groupName.StartsWith("Room_") && connectionInfo.PlayerId.HasValue)
-                    {
-                        ClearPlayerRoomState(connectionInfo.PlayerId.Value);
-                    }
-                }
-            }
-
-            return Task.CompletedTask;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[ConnectionManager] Error removing connection {ConnectionId} from group {GroupName}: {Error}",
-                connectionId, groupName, ex.Message);
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// NUEVO: Limpia el estado de sala del jugador
-    /// </summary>
-    private void ClearPlayerRoomState(Guid playerId)
-    {
-        try
-        {
-            _playerRoomStates.TryRemove(playerId, out _);
-            _logger.LogDebug("[ConnectionManager] Cleared room state for player {PlayerId}", playerId);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[ConnectionManager] Error clearing player room state: {Error}", ex.Message);
-        }
+        // CRÍTICO: NO hacer nada aquí - los grupos se manejan en SignalR nativo
+        _logger.LogDebug("[ConnectionManager] RemoveFromGroupAsync called but ignored - groups handled by SignalR natively");
+        return Task.CompletedTask;
     }
 
     public Task<List<string>> GetGroupsForConnectionAsync(string connectionId)
     {
-        try
-        {
-            if (_connections.TryGetValue(connectionId, out var connectionInfo))
-            {
-                return Task.FromResult(new List<string>(connectionInfo.Groups));
-            }
-
-            return Task.FromResult(new List<string>());
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[ConnectionManager] Error getting groups for connection {ConnectionId}: {Error}",
-                connectionId, ex.Message);
-            return Task.FromResult(new List<string>());
-        }
+        // SIMPLIFICADO: No trackear grupos aquí
+        _logger.LogDebug("[ConnectionManager] GetGroupsForConnectionAsync not supported - use SignalR native methods");
+        return Task.FromResult(new List<string>());
     }
 
     #endregion
@@ -539,14 +327,9 @@ public class ConnectionManager : IConnectionManager
     {
         try
         {
-            var roomGroup = HubMethodNames.Groups.GetRoomGroup(roomCode);
-            var playersInRoom = _connections.Values
-                .Where(c => c.Groups.Contains(roomGroup) && c.PlayerId.HasValue)
-                .Select(c => PlayerId.From(c.PlayerId!.Value))
-                .Distinct()
-                .ToList();
-
-            return Task.FromResult(playersInRoom);
+            // SIMPLIFICADO: No podemos determinar esto sin estado de grupos
+            _logger.LogWarning("[ConnectionManager] GetPlayersInRoomAsync not supported in simplified version");
+            return Task.FromResult(new List<PlayerId>());
         }
         catch (Exception ex)
         {
@@ -558,25 +341,23 @@ public class ConnectionManager : IConnectionManager
 
     #endregion
 
-    #region Reconexión - MEJORADO
+    #region Reconexión - SIMPLIFICADO
 
     public Task<ReconnectionInfo?> GetReconnectionInfoAsync(PlayerId playerId)
     {
         try
         {
-            _logger.LogInformation("[ConnectionManager] === GETTING RECONNECTION INFO ===");
-            _logger.LogInformation("[ConnectionManager] PlayerId: {PlayerId}", playerId);
+            _logger.LogInformation("[ConnectionManager] Getting reconnection info for player {PlayerId}", playerId);
 
             _reconnectionInfo.TryGetValue(playerId.Value, out var info);
 
             if (info != null)
             {
-                _logger.LogInformation("[ConnectionManager] ✅ Found reconnection info - Room: {RoomCode}, LastSeen: {LastSeen}",
-                    info.LastRoomCode, info.LastSeen);
+                _logger.LogInformation("[ConnectionManager] Found reconnection info - LastSeen: {LastSeen}", info.LastSeen);
             }
             else
             {
-                _logger.LogInformation("[ConnectionManager] ❌ No reconnection info found for player {PlayerId}", playerId);
+                _logger.LogInformation("[ConnectionManager] No reconnection info found for player {PlayerId}", playerId);
             }
 
             return Task.FromResult(info);
@@ -593,8 +374,8 @@ public class ConnectionManager : IConnectionManager
     {
         try
         {
-            _logger.LogInformation("[ConnectionManager] === SAVING RECONNECTION INFO ===");
-            _logger.LogInformation("[ConnectionManager] PlayerId: {PlayerId}, RoomCode: {RoomCode}", playerId, roomCode);
+            _logger.LogInformation("[ConnectionManager] Saving reconnection info for player {PlayerId}, room: {RoomCode}",
+                playerId, roomCode);
 
             var info = new ReconnectionInfo(
                 PlayerId: playerId.Value,
@@ -605,8 +386,7 @@ public class ConnectionManager : IConnectionManager
 
             _reconnectionInfo[playerId.Value] = info;
 
-            _logger.LogInformation("[ConnectionManager] ✅ Saved reconnection info for player {PlayerId}, room: {RoomCode}",
-                playerId, roomCode);
+            _logger.LogInformation("[ConnectionManager] ✅ Saved reconnection info for player {PlayerId}", playerId);
 
             return Task.CompletedTask;
         }
@@ -622,14 +402,12 @@ public class ConnectionManager : IConnectionManager
     {
         try
         {
-            _logger.LogInformation("[ConnectionManager] === CLEARING RECONNECTION INFO ===");
-            _logger.LogInformation("[ConnectionManager] PlayerId: {PlayerId}", playerId);
+            _logger.LogInformation("[ConnectionManager] Clearing reconnection info for player {PlayerId}", playerId);
 
-            var removed1 = _reconnectionInfo.TryRemove(playerId.Value, out _);
-            var removed2 = _playerRoomStates.TryRemove(playerId.Value, out _);
+            var removed = _reconnectionInfo.TryRemove(playerId.Value, out _);
 
-            _logger.LogInformation("[ConnectionManager] ✅ Cleared reconnection info (removed: {Removed1}) and room state (removed: {Removed2}) for player {PlayerId}",
-                removed1, removed2, playerId);
+            _logger.LogInformation("[ConnectionManager] ✅ Cleared reconnection info (removed: {Removed}) for player {PlayerId}",
+                removed, playerId);
 
             return Task.CompletedTask;
         }
@@ -642,26 +420,17 @@ public class ConnectionManager : IConnectionManager
     }
 
     /// <summary>
-    /// NUEVO: Obtiene el estado detallado de sala del jugador
+    /// ELIMINADO: PlayerRoomState ya no se maneja aquí
     /// </summary>
     public Task<PlayerRoomState?> GetPlayerRoomStateAsync(PlayerId playerId)
     {
-        try
-        {
-            _playerRoomStates.TryGetValue(playerId.Value, out var state);
-            return Task.FromResult(state);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[ConnectionManager] Error getting player room state for {PlayerId}: {Error}",
-                playerId, ex.Message);
-            return Task.FromResult<PlayerRoomState?>(null);
-        }
+        _logger.LogDebug("[ConnectionManager] GetPlayerRoomStateAsync not supported in simplified version");
+        return Task.FromResult<PlayerRoomState?>(null);
     }
 
     #endregion
 
-    #region Limpieza y mantenimiento - MEJORADO
+    #region Limpieza y mantenimiento - SIMPLIFICADO
 
     public Task CleanupStaleConnectionsAsync()
     {
@@ -690,7 +459,6 @@ public class ConnectionManager : IConnectionManager
             foreach (var playerId in staleReconnections)
             {
                 _reconnectionInfo.TryRemove(playerId, out _);
-                _playerRoomStates.TryRemove(playerId, out _);
             }
 
             if (staleConnections.Any() || staleReconnections.Any())
@@ -726,7 +494,7 @@ public class ConnectionManager : IConnectionManager
     }
 
     /// <summary>
-    /// NUEVO: Obtiene estadísticas detalladas del manager
+    /// SIMPLIFICADO: Estadísticas básicas
     /// </summary>
     public Task<ConnectionManagerStats> GetStatsAsync()
     {
@@ -737,7 +505,7 @@ public class ConnectionManager : IConnectionManager
                 TotalConnections = _connections.Count,
                 OnlinePlayers = _playerConnections.Count,
                 PendingReconnections = _reconnectionInfo.Count,
-                PlayersWithRoomState = _playerRoomStates.Count,
+                PlayersWithRoomState = 0, // No se trackea en versión simplificada
                 Timestamp = DateTime.UtcNow
             };
 

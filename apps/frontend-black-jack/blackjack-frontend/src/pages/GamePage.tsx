@@ -1,8 +1,15 @@
-// src/pages/GamePage.tsx - ARCHIVO COMPLETO CORREGIDO: Sin auto-LeaveRoom
+// src/pages/GamePage.tsx - CORREGIDO: Estado de loading centralizado
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
 import { signalRService } from '../services/signalr'
 import { authService } from '../services/auth'
+
+// Componentes extraídos
+import GameHeader from '../components/game/GameHeader'
+import GameTable from '../components/game/GameTable'
+import GameSeats from '../components/game/GameSeats'
+import GameChat from '../components/game/GameChat'
+import GameBettings from '../components/game/GameBettings'
 
 interface GameState {
   roomCode: string
@@ -26,112 +33,149 @@ interface RoomPlayer {
   hasPlayedTurn: boolean
 }
 
-interface ChatMessage {
-  id: string
-  playerName: string
-  text: string
-  timestamp: string
-}
-
 export default function GamePage() {
   const { tableId } = useParams({ strict: false }) as { tableId: string }
   const navigate = useNavigate()
   
-  // Detect if we're in viewer mode based on the current path
+  // Estados principales
   const [isViewer, setIsViewer] = useState(false)
-  
   const [gameState, setGameState] = useState<GameState | null>(null)
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
-  const [isConnected, setIsConnected] = useState(false)
+  const [connectionStatus, setConnectionStatus] = useState({
+    room: false,
+    seat: false,
+    spectator: false,
+    gameControl: false,
+    overall: false
+  })
   const [isJoining, setIsJoining] = useState(false)
-  const [chatInput, setChatInput] = useState('')
   const [error, setError] = useState<string | null>(null)
+  
+  // CORREGIDO: Estado de loading centralizado aquí
   const [seatClickLoading, setSeatClickLoading] = useState<number | null>(null)
   
+  // Refs
   const hasJoinedTable = useRef(false)
   const currentUser = useRef(authService.getCurrentUser())
+  const isComponentMounted = useRef(true)
 
+  // Detectar modo viewer y inicializar componente
   useEffect(() => {
-    console.log('GamePage mounted - resetting flags')
+    console.log('[GamePage] === COMPONENT MOUNT ===')
+    isComponentMounted.current = true
     
-    // Detect if we're in viewer mode based on the current path
     const isViewerMode = window.location.pathname.includes('/viewer/')
     setIsViewer(isViewerMode)
-    console.log('GamePage mode:', isViewerMode ? 'VIEWER' : 'PLAYER')
+    console.log('[GamePage] Mode detected:', isViewerMode ? 'VIEWER' : 'PLAYER')
+
+    return () => {
+      console.log('[GamePage] === COMPONENT UNMOUNT ===')
+      isComponentMounted.current = false
+    }
   }, [])
 
+  // Verificar conexiones de hubs
   useEffect(() => {
-    const checkConnection = () => {
-      setIsConnected(signalRService.isGameConnected)
+    let mounted = true
+    
+    const checkConnections = () => {
+      if (!mounted || !isComponentMounted.current) return
+      
+      const status = {
+        room: signalRService.isRoomHubConnected,
+        seat: signalRService.isSeatHubConnected,
+        spectator: signalRService.isSpectatorHubConnected,
+        gameControl: signalRService.isGameControlHubConnected,
+        overall: signalRService.areAllConnected
+      }
+      
+      setConnectionStatus(prev => {
+        const hasChanged = JSON.stringify(prev) !== JSON.stringify(status)
+        if (hasChanged) {
+          console.log('[GamePage] Hub connection status changed:', status)
+        }
+        return hasChanged ? status : prev
+      })
     }
     
-    checkConnection()
-    const interval = setInterval(checkConnection, 5000)
+    checkConnections()
+    const interval = setInterval(checkConnections, 10000) // 10 segundos
     
-    return () => clearInterval(interval)
+    return () => {
+      mounted = false
+      clearInterval(interval)
+    }
   }, [])
 
+  // Handlers para eventos SignalR
   const handleRoomInfo = useCallback((response: any) => {
+    if (!isComponentMounted.current) return
     const roomData = response?.data || response
-    console.log('Room info received:', roomData)
+    console.log('[GamePage] Room info received via RoomHub:', roomData)
     setGameState(roomData)
     setError(null)
-    setSeatClickLoading(null)
   }, [])
 
   const handleRoomCreated = useCallback((response: any) => {
+    if (!isComponentMounted.current) return
     const roomData = response?.data || response
-    console.log('Room created:', roomData)
+    console.log('[GamePage] Room created via RoomHub:', roomData)
     setGameState(roomData)
     setError(null)
-    setSeatClickLoading(null)
   }, [])
 
   const handleRoomJoined = useCallback((response: any) => {
+    if (!isComponentMounted.current) return
     const roomData = response?.data || response
-    console.log('Room joined:', roomData)
+    console.log('[GamePage] Room joined via RoomHub:', roomData)
     setGameState(roomData)
     setError(null)
-    setSeatClickLoading(null)
   }, [])
 
   const handleRoomInfoUpdated = useCallback((roomData: any) => {
-    console.log('Room info updated:', roomData)
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] Room info updated via RoomHub:', roomData)
     setGameState(roomData)
     setError(null)
-    setSeatClickLoading(null)
   }, [])
 
   const handleSeatJoined = useCallback((response: any) => {
-    console.log('Seat joined response:', response)
-    setSeatClickLoading(null)
-    
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] Seat joined via SeatHub:', response)
     const roomInfo = response?.roomInfo || response?.data?.roomInfo || response?.RoomInfo
     if (roomInfo) {
       setGameState(roomInfo)
     }
     setError(null)
+    
+    // CORREGIDO: Resetear loading state cuando operación es exitosa
+    setSeatClickLoading(null)
+    console.log('[GamePage] Loading state reset after successful seat join')
   }, [])
 
   const handleSeatLeft = useCallback((response: any) => {
-    console.log('Seat left response:', response)
-    setSeatClickLoading(null)
-    
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] Seat left via SeatHub:', response)
     const roomData = response?.data || response
     if (roomData) {
       setGameState(roomData)
     }
     setError(null)
+    
+    // CORREGIDO: Resetear loading state cuando operación es exitosa
+    setSeatClickLoading(null)
+    console.log('[GamePage] Loading state reset after successful seat leave')
   }, [])
 
   const handlePlayerJoined = useCallback((eventData: any) => {
-    console.log('Player joined event:', eventData)
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] Player joined event via RoomHub:', eventData)
     
     setGameState(prev => {
       if (!prev) return prev
       
       const existingPlayer = prev.players.find(p => p.playerId === eventData.playerId)
       if (existingPlayer) {
+        console.log('[GamePage] Player already exists, ignoring duplicate join event')
         return prev
       }
 
@@ -144,6 +188,7 @@ export default function GamePage() {
         hasPlayedTurn: false
       }]
 
+      console.log('[GamePage] Adding new player to local state:', eventData.playerName)
       return {
         ...prev,
         players: updatedPlayers,
@@ -153,12 +198,15 @@ export default function GamePage() {
   }, [])
 
   const handlePlayerLeft = useCallback((eventData: any) => {
-    console.log('Player left event:', eventData)
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] Player left event via RoomHub:', eventData)
     
     setGameState(prev => {
       if (!prev) return prev
       
       const updatedPlayers = prev.players.filter(p => p.playerId !== eventData.playerId)
+      console.log('[GamePage] Removing player from local state:', eventData.playerName)
+      
       return {
         ...prev,
         players: updatedPlayers,
@@ -168,19 +216,26 @@ export default function GamePage() {
   }, [])
 
   const handleGameStateChanged = useCallback((newState: any) => {
-    console.log('Game state changed:', newState)
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] Game state changed via GameControlHub:', newState)
     setGameState(newState)
-    setSeatClickLoading(null)
   }, [])
 
   const handleError = useCallback((errorMessage: string) => {
-    console.error('SignalR Error:', errorMessage)
+    if (!isComponentMounted.current) return
+    console.error('[GamePage] SignalR Error from any hub:', errorMessage)
     setError(errorMessage)
+    
+    // CORREGIDO: Resetear loading state en caso de error
     setSeatClickLoading(null)
+    console.log('[GamePage] Loading state reset after error')
   }, [])
 
+  // Setup de listeners SignalR
   useEffect(() => {
-    console.log('Configurando listeners de GamePage...')
+    if (!isComponentMounted.current) return
+    
+    console.log('[GamePage] Setting up hub listeners...')
     
     signalRService.onRoomInfo = handleRoomInfo
     signalRService.onRoomCreated = handleRoomCreated
@@ -194,7 +249,7 @@ export default function GamePage() {
     signalRService.onError = handleError
 
     return () => {
-      console.log('Limpiando listeners de GamePage...')
+      console.log('[GamePage] Cleaning up hub listeners...')
       signalRService.onRoomInfo = undefined
       signalRService.onRoomCreated = undefined
       signalRService.onRoomJoined = undefined
@@ -206,192 +261,167 @@ export default function GamePage() {
       signalRService.onGameStateChanged = undefined
       signalRService.onError = undefined
     }
-  }, [
-    handleRoomInfo,
-    handleRoomCreated,
-    handleRoomJoined,
-    handleRoomInfoUpdated,
-    handleSeatJoined,
-    handleSeatLeft,
-    handlePlayerJoined,
-    handlePlayerLeft,
-    handleGameStateChanged,
-    handleError
-  ])
+  }, [])
 
+  // Auto-join logic
   useEffect(() => {
+    let mounted = true
+    
     const autoJoinTable = async () => {
       if (
-        isConnected && 
-        tableId && 
-        !isJoining && 
-        !hasJoinedTable.current
+        !mounted ||
+        !isComponentMounted.current ||
+        !connectionStatus.overall || 
+        !tableId || 
+        isJoining || 
+        hasJoinedTable.current
       ) {
-        try {
-          setIsJoining(true)
-          hasJoinedTable.current = true
-          setError(null)
-          
-          console.log('Auto-joining table:', tableId, 'Mode:', isViewer ? 'VIEWER' : 'PLAYER')
-          
-          const playerName = currentUser.current?.displayName || (isViewer ? 'Viewer' : 'Jugador')
-          
-          if (isViewer) {
-            await signalRService.joinOrCreateRoomForTableAsViewer(tableId, playerName)
-          } else {
-            await signalRService.joinOrCreateRoomForTable(tableId, playerName)
-          }
-          
-        } catch (error) {
-          console.error('Error joining table:', error)
-          setError(error instanceof Error ? error.message : 'Error conectando a la mesa')
-          hasJoinedTable.current = false
-        } finally {
+        return
+      }
+
+      const requiredHub = isViewer ? connectionStatus.spectator : connectionStatus.room
+      
+      if (!requiredHub) {
+        console.log(`[GamePage] Waiting for ${isViewer ? 'SpectatorHub' : 'RoomHub'} to connect...`)
+        return
+      }
+
+      try {
+        if (!mounted || !isComponentMounted.current) return
+        
+        setIsJoining(true)
+        hasJoinedTable.current = true
+        setError(null)
+        
+        console.log(`[GamePage] === AUTO-JOINING TABLE ===`)
+        console.log(`[GamePage] TableId: ${tableId}`)
+        console.log(`[GamePage] Mode: ${isViewer ? 'VIEWER' : 'PLAYER'}`)
+        
+        const playerName = currentUser.current?.displayName || (isViewer ? 'Viewer' : 'Jugador')
+        
+        if (isViewer) {
+          await signalRService.joinOrCreateRoomForTableAsViewer(tableId, playerName)
+        } else {
+          await signalRService.joinOrCreateRoomForTable(tableId, playerName)
+        }
+        
+        console.log('[GamePage] Successfully joined table')
+        
+      } catch (error) {
+        if (!mounted || !isComponentMounted.current) return
+        
+        console.error('[GamePage] Error joining table:', error)
+        setError(error instanceof Error ? error.message : 'Error conectando a la mesa')
+        hasJoinedTable.current = false
+      } finally {
+        if (mounted && isComponentMounted.current) {
           setIsJoining(false)
         }
       }
     }
 
-    autoJoinTable()
-  }, [isConnected, tableId, isViewer])
-
-  useEffect(() => {
-    console.log('GamePage mounted - component instance created')
+    const timeoutId = setTimeout(autoJoinTable, 100)
     
     return () => {
-      console.log('GamePage cleanup triggered')
+      mounted = false
+      clearTimeout(timeoutId)
     }
-  }, [])
+  }, [connectionStatus.overall, connectionStatus.room, connectionStatus.spectator, tableId, isViewer])
 
-  // CORREGIDO: Cleanup simplificado - SOLO en beforeunload real
+  // Cleanup en beforeunload
   useEffect(() => {
     const handleBeforeUnload = () => {
       if (gameState?.roomCode) {
-        // Solo enviar beacon para cleanup en servidor
         navigator.sendBeacon && navigator.sendBeacon(
           '/api/cleanup', 
           JSON.stringify({ roomCode: gameState.roomCode })
         )
-        // ELIMINADO: signalRService.leaveRoom automático
       }
     }
-
-    // ELIMINADO: handleVisibilityChange que causaba auto-LeaveRoom
 
     window.addEventListener('beforeunload', handleBeforeUnload)
-
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload)
-    }
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
   }, [gameState?.roomCode])
 
-  const handleJoinSeat = useCallback(async (position: number) => {
-    if (!isConnected || !gameState?.roomCode || seatClickLoading !== null) {
-      console.log('Cannot join seat - conditions not met:', {
-        isConnected,
-        roomCode: gameState?.roomCode,
-        seatClickLoading
-      })
-      return
-    }
+  // Handlers para acciones del usuario
+  const handleLeaveRoom = useCallback(async () => {
+    if (!gameState?.roomCode || !isComponentMounted.current) return
     
     try {
-      setSeatClickLoading(position)
-      setError(null)
-      console.log(`Attempting to join seat ${position} in room ${gameState.roomCode}`)
+      console.log('[GamePage] === EXPLICIT LEAVE ROOM ===')
+      console.log('[GamePage] RoomCode:', gameState.roomCode)
       
-      await signalRService.joinSeat(gameState.roomCode, position)
-      
-    } catch (error) {
-      console.error('Error joining seat:', error)
-      setError(error instanceof Error ? error.message : 'Error uniéndose al asiento')
-      setSeatClickLoading(null)
-    }
-  }, [isConnected, gameState?.roomCode, seatClickLoading])
-
-  const handleLeaveSeat = useCallback(async () => {
-    if (!isConnected || !gameState?.roomCode || seatClickLoading !== null) {
-      console.log('Cannot leave seat - conditions not met')
-      return
-    }
-    
-    try {
-      setSeatClickLoading(-1)
-      setError(null)
-      console.log('Attempting to leave seat')
-      
-      await signalRService.leaveSeat(gameState.roomCode)
-      
-    } catch (error) {
-      console.error('Error leaving seat:', error)
-      setError(error instanceof Error ? error.message : 'Error saliendo del asiento')
-      setSeatClickLoading(null)
-    }
-  }, [isConnected, gameState?.roomCode, seatClickLoading])
-
-  const handleStartRound = useCallback(async () => {
-    if (!isConnected || !gameState?.roomCode) return
-    try {
-      setError(null)
-      await signalRService.startGame(gameState.roomCode)
-    } catch (error) {
-      console.error('Error starting game:', error)
-      setError(error instanceof Error ? error.message : 'Error iniciando juego')
-    }
-  }, [isConnected, gameState?.roomCode])
-
-  const handleSendMessage = useCallback(() => {
-    if (!chatInput.trim() || !currentUser.current) return
-    
-    const messageId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-    const newMessage: ChatMessage = {
-      id: messageId,
-      playerName: currentUser.current.displayName,
-      text: chatInput.trim(),
-      timestamp: new Date().toISOString()
-    }
-    
-    setChatMessages(prev => {
-      if (prev.some(m => m.id === newMessage.id)) {
-        return prev
-      }
-      return [...prev.slice(-9), newMessage]
-    })
-    setChatInput('')
-  }, [chatInput])
-
-  // NUEVA: Función para salir EXPLÍCITAMENTE de la sala
-  const handleExplicitLeaveRoom = useCallback(async () => {
-    if (!gameState?.roomCode) return
-    
-    try {
-      console.log('EXPLICIT USER ACTION: Leaving room', gameState.roomCode)
       await signalRService.leaveRoom(gameState.roomCode)
       navigate({ to: '/lobby' })
     } catch (error) {
-      console.error('Error leaving room explicitly:', error)
-      navigate({ to: '/lobby' }) // Navegar de todas formas
+      console.error('[GamePage] Error leaving room:', error)
+      navigate({ to: '/lobby' })
     }
   }, [gameState?.roomCode, navigate])
 
-  const getPlayerAtPosition = useCallback((position: number) => {
-    return gameState?.players?.find(p => p.position === position)
-  }, [gameState?.players])
+  const handleStartRound = useCallback(async () => {
+    if (!connectionStatus.gameControl || !gameState?.roomCode || !isComponentMounted.current) {
+      console.log('[GamePage] Cannot start game - GameControlHub not connected')
+      return
+    }
+    
+    try {
+      setError(null)
+      console.log('[GamePage] Starting game via GameControlHub')
+      await signalRService.startGame(gameState.roomCode)
+    } catch (error) {
+      if (!isComponentMounted.current) return
+      console.error('[GamePage] Error starting game:', error)
+      setError(error instanceof Error ? error.message : 'Error iniciando juego')
+    }
+  }, [connectionStatus.gameControl, gameState?.roomCode])
 
+  // Computed values
   const currentPlayer = gameState?.players?.find(p => p.playerId === currentUser.current?.id)
   const isPlayerSeated = !!currentPlayer
 
-  if (!isConnected || isJoining) {
+  // Loading screen
+  if (!connectionStatus.overall || isJoining) {
     return (
       <div className="fixed top-0 left-0 w-screen h-screen bg-gradient-to-br from-emerald-900 to-emerald-800 z-[9999] overflow-hidden m-0 p-0 flex items-center justify-center">
-        <div className="bg-black/80 rounded-xl p-8 text-center">
+        <div className="bg-black/80 rounded-xl p-8 text-center max-w-md">
           <div className="w-8 h-8 border-2 border-white border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <div className="text-white text-lg">
-            {!isConnected ? 'Conectando al servidor...' : 'Uniéndose a la mesa...'}
+          <div className="text-white text-lg mb-4">
+            {!connectionStatus.overall ? 'Conectando hubs especializados...' : 'Uniéndose a la mesa...'}
           </div>
-          <div className="text-gray-300 text-sm mt-2">Mesa: {tableId?.slice(0, 8)}...</div>
+          <div className="text-gray-300 text-sm mb-4">Mesa: {tableId?.slice(0, 8)}...</div>
+          
+          {!connectionStatus.overall && (
+            <div className="text-xs text-gray-400 space-y-1 text-left">
+              <div className="flex justify-between">
+                <span>RoomHub:</span>
+                <span className={connectionStatus.room ? 'text-green-400' : 'text-yellow-400'}>
+                  {connectionStatus.room ? '✓' : '⏳'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>SeatHub:</span>
+                <span className={connectionStatus.seat ? 'text-green-400' : 'text-yellow-400'}>
+                  {connectionStatus.seat ? '✓' : '⏳'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>SpectatorHub:</span>
+                <span className={connectionStatus.spectator ? 'text-green-400' : 'text-yellow-400'}>
+                  {connectionStatus.spectator ? '✓' : '⏳'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>GameControlHub:</span>
+                <span className={connectionStatus.gameControl ? 'text-green-400' : 'text-yellow-400'}>
+                  {connectionStatus.gameControl ? '✓' : '⏳'}
+                </span>
+              </div>
+            </div>
+          )}
+          
           {error && (
-            <div className="text-red-400 text-sm mt-2 max-w-md">
+            <div className="text-red-400 text-sm mt-4 max-w-md">
               Error: {error}
             </div>
           )}
@@ -404,39 +434,14 @@ export default function GamePage() {
     <div data-game-page className="fixed top-0 left-0 w-screen h-screen bg-gradient-to-br from-emerald-900 to-emerald-800 z-[9999] overflow-hidden m-0 p-0">
       
       {/* Header */}
-      <div className="absolute top-0 left-0 right-0 bg-black/60 px-6 py-3 flex justify-between items-center text-white">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={handleExplicitLeaveRoom}
-            className="bg-transparent border-none text-white text-base cursor-pointer hover:text-gray-300 transition-colors"
-          >
-            ← Volver al Lobby
-          </button>
-          <button
-            onClick={() => authService.logout()}
-            className="bg-red-600/80 hover:bg-red-600 text-white text-sm px-3 py-1 rounded cursor-pointer transition-colors"
-          >
-            Cerrar Sesión
-          </button>
-        </div>
-        
-        <div className="flex items-center gap-2">
-          <span className="text-xl">👑</span>
-          <h1 className="m-0 text-xl font-bold">
-            {gameState?.name || 'Mesa VIP Diamante'}
-          </h1>
-        </div>
-        
-        <div className="text-sm flex items-center gap-4">
-          <div>
-            {isViewer ? 'Modo Viewer' : 'Modo Jugador'} • {gameState?.playerCount || 0}/{gameState?.maxPlayers || 6} jugadores
-          </div>
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'}`}></div>
-            <span>{isConnected ? 'Conectado' : 'Desconectado'}</span>
-          </div>
-        </div>
-      </div>
+      <GameHeader
+        roomName={gameState?.name}
+        playerCount={gameState?.playerCount || 0}
+        maxPlayers={gameState?.maxPlayers || 6}
+        isViewer={isViewer}
+        isConnected={connectionStatus.overall}
+        onLeaveRoom={handleLeaveRoom}
+      />
 
       {/* Error Banner */}
       {error && (
@@ -454,322 +459,48 @@ export default function GamePage() {
         </div>
       )}
 
-      {/* Dealer */}
-      <div className="absolute top-20 left-1/2 transform -translate-x-1/2 text-center">
-        <div className="w-[60px] h-[60px] rounded-full bg-amber-400 flex items-center justify-center text-2xl font-bold text-black mb-2 mx-auto">
-          D
-        </div>
-        <div className="text-amber-400 font-bold">Dealer</div>
-      </div>
-
-      {/* Banner Central */}
-      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white/95 border-l-4 border-amber-500 rounded-lg p-6 shadow-[0_10px_25px_rgba(0,0,0,0.3)] min-w-[400px] flex items-center">
-        <div className="w-8 h-8 rounded-full bg-amber-500 flex items-center justify-center mr-4 text-white font-bold">
-          {gameState?.status === 'InProgress' ? '🎯' : '!'}
-        </div>
-        <div className="flex-1">
-          <h3 className="m-0 mb-2 text-lg font-bold text-amber-800">
-            {gameState?.status === 'InProgress' ? 'Partida en Curso' : 'Esperando Jugadores'}
-          </h3>
-          <p className="m-0 text-gray-700">
-            {gameState?.status === 'InProgress' 
-              ? 'La partida está en progreso. ¡Buena suerte!'
-              : 'Se necesitan mínimo 2 jugadores para comenzar'
-            }
-          </p>
-          {!isPlayerSeated && !isViewer && (
-            <p className="m-0 text-gray-600 text-sm mt-2">
-              Haz clic en un asiento libre para unirte a la mesa
-            </p>
-          )}
-          {isViewer && (
-            <p className="m-0 text-gray-600 text-sm mt-2">
-              Modo espectador - Observando la partida
-            </p>
-          )}
-        </div>
-        {!isViewer && gameState?.canStart && gameState.status !== 'InProgress' && currentPlayer?.isHost && (
-          <button
-            onClick={handleStartRound}
-            className="ml-4 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold transition-colors"
-          >
-            Iniciar Ronda
-          </button>
-        )}
-      </div>
-
-      {/* Posiciones de jugadores */}
-      <PlayerPosition 
-        position={0}
-        player={getPlayerAtPosition(0)}
-        currentUser={currentUser.current}
-        isCurrentUserSeated={isPlayerSeated}
+      {/* Game Table - Dealer and Central Banner */}
+      <GameTable
         gameStatus={gameState?.status}
-        currentPlayerTurn={gameState?.currentPlayerTurn}
-        onJoinSeat={handleJoinSeat}
-        onLeaveSeat={handleLeaveSeat}
-        seatClickLoading={seatClickLoading}
+        canStart={gameState?.canStart || false}
+        isPlayerSeated={isPlayerSeated}
         isViewer={isViewer}
-        className="absolute top-[120px] left-10"
+        isCurrentPlayerHost={currentPlayer?.isHost || false}
+        gameControlConnected={connectionStatus.gameControl}
+        onStartRound={handleStartRound}
       />
 
-      <PlayerPosition 
-        position={1}
-        player={getPlayerAtPosition(1)}
-        currentUser={currentUser.current}
-        isCurrentUserSeated={isPlayerSeated}
+      {/* Game Seats - All 6 player positions */}
+      <GameSeats
+        players={gameState?.players || []}
+        roomCode={gameState?.roomCode}
         gameStatus={gameState?.status}
         currentPlayerTurn={gameState?.currentPlayerTurn}
-        onJoinSeat={handleJoinSeat}
-        onLeaveSeat={handleLeaveSeat}
-        seatClickLoading={seatClickLoading}
-        isViewer={isViewer}
-        className="absolute bottom-[120px] left-10"
-      />
-
-      <PlayerPosition 
-        position={2}
-        player={getPlayerAtPosition(2)}
         currentUser={currentUser.current}
-        isCurrentUserSeated={isPlayerSeated}
-        gameStatus={gameState?.status}
-        currentPlayerTurn={gameState?.currentPlayerTurn}
-        onJoinSeat={handleJoinSeat}
-        onLeaveSeat={handleLeaveSeat}
-        seatClickLoading={seatClickLoading}
         isViewer={isViewer}
-        className="absolute bottom-10 left-1/2 transform -translate-x-1/2"
-        isMainPosition={true}
+        seatHubConnected={connectionStatus.seat}
+        isComponentMounted={isComponentMounted.current}
+        onError={setError}
+        seatClickLoading={seatClickLoading}
+        setSeatClickLoading={setSeatClickLoading}
       />
 
-      <PlayerPosition 
-        position={3}
-        player={getPlayerAtPosition(3)}
+      {/* Game Bettings */}
+      <GameBettings
+        isPlayerSeated={isPlayerSeated}
+        gameStatus={gameState?.status}
+        isViewer={isViewer}
+        currentPlayerBalance={1000} // TODO: Get from player data
+        isPlayerTurn={gameState?.currentPlayerTurn === currentPlayer?.name}
+        roomCode={gameState?.roomCode}
+      />
+
+      {/* Game Chat */}
+      <GameChat
         currentUser={currentUser.current}
-        isCurrentUserSeated={isPlayerSeated}
-        gameStatus={gameState?.status}
-        currentPlayerTurn={gameState?.currentPlayerTurn}
-        onJoinSeat={handleJoinSeat}
-        onLeaveSeat={handleLeaveSeat}
-        seatClickLoading={seatClickLoading}
-        isViewer={isViewer}
-        className="absolute bottom-[120px] right-10"
+        isComponentMounted={isComponentMounted.current}
       />
 
-      <PlayerPosition 
-        position={4}
-        player={getPlayerAtPosition(4)}
-        currentUser={currentUser.current}
-        isCurrentUserSeated={isPlayerSeated}
-        gameStatus={gameState?.status}
-        currentPlayerTurn={gameState?.currentPlayerTurn}
-        onJoinSeat={handleJoinSeat}
-        onLeaveSeat={handleLeaveSeat}
-        seatClickLoading={seatClickLoading}
-        isViewer={isViewer}
-        className="absolute top-[120px] right-10"
-      />
-
-      <PlayerPosition 
-        position={5}
-        player={getPlayerAtPosition(5)}
-        currentUser={currentUser.current}
-        isCurrentUserSeated={isPlayerSeated}
-        gameStatus={gameState?.status}
-        currentPlayerTurn={gameState?.currentPlayerTurn}
-        onJoinSeat={handleJoinSeat}
-        onLeaveSeat={handleLeaveSeat}
-        seatClickLoading={seatClickLoading}
-        isViewer={isViewer}
-        className="absolute top-[120px] left-1/2 transform -translate-x-1/2"
-      />
-
-      {/* Chat */}
-      <div className="absolute bottom-5 right-5 bg-black/80 rounded-lg p-3 min-w-[250px] max-w-[300px] text-white">
-        <div className="text-amber-400 font-bold text-xs mb-2">
-          Chat
-        </div>
-        <div className="max-h-[120px] overflow-y-auto mb-2">
-          {chatMessages.length === 0 ? (
-            <div className="text-gray-400 text-xs">Sin mensajes</div>
-          ) : (
-            chatMessages.slice(-5).map((msg) => (
-              <div key={msg.id} className="text-xs mb-1">
-                <span className="text-amber-300">{msg.playerName}:</span>
-                <span className="ml-1">{msg.text}</span>
-              </div>
-            ))
-          )}
-        </div>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={chatInput}
-            onChange={e => setChatInput(e.target.value)}
-            onKeyPress={e => e.key === 'Enter' && handleSendMessage()}
-            placeholder="Escribe mensaje..."
-            className="flex-1 px-2 py-1 text-xs bg-slate-700 border border-slate-600 rounded text-white placeholder-slate-400"
-            maxLength={100}
-          />
-          <button
-            onClick={handleSendMessage}
-            className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 rounded text-xs transition-colors"
-          >
-            →
-          </button>
-        </div>
-      </div>
-
-    </div>
-  )
-}
-
-// Componente PlayerPosition optimizado
-function PlayerPosition({ 
-  position, 
-  player, 
-  currentUser, 
-  isCurrentUserSeated,
-  gameStatus,
-  currentPlayerTurn,
-  onJoinSeat,
-  onLeaveSeat,
-  seatClickLoading,
-  isViewer,
-  className, 
-  isMainPosition = false 
-}: {
-  position: number
-  player?: RoomPlayer
-  currentUser: any
-  isCurrentUserSeated: boolean
-  gameStatus?: string
-  currentPlayerTurn?: string
-  onJoinSeat: (position: number) => Promise<void>
-  onLeaveSeat: () => Promise<void>
-  seatClickLoading: number | null
-  isViewer: boolean
-  className: string
-  isMainPosition?: boolean
-}) {
-  const isCurrentUser = player?.playerId === currentUser?.id
-  const isEmpty = !player
-  const isLoading = seatClickLoading === position || (isCurrentUser && seatClickLoading === -1)
-  
-  const canJoinSeat = isEmpty && !isLoading && !isViewer
-
-  const handleSeatClick = useCallback(async () => {
-    if (canJoinSeat && !isViewer) {
-      console.log(`Clicking to join seat ${position}`)
-      await onJoinSeat(position)
-    }
-  }, [canJoinSeat, position, onJoinSeat, isViewer])
-
-  const handleLeaveSeat = useCallback(async () => {
-    if (isCurrentUser && !isLoading && gameStatus !== 'InProgress' && !isViewer) {
-      console.log('Clicking to leave seat')
-      await onLeaveSeat()
-    }
-  }, [isCurrentUser, isLoading, gameStatus, onLeaveSeat, isViewer])
-
-  // Asiento vacío
-  if (isEmpty) {
-    return (
-      <div className={className}>
-        <div className="flex items-center mb-2">
-          <div 
-            className={`w-10 h-10 rounded-full border-2 border-dashed flex items-center justify-center mr-3 font-bold transition-all ${
-              canJoinSeat 
-                ? 'bg-gray-600 border-gray-400 text-gray-300 hover:bg-gray-500 hover:border-gray-300 cursor-pointer transform hover:scale-105' 
-                : 'bg-gray-700 border-gray-500 text-gray-500 cursor-not-allowed'
-            }`}
-            onClick={handleSeatClick}
-          >
-            {isLoading ? (
-              <div className="w-4 h-4 border border-gray-400 border-t-transparent rounded-full animate-spin"></div>
-            ) : (
-              position + 1
-            )}
-          </div>
-          <div className="bg-gray-700/70 px-3 py-1 rounded text-gray-300">
-            <div className="font-bold text-sm">
-              {isLoading ? 'Uniéndose...' : 'Asiento libre'}
-            </div>
-            <div className="text-gray-400 text-xs">
-              {isViewer ? 'Asiento vacío' :
-               canJoinSeat ? 'Clic para unirse' : 
-               isLoading ? 'Procesando...' : 'No disponible'}
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  // Jugador sentado
-  return (
-    <div className={className}>
-      <div className="flex items-center mb-2">
-        <div className={`w-10 h-10 rounded-full bg-white flex items-center justify-center mr-3 font-bold text-black border-2 relative transition-all ${
-          isCurrentUser ? 'border-red-500 shadow-lg' : 'border-gray-300'
-        }`}>
-          {isLoading ? (
-            <div className="w-4 h-4 border border-gray-600 border-t-transparent rounded-full animate-spin"></div>
-          ) : (
-            player.name.substring(0, 2).toUpperCase()
-          )}
-          
-          {isCurrentUser && !isLoading && (
-            <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full flex items-center justify-center">
-              <div className="w-1.5 h-1.5 bg-red-600 rounded-full"></div>
-            </div>
-          )}
-          {player.isHost && (
-            <div className="absolute -top-2 -left-2 text-yellow-400 text-lg">👑</div>
-          )}
-        </div>
-        
-        <div className="bg-black/70 px-3 py-1 rounded text-white">
-          <div className="font-bold text-sm">
-            {isCurrentUser ? `${player.name} (TÚ)` : player.name}
-          </div>
-          <div className="text-emerald-400 text-xs">$1,000</div>
-          {gameStatus === 'InProgress' && currentPlayerTurn === player.name && (
-            <div className="text-yellow-400 text-xs animate-pulse">Su turno</div>
-          )}
-          {isLoading && (
-            <div className="text-orange-400 text-xs">
-              {seatClickLoading === -1 ? 'Saliendo...' : 'Procesando...'}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Información adicional para el jugador */}
-      <div className="ml-[52px] space-y-1">
-        {player.isReady && (
-          <div className="px-2 py-1 bg-green-500 rounded text-xs font-bold text-white inline-block">
-            ✓ Listo
-          </div>
-        )}
-        
-        {player.hasPlayedTurn && gameStatus === 'InProgress' && (
-          <div className="text-xs text-white bg-blue-500 rounded px-2 py-1 inline-block">
-            Turno jugado
-          </div>
-        )}
-
-        {isCurrentUser && !isLoading && gameStatus !== 'InProgress' && !isViewer && (
-          <div>
-            <button
-              onClick={handleLeaveSeat}
-              className="text-xs bg-red-500/80 hover:bg-red-500 text-white px-2 py-1 rounded transition-colors"
-            >
-              Salir del asiento
-            </button>
-          </div>
-        )}
-      </div>
     </div>
   )
 }
