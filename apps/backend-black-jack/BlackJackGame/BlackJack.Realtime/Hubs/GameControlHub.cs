@@ -1,7 +1,9 @@
-﻿// BlackJack.Realtime/Hubs/GameControlHub.cs - Control del juego
+﻿// BlackJack.Realtime/Hubs/GameControlHub.cs - CON AUTO-BETTING AGREGADO
+using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Realtime.Models;
 using BlackJack.Services.Game;
+using BlackJack.Realtime.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
@@ -12,12 +14,15 @@ namespace BlackJack.Realtime.Hubs;
 public class GameControlHub : BaseHub
 {
     private readonly IGameRoomService _gameRoomService;
+    private readonly ISignalRNotificationService _notificationService;
 
     public GameControlHub(
         IGameRoomService gameRoomService,
+        ISignalRNotificationService notificationService,
         ILogger<GameControlHub> logger) : base(logger)
     {
         _gameRoomService = gameRoomService;
+        _notificationService = notificationService;
     }
 
     #region Game Control
@@ -26,6 +31,15 @@ public class GameControlHub : BaseHub
     {
         try
         {
+            _logger.LogInformation("[GameControlHub] ===== StartGame STARTED =====");
+            _logger.LogInformation("[GameControlHub] RoomCode: {RoomCode}", roomCode);
+
+            if (!IsAuthenticated())
+            {
+                await SendErrorAsync("Debes estar autenticado");
+                return;
+            }
+
             var playerId = GetCurrentPlayerId();
             if (playerId == null)
             {
@@ -39,24 +53,102 @@ public class GameControlHub : BaseHub
                 return;
             }
 
-            _logger.LogInformation("[GameControlHub] Starting game in room {RoomCode} by player {PlayerId}",
-                roomCode, playerId);
+            _logger.LogInformation("[GameControlHub] Player {PlayerId} starting game in room {RoomCode}",
+                playerId, roomCode);
 
             var result = await _gameRoomService.StartGameAsync(roomCode, playerId);
 
             if (result.IsSuccess)
             {
-                _logger.LogInformation("[GameControlHub] Game started successfully in room {RoomCode}", roomCode);
+                _logger.LogInformation("[GameControlHub] StartGame SUCCESS - Getting updated room info...");
 
-                var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
-                if (roomResult.IsSuccess)
+                var updatedRoomResult = await _gameRoomService.GetRoomAsync(roomCode);
+                if (updatedRoomResult.IsSuccess)
                 {
-                    var room = roomResult.Value!;
-                    var gameStartedEvent = new { RoomCode = roomCode, Message = "Juego iniciado" };
+                    var room = updatedRoomResult.Value!;
+                    var gameStartedEvent = new GameStartedEventModel(
+                        RoomCode: roomCode,
+                        GameTableId: room.BlackjackTableId ?? Guid.Empty,
+                        PlayerNames: room.Players.Select(p => p.Name).ToList(),
+                        FirstPlayerTurn: room.CurrentPlayer?.PlayerId.Value ?? Guid.Empty,
+                        Timestamp: DateTime.UtcNow
+                    );
 
-                    await Clients.Group(HubMethodNames.Groups.GetRoomGroup(roomCode))
-                        .SendAsync(HubMethodNames.ServerMethods.GameStarted, gameStartedEvent);
+                    _logger.LogInformation("[GameControlHub] Broadcasting GameStarted via NotificationService...");
+                    await _notificationService.NotifyGameStartedAsync(roomCode, gameStartedEvent);
+
+                    await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.Success,
+                        new { Message = "Juego iniciado correctamente", GameInfo = gameStartedEvent });
+
+                    _logger.LogInformation("[GameControlHub] Game started successfully by player {PlayerId}", playerId);
                 }
+                else
+                {
+                    _logger.LogError("[GameControlHub] Failed to get updated room info after game start: {Error}",
+                        updatedRoomResult.Error);
+                    await SendErrorAsync("Error obteniendo información actualizada del juego");
+                }
+            }
+            else
+            {
+                _logger.LogWarning("[GameControlHub] StartGame FAILED for player {PlayerId}: {Error}",
+                    playerId, result.Error);
+                await SendErrorAsync(result.Error);
+            }
+
+            _logger.LogInformation("[GameControlHub] ===== StartGame COMPLETED =====");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameControlHub] CRITICAL EXCEPTION in StartGame for player {PlayerId}",
+                GetCurrentPlayerId());
+            await HandleExceptionAsync(ex, "StartGame");
+        }
+    }
+
+    public async Task EndGame(string roomCode)
+    {
+        try
+        {
+            _logger.LogInformation("[GameControlHub] ===== EndGame STARTED =====");
+            _logger.LogInformation("[GameControlHub] RoomCode: {RoomCode}", roomCode);
+
+            if (!IsAuthenticated())
+            {
+                await SendErrorAsync("Debes estar autenticado");
+                return;
+            }
+
+            var playerId = GetCurrentPlayerId();
+            if (playerId == null)
+            {
+                await SendErrorAsync("Error de autenticación");
+                return;
+            }
+
+            if (!ValidateInput(roomCode, nameof(roomCode)))
+            {
+                await SendErrorAsync("Código de sala inválido");
+                return;
+            }
+
+            var result = await _gameRoomService.EndGameAsync(roomCode);
+
+            if (result.IsSuccess)
+            {
+                var gameEndedEvent = new GameEndedEventModel(
+                    RoomCode: roomCode,
+                    Results: new List<PlayerResultModel>(), // Se llenarían con los resultados reales
+                    DealerHandValue: 0, // Se llenaría con el valor real
+                    WinnerId: null,
+                    Timestamp: DateTime.UtcNow
+                );
+
+                await _notificationService.NotifyGameEndedAsync(roomCode, gameEndedEvent);
+                await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.Success,
+                    new { Message = "Juego terminado correctamente" });
+
+                _logger.LogInformation("[GameControlHub] Game ended successfully");
             }
             else
             {
@@ -65,16 +157,299 @@ public class GameControlHub : BaseHub
         }
         catch (Exception ex)
         {
-            await HandleExceptionAsync(ex, "StartGame");
+            _logger.LogError(ex, "[GameControlHub] CRITICAL EXCEPTION in EndGame");
+            await HandleExceptionAsync(ex, "EndGame");
         }
     }
 
-    // Aquí se pueden agregar más métodos de control del juego como:
-    // - PauseGame
-    // - ResumeGame
-    // - EndGame
-    // - RestartGame
-    // - etc.
+    #endregion
+
+    #region Auto-Betting
+
+    public async Task ProcessRoundAutoBets(string roomCode, bool removePlayersWithoutFunds = true)
+    {
+        try
+        {
+            _logger.LogInformation("[GameControlHub] ===== ProcessRoundAutoBets STARTED =====");
+            _logger.LogInformation("[GameControlHub] RoomCode: {RoomCode}, RemoveWithoutFunds: {RemoveFlag}",
+                roomCode, removePlayersWithoutFunds);
+
+            if (!IsAuthenticated())
+            {
+                await SendErrorAsync("Debes estar autenticado");
+                return;
+            }
+
+            var playerId = GetCurrentPlayerId();
+            if (playerId == null)
+            {
+                await SendErrorAsync("Error de autenticación");
+                return;
+            }
+
+            if (!ValidateInput(roomCode, nameof(roomCode)))
+            {
+                await SendErrorAsync("Código de sala inválido");
+                return;
+            }
+
+            _logger.LogInformation("[GameControlHub] Player {PlayerId} processing auto-bets for room {RoomCode}",
+                playerId, roomCode);
+
+            // 1. Notificar inicio del procesamiento
+            var processingStartedEvent = new AutoBetProcessingStartedEventModel(
+                RoomCode: roomCode,
+                SeatedPlayersCount: 0, // Se actualizará después
+                MinBetPerRound: 0,
+                TotalBetAmount: 0,
+                StartedAt: DateTime.UtcNow
+            );
+
+            // Obtener estadísticas antes del procesamiento
+            var statsResult = await _gameRoomService.CalculateAutoBetStatisticsAsync(roomCode);
+            if (statsResult.IsSuccess)
+            {
+                var stats = statsResult.Value!;
+                processingStartedEvent = processingStartedEvent with
+                {
+                    SeatedPlayersCount = stats.SeatedPlayersCount,
+                    MinBetPerRound = stats.MinBetPerRound.Amount,
+                    TotalBetAmount = stats.TotalBetPerRound.Amount
+                };
+
+                await _notificationService.NotifyAutoBetProcessingStartedAsync(roomCode, processingStartedEvent);
+            }
+
+            // 2. Procesar las apuestas automáticas
+            var result = await _gameRoomService.ProcessRoundAutoBetsAsync(roomCode, removePlayersWithoutFunds);
+
+            if (result.IsSuccess)
+            {
+                var autoBetResult = result.Value!;
+
+                _logger.LogInformation("[GameControlHub] ProcessRoundAutoBets SUCCESS - Processing notifications...");
+
+                // 3. Convertir a modelo SignalR y notificar resultado principal
+                var autoBetEventModel = new AutoBetProcessedEventModel(
+                    RoomCode: autoBetResult.RoomCode,
+                    TotalPlayersProcessed: autoBetResult.TotalPlayersProcessed,
+                    SuccessfulBets: autoBetResult.SuccessfulBets,
+                    FailedBets: autoBetResult.FailedBets,
+                    PlayersRemovedFromSeats: autoBetResult.PlayersRemovedFromSeats,
+                    TotalAmountProcessed: autoBetResult.TotalAmountProcessed.Amount,
+                    PlayerResults: autoBetResult.PlayerResults.Select(pr => new AutoBetPlayerResultModel(
+                        PlayerId: pr.PlayerId.Value,
+                        PlayerName: pr.PlayerName,
+                        SeatPosition: pr.SeatPosition,
+                        Status: pr.Status.ToString(),
+                        OriginalBalance: pr.OriginalBalance.Amount,
+                        NewBalance: pr.NewBalance.Amount,
+                        BetAmount: pr.BetAmount.Amount,
+                        ErrorMessage: pr.ErrorMessage
+                    )).ToList(),
+                    ProcessedAt: autoBetResult.ProcessedAt,
+                    HasErrors: autoBetResult.HasErrors,
+                    SuccessRate: autoBetResult.SuccessRate
+                );
+
+                await _notificationService.NotifyAutoBetProcessedAsync(roomCode, autoBetEventModel);
+
+                // 4. Notificar eventos específicos por jugador
+                foreach (var playerResult in autoBetResult.PlayerResults)
+                {
+                    // Notificar cambios de balance
+                    if (playerResult.Status == BetStatus.BetDeducted)
+                    {
+                        var balanceUpdateEvent = new PlayerBalanceUpdatedEventModel(
+                            RoomCode: roomCode,
+                            PlayerId: playerResult.PlayerId.Value,
+                            PlayerName: playerResult.PlayerName,
+                            PreviousBalance: playerResult.OriginalBalance.Amount,
+                            NewBalance: playerResult.NewBalance.Amount,
+                            AmountChanged: -playerResult.BetAmount.Amount,
+                            ChangeReason: "AutoBet",
+                            UpdatedAt: DateTime.UtcNow
+                        );
+
+                        await _notificationService.NotifyPlayerBalanceUpdatedAsync(roomCode, balanceUpdateEvent);
+                    }
+
+                    // Notificar remociones de asientos
+                    if (playerResult.Status == BetStatus.RemovedFromSeat)
+                    {
+                        var removedFromSeatEvent = new PlayerRemovedFromSeatEventModel(
+                            RoomCode: roomCode,
+                            PlayerId: playerResult.PlayerId.Value,
+                            PlayerName: playerResult.PlayerName,
+                            SeatPosition: playerResult.SeatPosition,
+                            RequiredAmount: playerResult.BetAmount.Amount,
+                            AvailableBalance: playerResult.OriginalBalance.Amount,
+                            Reason: "Fondos insuficientes para apuesta automática",
+                            RemovedAt: DateTime.UtcNow
+                        );
+
+                        await _notificationService.NotifyPlayerRemovedFromSeatAsync(roomCode, removedFromSeatEvent);
+                    }
+
+                    // Notificar advertencias de fondos insuficientes
+                    if (playerResult.Status == BetStatus.InsufficientFunds)
+                    {
+                        var warningEvent = new InsufficientFundsWarningEventModel(
+                            RoomCode: roomCode,
+                            PlayerId: playerResult.PlayerId.Value,
+                            PlayerName: playerResult.PlayerName,
+                            CurrentBalance: playerResult.OriginalBalance.Amount,
+                            RequiredAmount: playerResult.BetAmount.Amount,
+                            DeficitAmount: playerResult.BetAmount.Amount - playerResult.OriginalBalance.Amount,
+                            RoundsRemaining: 0, // Se calcularía basado en balance y bet amount
+                            WillBeRemovedNextRound: removePlayersWithoutFunds,
+                            WarningTime: DateTime.UtcNow
+                        );
+
+                        await _notificationService.NotifyInsufficientFundsWarningAsync(roomCode, warningEvent);
+                    }
+                }
+
+                // 5. Enviar resumen de la ronda
+                var roundSummaryEvent = new AutoBetRoundSummaryEventModel(
+                    RoomCode: roomCode,
+                    RoundNumber: 1, // Se incrementaría basado en el estado del juego
+                    RoundStartedAt: processingStartedEvent.StartedAt,
+                    RoundCompletedAt: DateTime.UtcNow,
+                    ProcessingDuration: DateTime.UtcNow - processingStartedEvent.StartedAt,
+                    Results: autoBetEventModel,
+                    Notifications: new List<string>
+                    {
+                        $"Procesadas {autoBetResult.SuccessfulBets} apuestas exitosas",
+                        $"Total procesado: ${autoBetResult.TotalAmountProcessed.Amount:F2}",
+                        autoBetResult.PlayersRemovedFromSeats > 0
+                            ? $"{autoBetResult.PlayersRemovedFromSeats} jugadores removidos por fondos insuficientes"
+                            : null
+                    }.Where(n => n != null).Cast<string>().ToList()
+                );
+
+                await _notificationService.NotifyAutoBetRoundSummaryAsync(roomCode, roundSummaryEvent);
+
+                // 6. Respuesta exitosa al caller
+                await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.Success, new
+                {
+                    Message = $"Apuestas automáticas procesadas: {autoBetResult.SuccessfulBets} exitosas, {autoBetResult.FailedBets} fallidas",
+                    Results = autoBetEventModel
+                });
+
+                _logger.LogInformation("[GameControlHub] Auto-betting processed successfully: {Success}/{Total} bets",
+                    autoBetResult.SuccessfulBets, autoBetResult.TotalPlayersProcessed);
+            }
+            else
+            {
+                _logger.LogWarning("[GameControlHub] ProcessRoundAutoBets FAILED: {Error}", result.Error);
+
+                // Notificar fallo en el procesamiento
+                var failedEvent = new AutoBetFailedEventModel(
+                    RoomCode: roomCode,
+                    ErrorMessage: result.Error,
+                    ErrorCode: "AUTO_BET_PROCESSING_FAILED",
+                    AffectedPlayersCount: 0,
+                    AffectedPlayerIds: new List<Guid>(),
+                    FailedAt: DateTime.UtcNow,
+                    RequiresManualIntervention: true
+                );
+
+                await _notificationService.NotifyAutoBetFailedAsync(roomCode, failedEvent);
+                await SendErrorAsync(result.Error);
+            }
+
+            _logger.LogInformation("[GameControlHub] ===== ProcessRoundAutoBets COMPLETED =====");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameControlHub] CRITICAL EXCEPTION in ProcessRoundAutoBets for room {RoomCode}",
+                roomCode);
+
+            // Notificar fallo crítico
+            var criticalFailedEvent = new AutoBetFailedEventModel(
+                RoomCode: roomCode,
+                ErrorMessage: "Error crítico en el procesamiento de apuestas automáticas",
+                ErrorCode: "CRITICAL_AUTO_BET_ERROR",
+                AffectedPlayersCount: 0,
+                AffectedPlayerIds: new List<Guid>(),
+                FailedAt: DateTime.UtcNow,
+                RequiresManualIntervention: true
+            );
+
+            await _notificationService.NotifyAutoBetFailedAsync(roomCode, criticalFailedEvent);
+            await HandleExceptionAsync(ex, "ProcessRoundAutoBets");
+        }
+    }
+
+    public async Task GetAutoBetStatistics(string roomCode)
+    {
+        try
+        {
+            _logger.LogInformation("[GameControlHub] ===== GetAutoBetStatistics STARTED =====");
+            _logger.LogInformation("[GameControlHub] RoomCode: {RoomCode}", roomCode);
+
+            if (!IsAuthenticated())
+            {
+                await SendErrorAsync("Debes estar autenticado");
+                return;
+            }
+
+            if (!ValidateInput(roomCode, nameof(roomCode)))
+            {
+                await SendErrorAsync("Código de sala inválido");
+                return;
+            }
+
+            var result = await _gameRoomService.CalculateAutoBetStatisticsAsync(roomCode);
+
+            if (result.IsSuccess)
+            {
+                var stats = result.Value!;
+
+                var statsEventModel = new AutoBetStatisticsEventModel(
+                    RoomCode: stats.RoomCode,
+                    MinBetPerRound: stats.MinBetPerRound.Amount,
+                    SeatedPlayersCount: stats.SeatedPlayersCount,
+                    TotalBetPerRound: stats.TotalBetPerRound.Amount,
+                    PlayersWithSufficientFunds: stats.PlayersWithSufficientFunds,
+                    PlayersWithInsufficientFunds: stats.PlayersWithInsufficientFunds,
+                    TotalAvailableFunds: stats.TotalAvailableFunds.Amount,
+                    ExpectedSuccessfulBets: stats.ExpectedSuccessfulBets,
+                    ExpectedTotalDeduction: stats.ExpectedTotalDeduction.Amount,
+                    PlayerDetails: stats.PlayerDetails.Select(pd => new PlayerAutoBetDetailModel(
+                        PlayerId: pd.PlayerId.Value,
+                        PlayerName: pd.PlayerName,
+                        SeatPosition: 0, // Se obtendría del RoomPlayer
+                        CurrentBalance: pd.CurrentBalance.Amount,
+                        CanAffordBet: pd.CanAffordBet,
+                        BalanceAfterBet: pd.BalanceAfterBet.Amount,
+                        RoundsAffordable: pd.CanAffordBet ?
+                            (int)(pd.CurrentBalance.Amount / stats.MinBetPerRound.Amount) : 0
+                    )).ToList(),
+                    CalculatedAt: stats.CalculatedAt
+                );
+
+                await _notificationService.NotifyAutoBetStatisticsAsync(roomCode, statsEventModel);
+                await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.Success, new
+                {
+                    Message = "Estadísticas de auto-betting obtenidas",
+                    Statistics = statsEventModel
+                });
+
+                _logger.LogInformation("[GameControlHub] Auto-bet statistics retrieved successfully");
+            }
+            else
+            {
+                await SendErrorAsync(result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameControlHub] CRITICAL EXCEPTION in GetAutoBetStatistics");
+            await HandleExceptionAsync(ex, "GetAutoBetStatistics");
+        }
+    }
 
     #endregion
 }

@@ -194,6 +194,175 @@ public record CardDealtEventModel(
 
 #endregion
 
+#region Auto-Betting Event Models
+
+/// <summary>
+/// Modelo para notificar el resultado completo del procesamiento de apuestas automáticas
+/// </summary>
+public record AutoBetProcessedEventModel(
+    string RoomCode,
+    int TotalPlayersProcessed,
+    int SuccessfulBets,
+    int FailedBets,
+    int PlayersRemovedFromSeats,
+    decimal TotalAmountProcessed,
+    List<AutoBetPlayerResultModel> PlayerResults,
+    DateTime ProcessedAt,
+    bool HasErrors,
+    decimal SuccessRate
+);
+
+/// <summary>
+/// Modelo para el resultado de apuesta automática de un jugador individual
+/// </summary>
+public record AutoBetPlayerResultModel(
+    Guid PlayerId,
+    string PlayerName,
+    int SeatPosition,
+    string Status, // "BetDeducted", "InsufficientFunds", "RemovedFromSeat", "Failed"
+    decimal OriginalBalance,
+    decimal NewBalance,
+    decimal BetAmount,
+    string? ErrorMessage = null
+);
+
+/// <summary>
+/// Modelo para notificar cuando un jugador es removido de su asiento por fondos insuficientes
+/// </summary>
+public record PlayerRemovedFromSeatEventModel(
+    string RoomCode,
+    Guid PlayerId,
+    string PlayerName,
+    int SeatPosition,
+    decimal RequiredAmount,
+    decimal AvailableBalance,
+    string Reason,
+    DateTime RemovedAt
+);
+
+/// <summary>
+/// Modelo para notificar actualizaciones de balance de jugadores
+/// </summary>
+public record PlayerBalanceUpdatedEventModel(
+    string RoomCode,
+    Guid PlayerId,
+    string PlayerName,
+    decimal PreviousBalance,
+    decimal NewBalance,
+    decimal AmountChanged,
+    string ChangeReason, // "AutoBet", "Winnings", "Manual", etc.
+    DateTime UpdatedAt
+);
+
+/// <summary>
+/// Modelo para advertencias de fondos insuficientes
+/// </summary>
+public record InsufficientFundsWarningEventModel(
+    string RoomCode,
+    Guid PlayerId,
+    string PlayerName,
+    decimal CurrentBalance,
+    decimal RequiredAmount,
+    decimal DeficitAmount,
+    int RoundsRemaining, // Cuántas rondas más puede costear el jugador
+    bool WillBeRemovedNextRound,
+    DateTime WarningTime
+);
+
+/// <summary>
+/// Modelo para estadísticas de auto-betting de una sala
+/// </summary>
+public record AutoBetStatisticsEventModel(
+    string RoomCode,
+    decimal MinBetPerRound,
+    int SeatedPlayersCount,
+    decimal TotalBetPerRound,
+    int PlayersWithSufficientFunds,
+    int PlayersWithInsufficientFunds,
+    decimal TotalAvailableFunds,
+    int ExpectedSuccessfulBets,
+    decimal ExpectedTotalDeduction,
+    List<PlayerAutoBetDetailModel> PlayerDetails,
+    DateTime CalculatedAt
+);
+
+/// <summary>
+/// Modelo para detalles de auto-betting por jugador
+/// </summary>
+public record PlayerAutoBetDetailModel(
+    Guid PlayerId,
+    string PlayerName,
+    int SeatPosition,
+    decimal CurrentBalance,
+    bool CanAffordBet,
+    decimal BalanceAfterBet,
+    int RoundsAffordable // Cuántas rondas más puede costear
+);
+
+/// <summary>
+/// Modelo para notificar el inicio del procesamiento de apuestas automáticas
+/// </summary>
+public record AutoBetProcessingStartedEventModel(
+    string RoomCode,
+    int SeatedPlayersCount,
+    decimal MinBetPerRound,
+    decimal TotalBetAmount,
+    DateTime StartedAt
+);
+
+/// <summary>
+/// Modelo para validación de auto-betting de una sala
+/// </summary>
+public record AutoBetValidationEventModel(
+    string RoomCode,
+    bool IsValid,
+    List<string> ErrorMessages,
+    string RoomStatus,
+    int SeatedPlayersCount,
+    decimal MinBetPerRound,
+    DateTime ValidatedAt
+);
+
+/// <summary>
+/// Modelo para notificar fallos en el procesamiento de auto-betting
+/// </summary>
+public record AutoBetFailedEventModel(
+    string RoomCode,
+    string ErrorMessage,
+    string ErrorCode,
+    int AffectedPlayersCount,
+    List<Guid> AffectedPlayerIds,
+    DateTime FailedAt,
+    bool RequiresManualIntervention
+);
+
+/// <summary>
+/// Modelo para notificar cuando se configura/cambia la apuesta mínima por ronda
+/// </summary>
+public record MinBetPerRoundUpdatedEventModel(
+    string RoomCode,
+    decimal PreviousMinBet,
+    decimal NewMinBet,
+    Guid UpdatedByPlayerId,
+    string UpdatedByPlayerName,
+    DateTime UpdatedAt
+);
+
+/// <summary>
+/// Modelo para notificar el resumen de una ronda de apuestas automáticas
+/// </summary>
+public record AutoBetRoundSummaryEventModel(
+    string RoomCode,
+    int RoundNumber,
+    DateTime RoundStartedAt,
+    DateTime RoundCompletedAt,
+    TimeSpan ProcessingDuration,
+    AutoBetProcessedEventModel Results,
+    List<string> Notifications // Mensajes adicionales para mostrar al usuario
+);
+
+#endregion
+
 #region Game Models
 
 public record GameStateModel(
@@ -238,30 +407,6 @@ public record ReconnectionInfo(
     bool WasInGame
 );
 
-#endregion
-
-#region Utility Models
-
-public record ErrorModel(
-    string Message,
-    string? Code,
-    object? Details,
-    DateTime Timestamp
-);
-
-public record SuccessModel(
-    string Message,
-    object? Data,
-    DateTime Timestamp
-);
-
-#endregion
-
-
-// Actualización para SignalRModels.cs existente - AGREGAR AL FINAL
-
-#region Connection State Models
-
 /// <summary>
 /// Estado detallado de sala del jugador para reconexión robusta
 /// </summary>
@@ -285,5 +430,22 @@ public record ConnectionManagerStats
     public int PlayersWithRoomState { get; init; }
     public DateTime Timestamp { get; init; }
 }
+
+#endregion
+
+#region Utility Models
+
+public record ErrorModel(
+    string Message,
+    string? Code,
+    object? Details,
+    DateTime Timestamp
+);
+
+public record SuccessModel(
+    string Message,
+    object? Data,
+    DateTime Timestamp
+);
 
 #endregion

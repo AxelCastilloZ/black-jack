@@ -4,6 +4,7 @@ using BlackJack.Data.Context;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,13 +12,14 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace BlackJack.Data.Migrations.Application
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250922035841_apuestas")]
+    partial class apuestas
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasDefaultSchema("dbo")
                 .HasAnnotation("ProductVersion", "8.0.1")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
@@ -58,7 +60,7 @@ namespace BlackJack.Data.Migrations.Application
 
                     b.HasIndex("Status");
 
-                    b.ToTable("BlackjackTables", "dbo");
+                    b.ToTable("BlackjackTables");
                 });
 
             modelBuilder.Entity("BlackJack.Domain.Models.Game.GameRoom", b =>
@@ -118,7 +120,7 @@ namespace BlackJack.Data.Migrations.Application
 
                     b.HasIndex("Status");
 
-                    b.ToTable("GameRooms", "dbo");
+                    b.ToTable("GameRooms");
                 });
 
             modelBuilder.Entity("BlackJack.Domain.Models.Game.Hand", b =>
@@ -150,7 +152,7 @@ namespace BlackJack.Data.Migrations.Application
                     b.HasIndex("Status")
                         .HasDatabaseName("IX_Hands_Status");
 
-                    b.ToTable("Hands", "dbo");
+                    b.ToTable("Hands");
                 });
 
             modelBuilder.Entity("BlackJack.Domain.Models.Game.RoomPlayer", b =>
@@ -220,7 +222,7 @@ namespace BlackJack.Data.Migrations.Application
                     b.HasIndex("GameRoomId", "SeatPosition")
                         .HasDatabaseName("IX_RoomPlayers_GameRoomId_SeatPosition");
 
-                    b.ToTable("RoomPlayers", "dbo");
+                    b.ToTable("RoomPlayers");
                 });
 
             modelBuilder.Entity("BlackJack.Domain.Models.Game.Seat", b =>
@@ -252,52 +254,7 @@ namespace BlackJack.Data.Migrations.Application
 
                     b.HasIndex("TableId");
 
-                    b.ToTable("Seats", "dbo");
-                });
-
-            modelBuilder.Entity("BlackJack.Domain.Models.Game.Spectator", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<Guid>("GameRoomId")
-                        .HasColumnType("uniqueidentifier")
-                        .HasColumnName("GameRoomId");
-
-                    b.Property<DateTime>("JoinedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<Guid>("PlayerId")
-                        .HasColumnType("uniqueidentifier")
-                        .HasColumnName("PlayerId");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("GameRoomId")
-                        .HasDatabaseName("IX_Spectators_GameRoomId");
-
-                    b.HasIndex("JoinedAt")
-                        .HasDatabaseName("IX_Spectators_JoinedAt");
-
-                    b.HasIndex("Name")
-                        .HasDatabaseName("IX_Spectators_Name");
-
-                    b.HasIndex("PlayerId")
-                        .HasDatabaseName("IX_Spectators_PlayerId");
-
-                    b.ToTable("Spectators", "dbo");
+                    b.ToTable("Seats");
                 });
 
             modelBuilder.Entity("BlackJack.Domain.Models.Users.Player", b =>
@@ -328,7 +285,46 @@ namespace BlackJack.Data.Migrations.Application
 
                     b.HasIndex("Name");
 
-                    b.ToTable("Players", "dbo");
+                    b.ToTable("Players");
+                });
+
+            modelBuilder.Entity("BlackJack.Domain.Models.Users.Spectator", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("GameRoomId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("JoinedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<Guid?>("TableId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GameRoomId");
+
+                    b.HasIndex("JoinedAt");
+
+                    b.HasIndex("Name");
+
+                    b.HasIndex("TableId");
+
+                    b.ToTable("Spectators");
                 });
 
             modelBuilder.Entity("BlackJack.Domain.Models.Users.UserProfile", b =>
@@ -370,7 +366,7 @@ namespace BlackJack.Data.Migrations.Application
 
                     b.HasKey("Id");
 
-                    b.ToTable("UserProfiles", "dbo");
+                    b.ToTable("UserProfiles");
                 });
 
             modelBuilder.Entity("BlackJack.Domain.Models.Game.BlackjackTable", b =>
@@ -386,7 +382,7 @@ namespace BlackJack.Data.Migrations.Application
 
                             b1.HasKey("BlackjackTableId");
 
-                            b1.ToTable("BlackjackTables", "dbo");
+                            b1.ToTable("BlackjackTables");
 
                             b1.WithOwner()
                                 .HasForeignKey("BlackjackTableId");
@@ -403,7 +399,7 @@ namespace BlackJack.Data.Migrations.Application
 
                             b1.HasKey("BlackjackTableId");
 
-                            b1.ToTable("BlackjackTables", "dbo");
+                            b1.ToTable("BlackjackTables");
 
                             b1.WithOwner()
                                 .HasForeignKey("BlackjackTableId");
@@ -446,18 +442,6 @@ namespace BlackJack.Data.Migrations.Application
                     b.Navigation("Player");
                 });
 
-            modelBuilder.Entity("BlackJack.Domain.Models.Game.Spectator", b =>
-                {
-                    b.HasOne("BlackJack.Domain.Models.Game.GameRoom", "GameRoom")
-                        .WithMany("Spectators")
-                        .HasForeignKey("GameRoomId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("FK_Spectators_GameRooms_GameRoomId");
-
-                    b.Navigation("GameRoom");
-                });
-
             modelBuilder.Entity("BlackJack.Domain.Models.Users.Player", b =>
                 {
                     b.OwnsOne("BlackJack.Domain.Models.Betting.Money", "Balance", b1 =>
@@ -471,7 +455,7 @@ namespace BlackJack.Data.Migrations.Application
 
                             b1.HasKey("PlayerId");
 
-                            b1.ToTable("Players", "dbo");
+                            b1.ToTable("Players");
 
                             b1.WithOwner()
                                 .HasForeignKey("PlayerId");
@@ -488,7 +472,7 @@ namespace BlackJack.Data.Migrations.Application
 
                             b1.HasKey("PlayerId");
 
-                            b1.ToTable("Players", "dbo");
+                            b1.ToTable("Players");
 
                             b1.WithOwner()
                                 .HasForeignKey("PlayerId");
@@ -496,6 +480,39 @@ namespace BlackJack.Data.Migrations.Application
 
                     b.Navigation("Balance")
                         .IsRequired();
+
+                    b.Navigation("PlayerId")
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("BlackJack.Domain.Models.Users.Spectator", b =>
+                {
+                    b.HasOne("BlackJack.Domain.Models.Game.GameRoom", null)
+                        .WithMany("Spectators")
+                        .HasForeignKey("GameRoomId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("BlackJack.Domain.Models.Game.BlackjackTable", null)
+                        .WithMany("Spectators")
+                        .HasForeignKey("TableId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.OwnsOne("BlackJack.Domain.Models.Users.PlayerId", "PlayerId", b1 =>
+                        {
+                            b1.Property<Guid>("SpectatorId")
+                                .HasColumnType("uniqueidentifier");
+
+                            b1.Property<Guid>("Value")
+                                .HasColumnType("uniqueidentifier")
+                                .HasColumnName("PlayerId");
+
+                            b1.HasKey("SpectatorId");
+
+                            b1.ToTable("Spectators");
+
+                            b1.WithOwner()
+                                .HasForeignKey("SpectatorId");
+                        });
 
                     b.Navigation("PlayerId")
                         .IsRequired();
@@ -514,7 +531,7 @@ namespace BlackJack.Data.Migrations.Application
 
                             b1.HasKey("UserProfileId");
 
-                            b1.ToTable("UserProfiles", "dbo");
+                            b1.ToTable("UserProfiles");
 
                             b1.WithOwner()
                                 .HasForeignKey("UserProfileId");
@@ -531,7 +548,7 @@ namespace BlackJack.Data.Migrations.Application
 
                             b1.HasKey("UserProfileId");
 
-                            b1.ToTable("UserProfiles", "dbo");
+                            b1.ToTable("UserProfiles");
 
                             b1.WithOwner()
                                 .HasForeignKey("UserProfileId");
@@ -548,7 +565,7 @@ namespace BlackJack.Data.Migrations.Application
 
                             b1.HasKey("UserProfileId");
 
-                            b1.ToTable("UserProfiles", "dbo");
+                            b1.ToTable("UserProfiles");
 
                             b1.WithOwner()
                                 .HasForeignKey("UserProfileId");
@@ -567,6 +584,8 @@ namespace BlackJack.Data.Migrations.Application
             modelBuilder.Entity("BlackJack.Domain.Models.Game.BlackjackTable", b =>
                 {
                     b.Navigation("Seats");
+
+                    b.Navigation("Spectators");
                 });
 
             modelBuilder.Entity("BlackJack.Domain.Models.Game.GameRoom", b =>

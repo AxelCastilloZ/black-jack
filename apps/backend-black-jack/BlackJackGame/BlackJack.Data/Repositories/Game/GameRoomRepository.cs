@@ -1,9 +1,10 @@
-﻿// BlackJack.Data/Repositories/Game/GameRoomRepository.cs - IMPLEMENTACIÓN COMPLETA
+﻿// BlackJack.Data/Repositories/Game/GameRoomRepository.cs - FIX DEFINITIVO COMPLETO
 using Microsoft.EntityFrameworkCore;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Data.Context;
 using BlackJack.Data.Repositories.Common;
+using Microsoft.Data.SqlClient;
 
 namespace BlackJack.Data.Repositories.Game;
 
@@ -20,6 +21,7 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return await _dbSet
             .Include(r => r.Players)
             .Include(r => r.Spectators)
+            .AsNoTracking()
             .FirstOrDefaultAsync(r => r.RoomCode == roomCode);
     }
 
@@ -28,6 +30,7 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return await _dbSet
             .Include(r => r.Players)
             .Include(r => r.Spectators)
+            .AsNoTracking()
             .FirstOrDefaultAsync(r => r.RoomCode == roomCode);
     }
 
@@ -35,6 +38,7 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
     {
         return await _dbSet
             .Include(r => r.Players)
+            .AsNoTracking()
             .Include(r => r.Spectators)
             .FirstOrDefaultAsync(r => r.Id == roomId);
     }
@@ -56,6 +60,7 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
             .Where(r => r.Status == RoomStatus.WaitingForPlayers || r.Status == RoomStatus.InProgress)
             .Include(r => r.Players)
             .Include(r => r.Spectators)
+            .AsNoTracking()
             .OrderBy(r => r.CreatedAt)
             .ToListAsync();
     }
@@ -96,6 +101,7 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return await _dbSet
             .Include(r => r.Players)
             .Include(r => r.Spectators)
+            .AsNoTracking()
             .Where(r => r.Players.Any(p => p.PlayerId == playerId))
             .FirstOrDefaultAsync();
     }
@@ -104,10 +110,11 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
     {
         await _context.SaveChangesAsync();
 
-        return await _dbSet
-            .Include(r => r.Players)
-            .Where(r => r.RoomCode == roomCode)
-            .AnyAsync(r => r.Players.Any(p => p.PlayerId == playerId));
+        // FIX: JOIN explícito para evitar lazy loading problemático
+        return await (from rp in _context.Set<RoomPlayer>()
+                      join gr in _context.Set<GameRoom>() on rp.GameRoomId equals gr.Id
+                      where gr.RoomCode == roomCode && rp.PlayerId == playerId
+                      select rp).AnyAsync();
     }
 
     public async Task<GameRoom?> GetRoomByTableIdAsync(Guid tableId)
@@ -117,6 +124,7 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return await _dbSet
             .Include(r => r.Players)
             .Include(r => r.Spectators)
+            .AsNoTracking()  // ← AGREGAR ESTA LÍNEA (consistente con otros métodos)
             .Where(r => r.BlackjackTableId == tableId)
             .FirstOrDefaultAsync();
     }
@@ -142,20 +150,37 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
 
     #region RoomPlayer and SeatPosition Operations
 
+    // FIX DEFINITIVO: GetRoomPlayerAsync con JOIN explícito sin lazy loading
     public async Task<RoomPlayer?> GetRoomPlayerAsync(string roomCode, PlayerId playerId)
     {
         await _context.SaveChangesAsync();
 
-        return await _context.Set<RoomPlayer>()
-            .Include(rp => rp.GameRoom)
-            .Where(rp => rp.GameRoom.RoomCode == roomCode && rp.PlayerId == playerId)
-            .FirstOrDefaultAsync();
+        // SOLUCIÓN: Join explícito evitando navigation property que causa lazy loading
+        return await (from rp in _context.Set<RoomPlayer>()
+                      join gr in _context.Set<GameRoom>() on rp.GameRoomId equals gr.Id
+                      where gr.RoomCode == roomCode && rp.PlayerId == playerId
+                      select rp).FirstOrDefaultAsync();
     }
 
+    // FIX DEFINITIVO: UpdateRoomPlayerAsync completamente aislado
     public async Task UpdateRoomPlayerAsync(RoomPlayer roomPlayer)
     {
         roomPlayer.UpdatedAt = DateTime.UtcNow;
-        _context.Set<RoomPlayer>().Update(roomPlayer);
+
+        // CAMBIO CRÍTICO: Actualización completamente independiente sin tocar relaciones
+        var existingEntry = _context.Entry(roomPlayer);
+
+        // Si la entidad está detached, la adjuntamos y marcamos como modificada
+        if (existingEntry.State == EntityState.Detached)
+        {
+            _context.Set<RoomPlayer>().Update(roomPlayer);
+        }
+        else
+        {
+            // Si ya está siendo tracked, solo marcamos como modificada
+            existingEntry.State = EntityState.Modified;
+        }
+
         await _context.SaveChangesAsync();
     }
 
@@ -163,55 +188,72 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
     {
         await _context.SaveChangesAsync();
 
-        return await _context.Set<RoomPlayer>()
-            .Include(rp => rp.GameRoom)
-            .AnyAsync(rp => rp.GameRoom.RoomCode == roomCode && rp.SeatPosition == seatPosition);
+        // FIX: Join explícito para evitar lazy loading
+        return await (from rp in _context.Set<RoomPlayer>()
+                      join gr in _context.Set<GameRoom>() on rp.GameRoomId equals gr.Id
+                      where gr.RoomCode == roomCode && rp.SeatPosition == seatPosition
+                      select rp).AnyAsync();
     }
 
+    // FIX DEFINITIVO: GetPlayerInSeatAsync con join explícito
     public async Task<RoomPlayer?> GetPlayerInSeatAsync(string roomCode, int seatPosition)
     {
         await _context.SaveChangesAsync();
 
-        return await _context.Set<RoomPlayer>()
-            .Include(rp => rp.GameRoom)
-            .Where(rp => rp.GameRoom.RoomCode == roomCode && rp.SeatPosition == seatPosition)
-            .FirstOrDefaultAsync();
+        // SOLUCIÓN: Join explícito evitando navigation property
+        return await (from rp in _context.Set<RoomPlayer>()
+                      join gr in _context.Set<GameRoom>() on rp.GameRoomId equals gr.Id
+                      where gr.RoomCode == roomCode && rp.SeatPosition == seatPosition
+                      select rp).FirstOrDefaultAsync();
     }
 
     public async Task<Dictionary<Guid, int>> GetSeatPositionsAsync(string roomCode)
     {
         await _context.SaveChangesAsync();
 
-        var seatData = await _context.Set<RoomPlayer>()
-            .Include(rp => rp.GameRoom)
-            .Where(rp => rp.GameRoom.RoomCode == roomCode && rp.SeatPosition.HasValue)
-            .Select(rp => new { PlayerId = rp.PlayerId.Value, SeatPosition = rp.SeatPosition.Value })
-            .ToListAsync();
+        // FIX: Join explícito para evitar lazy loading
+        var seatData = await (from rp in _context.Set<RoomPlayer>()
+                              join gr in _context.Set<GameRoom>() on rp.GameRoomId equals gr.Id
+                              where gr.RoomCode == roomCode && rp.SeatPosition.HasValue
+                              select new { PlayerId = rp.PlayerId.Value, SeatPosition = rp.SeatPosition.Value })
+                              .ToListAsync();
 
         return seatData.ToDictionary(x => x.PlayerId, x => x.SeatPosition);
     }
 
+    // SOLUCIÓN DEFINITIVA: FreeSeatAsync con SQL directo para evitar EF Collection issues
     public async Task<bool> FreeSeatAsync(string roomCode, PlayerId playerId)
     {
-        var roomPlayer = await GetRoomPlayerAsync(roomCode, playerId);
-        if (roomPlayer != null && roomPlayer.SeatPosition.HasValue)
+        // APPROACH RADICAL: SQL directo para evitar completamente EF change tracking
+        var sql = @"
+            UPDATE RoomPlayers 
+            SET SeatPosition = NULL, UpdatedAt = @UpdatedAt
+            WHERE GameRoomId = (SELECT Id FROM GameRooms WHERE RoomCode = @RoomCode)
+              AND PlayerId = @PlayerId
+              AND SeatPosition IS NOT NULL";
+
+        var parameters = new[]
         {
-            roomPlayer.LeaveSeat();
-            await UpdateRoomPlayerAsync(roomPlayer);
-            return true;
-        }
-        return false;
+            new SqlParameter("@RoomCode", roomCode),
+            new SqlParameter("@PlayerId", playerId.Value),
+            new SqlParameter("@UpdatedAt", DateTime.UtcNow)
+        };
+
+        var affectedRows = await _context.Database.ExecuteSqlRawAsync(sql, parameters);
+        return affectedRows > 0;
     }
 
     public async Task<bool> IsPlayerSeatedAsync(string roomCode, PlayerId playerId)
     {
         await _context.SaveChangesAsync();
 
-        return await _context.Set<RoomPlayer>()
-            .Include(rp => rp.GameRoom)
-            .AnyAsync(rp => rp.GameRoom.RoomCode == roomCode &&
-                           rp.PlayerId == playerId &&
-                           rp.SeatPosition.HasValue);
+        // FIX: Join explícito para evitar lazy loading
+        return await (from rp in _context.Set<RoomPlayer>()
+                      join gr in _context.Set<GameRoom>() on rp.GameRoomId equals gr.Id
+                      where gr.RoomCode == roomCode &&
+                            rp.PlayerId == playerId &&
+                            rp.SeatPosition.HasValue
+                      select rp).AnyAsync();
     }
 
     #endregion

@@ -1,4 +1,4 @@
-﻿// SignalRNotificationService.cs - CORREGIDO COMPLETAMENTE PARA ENVIAR A MÚLTIPLES HUBS
+﻿// SignalRNotificationService.cs - CORREGIDO COMPLETAMENTE PARA ENVIAR A MÚLTIPLES HUBS + AUTO-BETTING
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using BlackJack.Domain.Models.Users;
@@ -397,6 +397,136 @@ public class SignalRNotificationService : ISignalRNotificationService
             string.Join(", ", roomInfo.Players.Select(p => $"{p.Name}(Pos:{p.Position})")));
 
         await NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.RoomInfoUpdated, roomInfo);
+    }
+
+    #endregion
+
+    #region Auto-Betting Events
+
+    /// <summary>
+    /// Notifica el resultado completo del procesamiento de apuestas automáticas
+    /// </summary>
+    public async Task NotifyAutoBetProcessedAsync(string roomCode, AutoBetProcessedEventModel eventData)
+    {
+        _logger.LogInformation("[SignalRNotification] === AUTO-BET PROCESSED EVENT ===");
+        _logger.LogInformation("[SignalRNotification] RoomCode: {RoomCode}, Successful: {Successful}, Failed: {Failed}, Removed: {Removed}",
+            roomCode, eventData.SuccessfulBets, eventData.FailedBets, eventData.PlayersRemovedFromSeats);
+
+        await NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.AutoBetProcessed, eventData);
+    }
+
+    /// <summary>
+    /// Notifica cuando un jugador es removido de su asiento por fondos insuficientes
+    /// </summary>
+    public async Task NotifyPlayerRemovedFromSeatAsync(string roomCode, PlayerRemovedFromSeatEventModel eventData)
+    {
+        _logger.LogInformation("[SignalRNotification] === PLAYER REMOVED FROM SEAT EVENT ===");
+        _logger.LogInformation("[SignalRNotification] RoomCode: {RoomCode}, Player: {PlayerName}, Seat: {SeatPosition}, Reason: {Reason}",
+            roomCode, eventData.PlayerName, eventData.SeatPosition, eventData.Reason);
+
+        await NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.PlayerRemovedFromSeat, eventData);
+
+        // También notificar individualmente al jugador removido
+        var playerId = PlayerId.From(eventData.PlayerId);
+        await NotifyPlayerAsync(playerId, HubMethodNames.ServerMethods.YouWereRemovedFromSeat, eventData);
+    }
+
+    /// <summary>
+    /// Notifica actualizaciones de balance de jugadores después de apuestas automáticas
+    /// </summary>
+    public async Task NotifyPlayerBalanceUpdatedAsync(string roomCode, PlayerBalanceUpdatedEventModel eventData)
+    {
+        _logger.LogInformation("[SignalRNotification] === PLAYER BALANCE UPDATED EVENT ===");
+        _logger.LogInformation("[SignalRNotification] RoomCode: {RoomCode}, Player: {PlayerName}, Previous: {Previous}, New: {New}, Reason: {Reason}",
+            roomCode, eventData.PlayerName, eventData.PreviousBalance, eventData.NewBalance, eventData.ChangeReason);
+
+        await NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.PlayerBalanceUpdated, eventData);
+
+        // También notificar individualmente al jugador afectado
+        var playerId = PlayerId.From(eventData.PlayerId);
+        await NotifyPlayerAsync(playerId, HubMethodNames.ServerMethods.YourBalanceUpdated, eventData);
+    }
+
+    /// <summary>
+    /// Notifica advertencias de fondos insuficientes antes de remover jugadores
+    /// </summary>
+    public async Task NotifyInsufficientFundsWarningAsync(string roomCode, InsufficientFundsWarningEventModel eventData)
+    {
+        _logger.LogInformation("[SignalRNotification] === INSUFFICIENT FUNDS WARNING EVENT ===");
+        _logger.LogInformation("[SignalRNotification] RoomCode: {RoomCode}, Player: {PlayerName}, Balance: {Balance}, Required: {Required}",
+            roomCode, eventData.PlayerName, eventData.CurrentBalance, eventData.RequiredAmount);
+
+        await NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.InsufficientFundsWarning, eventData);
+
+        // También notificar individualmente al jugador con la advertencia
+        var playerId = PlayerId.From(eventData.PlayerId);
+        await NotifyPlayerAsync(playerId, HubMethodNames.ServerMethods.InsufficientFundsWarningPersonal, eventData);
+    }
+
+    /// <summary>
+    /// Notifica estadísticas de auto-betting de una sala
+    /// </summary>
+    public async Task NotifyAutoBetStatisticsAsync(string roomCode, AutoBetStatisticsEventModel eventData)
+    {
+        _logger.LogInformation("[SignalRNotification] === AUTO-BET STATISTICS EVENT ===");
+        _logger.LogInformation("[SignalRNotification] RoomCode: {RoomCode}, SeatedPlayers: {SeatedPlayers}, WithFunds: {WithFunds}, WithoutFunds: {WithoutFunds}",
+            roomCode, eventData.SeatedPlayersCount, eventData.PlayersWithSufficientFunds, eventData.PlayersWithInsufficientFunds);
+
+        await NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.AutoBetStatistics, eventData);
+    }
+
+    /// <summary>
+    /// Notifica el inicio del procesamiento de apuestas automáticas
+    /// </summary>
+    public async Task NotifyAutoBetProcessingStartedAsync(string roomCode, AutoBetProcessingStartedEventModel eventData)
+    {
+        _logger.LogInformation("[SignalRNotification] === AUTO-BET PROCESSING STARTED EVENT ===");
+        _logger.LogInformation("[SignalRNotification] RoomCode: {RoomCode}, SeatedPlayers: {SeatedPlayers}, TotalBet: {TotalBet}",
+            roomCode, eventData.SeatedPlayersCount, eventData.TotalBetAmount);
+
+        await NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.AutoBetProcessingStarted, eventData);
+    }
+
+    /// <summary>
+    /// Notifica fallos en el procesamiento de auto-betting
+    /// </summary>
+    public async Task NotifyAutoBetFailedAsync(string roomCode, AutoBetFailedEventModel eventData)
+    {
+        _logger.LogError("[SignalRNotification] === AUTO-BET FAILED EVENT ===");
+        _logger.LogError("[SignalRNotification] RoomCode: {RoomCode}, Error: {ErrorMessage}, AffectedPlayers: {AffectedPlayers}",
+            roomCode, eventData.ErrorMessage, eventData.AffectedPlayersCount);
+
+        await NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.AutoBetFailed, eventData);
+
+        // También notificar individualmente a los jugadores afectados
+        foreach (var playerId in eventData.AffectedPlayerIds)
+        {
+            await NotifyPlayerAsync(PlayerId.From(playerId), HubMethodNames.ServerMethods.AutoBetFailedPersonal, eventData);
+        }
+    }
+
+    /// <summary>
+    /// Notifica cambios en la apuesta mínima por ronda
+    /// </summary>
+    public async Task NotifyMinBetPerRoundUpdatedAsync(string roomCode, MinBetPerRoundUpdatedEventModel eventData)
+    {
+        _logger.LogInformation("[SignalRNotification] === MIN BET PER ROUND UPDATED EVENT ===");
+        _logger.LogInformation("[SignalRNotification] RoomCode: {RoomCode}, Previous: {Previous}, New: {New}, UpdatedBy: {UpdatedBy}",
+            roomCode, eventData.PreviousMinBet, eventData.NewMinBet, eventData.UpdatedByPlayerName);
+
+        await NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.MinBetPerRoundUpdated, eventData);
+    }
+
+    /// <summary>
+    /// Notifica el resumen de una ronda de apuestas automáticas
+    /// </summary>
+    public async Task NotifyAutoBetRoundSummaryAsync(string roomCode, AutoBetRoundSummaryEventModel eventData)
+    {
+        _logger.LogInformation("[SignalRNotification] === AUTO-BET ROUND SUMMARY EVENT ===");
+        _logger.LogInformation("[SignalRNotification] RoomCode: {RoomCode}, Round: {RoundNumber}, Duration: {Duration}ms",
+            roomCode, eventData.RoundNumber, eventData.ProcessingDuration.TotalMilliseconds);
+
+        await NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.AutoBetRoundSummary, eventData);
     }
 
     #endregion
