@@ -1,10 +1,11 @@
-﻿// BlackJack.Data/Repositories/Game/GameRoomRepository.cs - CORREGIDO PARA TRACKING CONFLICTS
+﻿// BlackJack.Data/Repositories/Game/GameRoomRepository.cs - COMPLETO CON TODOS LOS MÉTODOS
 using BlackJack.Data.Context;
 using BlackJack.Data.Repositories.Common;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 
 namespace BlackJack.Data.Repositories.Game;
@@ -15,89 +16,83 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
     {
     }
 
-    #region GameRoom Basic Operations
+    #region Basic CRUD Operations
 
-    // CORREGIDO: ThenInclude Player para obtener balance data
     public async Task<GameRoom?> GetByRoomCodeAsync(string roomCode)
     {
         return await _dbSet
             .Include(r => r.Players)
-                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
+                .ThenInclude(p => p.Player)
             .Include(r => r.Spectators)
             .AsNoTracking()
             .FirstOrDefaultAsync(r => r.RoomCode == roomCode);
     }
 
-    // CORREGIDO: ThenInclude Player para obtener balance data
-    public async Task<GameRoom?> GetRoomWithPlayersAsync(string roomCode)
-    {
-        return await _dbSet
-            .Include(r => r.Players)
-                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
-            .Include(r => r.Spectators)
-            .AsNoTracking()
-            .FirstOrDefaultAsync(r => r.RoomCode == roomCode);
-    }
-
-    // CORREGIDO: ThenInclude Player para obtener balance data
-    public async Task<GameRoom?> GetRoomWithPlayersAsync(Guid roomId)
-    {
-        return await _dbSet
-            .Include(r => r.Players)
-                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
-            .Include(r => r.Spectators)
-            .AsNoTracking()
-            .FirstOrDefaultAsync(r => r.Id == roomId);
-    }
-
-    // CORREGIDO: ThenInclude Player para obtener balance data
-    public async Task<GameRoom?> GetRoomWithPlayersReadOnlyAsync(string roomCode)
-    {
-        return await _dbSet
-            .Include(r => r.Players)
-                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
-            .Include(r => r.Spectators)
-            .AsNoTracking()
-            .FirstOrDefaultAsync(r => r.RoomCode == roomCode);
-    }
-
-    // CORREGIDO: ThenInclude Player para obtener balance data
-    public async Task<List<GameRoom>> GetActiveRoomsAsync()
+    // ✅ NUEVO: Método requerido por IGameRoomRepository y GameService
+    public async Task<GameRoom?> GetByTableIdAsync(Guid tableId)
     {
         await _context.SaveChangesAsync();
 
         return await _dbSet
-            .Where(r => r.Status == RoomStatus.WaitingForPlayers || r.Status == RoomStatus.InProgress)
             .Include(r => r.Players)
-                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
+                .ThenInclude(p => p.Player)
+            .Include(r => r.Spectators)
+            .AsNoTracking()
+            .Where(r => r.BlackjackTableId == tableId)
+            .FirstOrDefaultAsync();
+    }
+
+    public async Task<List<GameRoom>> GetAllAsync()
+    {
+        return await _dbSet
+            .Include(r => r.Players)
+                .ThenInclude(p => p.Player)
             .Include(r => r.Spectators)
             .AsNoTracking()
             .OrderBy(r => r.CreatedAt)
             .ToListAsync();
     }
 
-    // CORREGIDO: ThenInclude Player para obtener balance data
-    public async Task<List<GameRoom>> GetActiveRoomsReadOnlyAsync()
+    // ✅ NUEVO: Método requerido por IGameRoomRepository
+    public async Task<List<GameRoom>> GetAvailableRoomsAsync()
     {
-        await _context.SaveChangesAsync();
+        return await GetActiveRoomsAsync(); // Reutiliza la implementación existente
+    }
+
+    public async Task<List<GameRoom>> GetRoomsByHostAsync(PlayerId hostPlayerId)
+    {
+        var sql = @"
+            SELECT r.Id
+            FROM GameRooms r
+            WHERE r.HostPlayerId = @HostPlayerId";
+
+        var parameter = new SqlParameter("@HostPlayerId", hostPlayerId.Value);
+        var roomIds = await _context.Database.SqlQueryRaw<Guid>(sql, parameter).ToListAsync();
+
+        if (!roomIds.Any())
+            return new List<GameRoom>();
 
         return await _dbSet
-            .Where(r => r.Status == RoomStatus.WaitingForPlayers || r.Status == RoomStatus.InProgress)
+            .Where(r => roomIds.Contains(r.Id))
             .Include(r => r.Players)
-                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
+                .ThenInclude(p => p.Player)
             .Include(r => r.Spectators)
             .AsNoTracking()
-            .OrderBy(r => r.CreatedAt)
             .ToListAsync();
     }
 
-    // CORREGIDO: ThenInclude Player para obtener balance data
+    // ✅ NUEVO: Método requerido por IGameRoomRepository
+    public async Task<List<GameRoom>> GetRoomsInProgressAsync()
+    {
+        return await GetRoomsByStatusAsync(RoomStatus.InProgress);
+    }
+
     public async Task<List<GameRoom>> GetRoomsByStatusAsync(RoomStatus status)
     {
         return await _dbSet
             .Where(r => r.Status == status)
             .Include(r => r.Players)
-                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
+                .ThenInclude(p => p.Player)
             .Include(r => r.Spectators)
             .AsNoTracking()
             .OrderBy(r => r.CreatedAt)
@@ -109,12 +104,29 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return await _dbSet.AnyAsync(r => r.RoomCode == roomCode);
     }
 
-    // SOLUCIÓN DEFINITIVA: SQL directo para evitar completamente problemas de traducción de LINQ
+    // ✅ NUEVO: Método requerido por IGameRoomRepository
+    public async Task<bool> IsPlayerInAnyRoomAsync(PlayerId playerId)
+    {
+        var sql = @"
+            SELECT COUNT(1)
+            FROM RoomPlayers
+            WHERE PlayerId = @PlayerId";
+
+        using var command = _context.Database.GetDbConnection().CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add(new SqlParameter("@PlayerId", playerId.Value));
+
+        if (_context.Database.GetDbConnection().State != ConnectionState.Open)
+            await _context.Database.OpenConnectionAsync();
+
+        var result = (int)await command.ExecuteScalarAsync();
+        return result > 0;
+    }
+
     public async Task<GameRoom?> GetPlayerCurrentRoomAsync(PlayerId playerId)
     {
         await _context.SaveChangesAsync();
 
-        // APPROACH DEFINITIVO: SQL directo para evitar problemas de value object translation
         var sql = @"
             SELECT TOP(1) gr.Id 
             FROM GameRooms gr
@@ -132,48 +144,194 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
 
         var roomId = roomIds.First();
 
-        // Cargar la GameRoom completa con todas las navegaciones usando EF
         return await _dbSet
             .Include(r => r.Players)
-                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
+                .ThenInclude(p => p.Player)
             .Include(r => r.Spectators)
             .AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == roomId);
     }
 
-    // SOLUCIÓN FINAL: Conexión directa para evitar CUALQUIER problema de traducción
-    public async Task<bool> IsPlayerInRoomAsync(PlayerId playerId, string roomCode)
+    #endregion
+
+    #region Pagination and Search Methods
+
+    // ✅ NUEVO: Método requerido por IGameRoomRepository
+    public async Task<(List<GameRoom> rooms, int totalCount)> GetRoomsPagedAsync(
+        int page,
+        int pageSize,
+        string? searchTerm = null,
+        RoomStatus? status = null)
     {
-        var sql = @"
-            SELECT COUNT(1) 
-            FROM RoomPlayers rp
-            INNER JOIN GameRooms gr ON rp.GameRoomId = gr.Id
-            WHERE gr.RoomCode = @RoomCode AND rp.PlayerId = @PlayerId";
+        var query = _dbSet
+            .Include(r => r.Players)
+                .ThenInclude(p => p.Player)
+            .Include(r => r.Spectators)
+            .AsNoTracking()
+            .AsQueryable();
 
-        using var command = _context.Database.GetDbConnection().CreateCommand();
-        command.CommandText = sql;
-        command.Parameters.Add(new SqlParameter("@RoomCode", roomCode));
-        command.Parameters.Add(new SqlParameter("@PlayerId", playerId.Value));
+        // Aplicar filtros
+        if (!string.IsNullOrEmpty(searchTerm))
+        {
+            query = query.Where(r => r.Name.Contains(searchTerm) || r.RoomCode.Contains(searchTerm));
+        }
 
-        if (_context.Database.GetDbConnection().State != ConnectionState.Open)
-            await _context.Database.OpenConnectionAsync();
+        if (status.HasValue)
+        {
+            query = query.Where(r => r.Status == status.Value);
+        }
 
-        var result = (int)await command.ExecuteScalarAsync();
-        return result > 0;
+        var totalCount = await query.CountAsync();
+
+        var rooms = await query
+            .OrderBy(r => r.CreatedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+
+        return (rooms, totalCount);
     }
 
-    // CORREGIDO: ThenInclude Player para obtener balance data
-    public async Task<GameRoom?> GetRoomByTableIdAsync(Guid tableId)
+    #endregion
+
+    #region Statistics Methods
+
+    // ✅ NUEVO: Método requerido por IGameRoomRepository
+    public async Task<int> GetTotalRoomsCountAsync()
+    {
+        return await _dbSet.CountAsync();
+    }
+
+    // ✅ NUEVO: Método requerido por IGameRoomRepository
+    public async Task<int> GetActiveRoomsCountAsync()
+    {
+        return await _dbSet
+            .Where(r => r.Status == RoomStatus.WaitingForPlayers || r.Status == RoomStatus.InProgress)
+            .CountAsync();
+    }
+
+    // ✅ NUEVO: Método requerido por IGameRoomRepository
+    public async Task<Dictionary<RoomStatus, int>> GetRoomStatisticsAsync()
+    {
+        var stats = await _dbSet
+            .GroupBy(r => r.Status)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.Status, x => x.Count);
+
+        // Asegurar que todos los estados estén representados
+        foreach (RoomStatus status in Enum.GetValues<RoomStatus>())
+        {
+            if (!stats.ContainsKey(status))
+                stats[status] = 0;
+        }
+
+        return stats;
+    }
+
+    #endregion
+
+    #region Game-Specific Methods
+
+    // ✅ NUEVO: Método requerido por IGameRoomRepository
+    public async Task<List<GameRoom>> GetRoomsWithPlayersAsync()
+    {
+        return await _dbSet
+            .Where(r => r.Players.Any())
+            .Include(r => r.Players)
+                .ThenInclude(p => p.Player)
+            .Include(r => r.Spectators)
+            .AsNoTracking()
+            .ToListAsync();
+    }
+
+    // ✅ NUEVO: Método requerido por IGameRoomRepository
+    public async Task<bool> HasActiveGameAsync(Guid tableId)
+    {
+        return await _dbSet.AnyAsync(r => r.BlackjackTableId == tableId && r.Status == RoomStatus.InProgress);
+    }
+
+    #endregion
+
+    #region Transaction Methods
+
+    // ✅ NUEVO: Método requerido por IGameRoomRepository
+    public async Task<IDbContextTransaction> BeginTransactionAsync()
+    {
+        return await _context.Database.BeginTransactionAsync();
+    }
+
+    // ✅ NUEVO: Método requerido por IGameRoomRepository
+    public async Task SaveChangesAsync()
+    {
+        await _context.SaveChangesAsync();
+    }
+
+    #endregion
+
+    #region Existing Methods (mantenidos del código original)
+
+    public async Task<GameRoom?> GetRoomWithPlayersAsync(string roomCode)
+    {
+        return await _dbSet
+            .Include(r => r.Players)
+                .ThenInclude(p => p.Player)
+            .Include(r => r.Spectators)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(r => r.RoomCode == roomCode);
+    }
+
+    public async Task<GameRoom?> GetRoomWithPlayersAsync(Guid roomId)
+    {
+        return await _dbSet
+            .Include(r => r.Players)
+                .ThenInclude(p => p.Player)
+            .Include(r => r.Spectators)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == roomId);
+    }
+
+    public async Task<GameRoom?> GetRoomWithPlayersReadOnlyAsync(string roomCode)
+    {
+        return await _dbSet
+            .Include(r => r.Players)
+                .ThenInclude(p => p.Player)
+            .Include(r => r.Spectators)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(r => r.RoomCode == roomCode);
+    }
+
+    public async Task<List<GameRoom>> GetActiveRoomsAsync()
     {
         await _context.SaveChangesAsync();
 
         return await _dbSet
+            .Where(r => r.Status == RoomStatus.WaitingForPlayers || r.Status == RoomStatus.InProgress)
             .Include(r => r.Players)
-                .ThenInclude(p => p.Player) // ← NUEVO: JOIN con Player para balance
+                .ThenInclude(p => p.Player)
             .Include(r => r.Spectators)
             .AsNoTracking()
-            .Where(r => r.BlackjackTableId == tableId)
-            .FirstOrDefaultAsync();
+            .OrderBy(r => r.CreatedAt)
+            .ToListAsync();
+    }
+
+    public async Task<List<GameRoom>> GetActiveRoomsReadOnlyAsync()
+    {
+        await _context.SaveChangesAsync();
+
+        return await _dbSet
+            .Where(r => r.Status == RoomStatus.WaitingForPlayers || r.Status == RoomStatus.InProgress)
+            .Include(r => r.Players)
+                .ThenInclude(p => p.Player)
+            .Include(r => r.Spectators)
+            .AsNoTracking()
+            .OrderBy(r => r.CreatedAt)
+            .ToListAsync();
+    }
+
+    // DEPRECATED: Usar GetByTableIdAsync en su lugar
+    public async Task<GameRoom?> GetRoomByTableIdAsync(Guid tableId)
+    {
+        return await GetByTableIdAsync(tableId); // Redirige al método estándar
     }
 
     public async Task<GameRoom?> RefreshRoomAsync(GameRoom room)
@@ -185,7 +343,6 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
             await entry.Collection(r => r.Players).LoadAsync();
             await entry.Collection(r => r.Spectators).LoadAsync();
 
-            // NUEVO: También recargar datos de Player para balance actualizado
             foreach (var player in room.Players)
             {
                 await _context.Entry(player).Reference(rp => rp.Player).LoadAsync();
@@ -201,14 +358,12 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
 
     #endregion
 
-    #region RoomPlayer and SeatPosition Operations
+    #region RoomPlayer Operations
 
-    // CORREGIDO: SQL directo para evitar problemas de traducción LINQ
     public async Task<RoomPlayer?> GetRoomPlayerAsync(string roomCode, PlayerId playerId)
     {
         await _context.SaveChangesAsync();
 
-        // SOLUCIÓN: SQL directo para obtener el RoomPlayer ID
         var sql = @"
             SELECT rp.Id
             FROM RoomPlayers rp
@@ -230,36 +385,50 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
 
         var roomPlayerId = roomPlayerIds.First();
 
-        // Cargar el RoomPlayer completo con navegaciones usando EF
         return await _context.Set<RoomPlayer>()
             .Include(rp => rp.Player)
             .AsNoTracking()
             .FirstOrDefaultAsync(rp => rp.Id == roomPlayerId);
     }
 
-    // FIX DEFINITIVO: UpdateRoomPlayerAsync completamente aislado
     public async Task UpdateRoomPlayerAsync(RoomPlayer roomPlayer)
     {
         roomPlayer.UpdatedAt = DateTime.UtcNow;
 
-        // CAMBIO CRÍTICO: Actualización completamente independiente sin tocar relaciones
         var existingEntry = _context.Entry(roomPlayer);
 
-        // Si la entidad está detached, la adjuntamos y marcamos como modificada
         if (existingEntry.State == EntityState.Detached)
         {
             _context.Set<RoomPlayer>().Update(roomPlayer);
         }
         else
         {
-            // Si ya está siendo tracked, solo marcamos como modificada
             existingEntry.State = EntityState.Modified;
         }
 
         await _context.SaveChangesAsync();
     }
 
-    // SOLUCIÓN FINAL: Conexión directa para evitar CUALQUIER problema de traducción
+    public async Task<bool> IsPlayerInRoomAsync(PlayerId playerId, string roomCode)
+    {
+        var sql = @"
+            SELECT COUNT(1) 
+            FROM RoomPlayers rp
+            INNER JOIN GameRooms gr ON rp.GameRoomId = gr.Id
+            WHERE gr.RoomCode = @RoomCode AND rp.PlayerId = @PlayerId";
+
+        using var command = _context.Database.GetDbConnection().CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add(new SqlParameter("@RoomCode", roomCode));
+        command.Parameters.Add(new SqlParameter("@PlayerId", playerId.Value));
+
+        if (_context.Database.GetDbConnection().State != ConnectionState.Open)
+            await _context.Database.OpenConnectionAsync();
+
+        var result = (int)await command.ExecuteScalarAsync();
+        return result > 0;
+    }
+
     public async Task<bool> IsSeatOccupiedAsync(string roomCode, int seatPosition)
     {
         var sql = @"
@@ -280,12 +449,10 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return result > 0;
     }
 
-    // CORREGIDO: SQL directo para evitar problemas de traducción LINQ
     public async Task<RoomPlayer?> GetPlayerInSeatAsync(string roomCode, int seatPosition)
     {
         await _context.SaveChangesAsync();
 
-        // SOLUCIÓN: SQL directo para obtener el RoomPlayer ID
         var sql = @"
             SELECT rp.Id
             FROM RoomPlayers rp
@@ -307,19 +474,16 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
 
         var roomPlayerId = roomPlayerIds.First();
 
-        // Cargar el RoomPlayer completo con navegaciones usando EF
         return await _context.Set<RoomPlayer>()
             .Include(rp => rp.Player)
             .AsNoTracking()
             .FirstOrDefaultAsync(rp => rp.Id == roomPlayerId);
     }
 
-    // CORREGIDO: SQL directo para evitar problemas de traducción LINQ
     public async Task<Dictionary<Guid, int>> GetSeatPositionsAsync(string roomCode)
     {
         await _context.SaveChangesAsync();
 
-        // SOLUCIÓN SIMPLE: SQL directo con múltiples consultas
         var sql = @"
             SELECT rp.PlayerId, rp.SeatPosition
             FROM RoomPlayers rp
@@ -328,7 +492,6 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
 
         var parameter = new SqlParameter("@RoomCode", roomCode);
 
-        // Ejecutar SQL y procesar resultados manualmente
         var connection = _context.Database.GetDbConnection();
         var command = connection.CreateCommand();
         command.CommandText = sql;
@@ -359,10 +522,8 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return result;
     }
 
-    // SOLUCIÓN DEFINITIVA: FreeSeatAsync con SQL directo para evitar EF Collection issues
     public async Task<bool> FreeSeatAsync(string roomCode, PlayerId playerId)
     {
-        // APPROACH RADICAL: SQL directo para evitar completamente EF change tracking
         var sql = @"
             UPDATE RoomPlayers 
             SET SeatPosition = NULL, UpdatedAt = @UpdatedAt
@@ -381,7 +542,6 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return affectedRows > 0;
     }
 
-    // SOLUCIÓN FINAL: Conexión directa para evitar CUALQUIER problema de traducción
     public async Task<bool> IsPlayerSeatedAsync(string roomCode, PlayerId playerId)
     {
         var sql = @"
@@ -404,12 +564,8 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
 
     #endregion
 
-    #region NUEVO: Limpieza de Datos - SOLUCIÓN AL PROBLEMA CRÍTICO
+    #region Data Cleanup Methods
 
-    /// <summary>
-    /// MÉTODO CRÍTICO: Elimina completamente un RoomPlayer de la base de datos
-    /// Resuelve el problema de "datos fantasma" que causaba "Ya estás en otra sala"
-    /// </summary>
     public async Task<bool> RemoveRoomPlayerAsync(string roomCode, PlayerId playerId)
     {
         var sql = @"
@@ -427,10 +583,6 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return affectedRows > 0;
     }
 
-    /// <summary>
-    /// MÉTODO DE LIMPIEZA COMPLETA: Elimina TODOS los registros de un jugador de TODAS las salas
-    /// Método de emergencia para casos extremos
-    /// </summary>
     public async Task<int> ForceCleanupPlayerFromAllRoomsAsync(PlayerId playerId)
     {
         var sql = @"
@@ -441,9 +593,6 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         return await _context.Database.ExecuteSqlRawAsync(sql, parameter);
     }
 
-    /// <summary>
-    /// DIAGNÓSTICO: Obtiene todas las salas donde un jugador tiene registros huérfanos
-    /// </summary>
     public async Task<List<string>> GetPlayerOrphanRoomsAsync(PlayerId playerId)
     {
         var sql = @"
@@ -459,9 +608,6 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
             .ToListAsync();
     }
 
-    /// <summary>
-    /// LIMPIEZA AUTOMÁTICA: Elimina salas vacías (sin jugadores)
-    /// </summary>
     public async Task<int> CleanupEmptyRoomsAsync()
     {
         var sql = @"
@@ -470,14 +616,14 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
                 SELECT DISTINCT GameRoomId 
                 FROM RoomPlayers
             )
-            AND Status IN (0, 2)"; // WaitingForPlayers o Finished
+            AND Status IN (0, 2)";
 
         return await _context.Database.ExecuteSqlRawAsync(sql);
     }
 
     #endregion
 
-    #region Override Methods with Immediate Persistence
+    #region Override Methods with Improved Tracking Handling
 
     public override async Task AddAsync(GameRoom entity)
     {
@@ -485,7 +631,6 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         await _context.SaveChangesAsync();
     }
 
-    // *** FIX CRÍTICO: MÉTODO UpdateAsync CORREGIDO PARA EVITAR TRACKING CONFLICTS ***
     public override async Task UpdateAsync(GameRoom entity)
     {
         var maxRetries = 3;
@@ -495,7 +640,6 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         {
             try
             {
-                // PASO 1: Desconectar cualquier entidad con el mismo ID que esté siendo tracked
                 var trackedEntries = _context.ChangeTracker.Entries<GameRoom>()
                     .Where(e => e.Entity.Id == entity.Id)
                     .ToList();
@@ -506,11 +650,7 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
                     Console.WriteLine($"[GameRoomRepository] Detached existing tracked entity for room {entity.RoomCode}");
                 }
 
-                // PASO 2: Usar Update() en lugar de Attach() para evitar conflictos
-              
                 _context.Update(entity);
-
-                // PASO 3: Guardar cambios
                 await _context.SaveChangesAsync();
 
                 Console.WriteLine($"[GameRoomRepository] Successfully updated room {entity.RoomCode} to status {entity.Status}");
@@ -527,10 +667,9 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
                     throw;
                 }
 
-                // Recargar la entidad desde la base de datos
                 var entry = _context.Entry(entity);
                 await entry.ReloadAsync();
-                await Task.Delay(100 * retryCount); // Backoff exponencial
+                await Task.Delay(100 * retryCount);
 
                 Console.WriteLine($"[GameRoomRepository] Concurrency conflict updating room {entity.RoomCode}, retry {retryCount}/{maxRetries}");
             }
@@ -542,13 +681,11 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
                 {
                     Console.WriteLine($"[GameRoomRepository] Max retries ({maxRetries}) reached for tracking conflict in room {entity.RoomCode}");
 
-                    // FALLBACK RADICAL: Usar SQL directo
                     Console.WriteLine($"[GameRoomRepository] Falling back to SQL direct update for room {entity.RoomCode}");
                     await UpdateRoomStatusDirectAsync(entity.Id, entity.Status);
                     break;
                 }
 
-                // Limpiar completamente el ChangeTracker y reintentar
                 _context.ChangeTracker.Clear();
                 await Task.Delay(200 * retryCount);
 
@@ -557,9 +694,6 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         }
     }
 
-    /// <summary>
-    /// FALLBACK: Actualización directa por SQL cuando EF falla completamente
-    /// </summary>
     private async Task UpdateRoomStatusDirectAsync(Guid roomId, RoomStatus status)
     {
         var sql = @"

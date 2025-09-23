@@ -1,4 +1,4 @@
-﻿// Services/Game/GameService.cs - COMPLETO ACTUALIZADO - Eliminada llamada deprecated al DealerService
+﻿// Services/Game/GameService.cs - COMPLETO CORREGIDO SIN ERRORES TIPOGRÁFICOS
 using System;
 using System.Linq;
 using System.Threading.Tasks;
@@ -24,11 +24,17 @@ namespace BlackJack.Services.Game
         private readonly IDealerService _dealerService;
         private readonly IHandRepository _handRepository;
         private readonly IHandEvaluationService _handEvaluationService;
+        private readonly IGameRoomRepository _gameRoomRepository;
         private readonly ILogger<GameService> _logger;
+
+        // NUEVO: Constantes del juego
+        private const int MAX_ROUNDS_PER_GAME = 5;
+        private const int MIN_PLAYERS_TO_START = 1;
 
         public GameService(ITableRepository tables, IPlayerRepository players, IUserService userService,
             IDealerService dealerService, IHandRepository handRepository,
-            IHandEvaluationService handEvaluationService, ILogger<GameService> logger)
+            IHandEvaluationService handEvaluationService, IGameRoomRepository gameRoomRepository,
+            ILogger<GameService> logger)
         {
             _tables = tables;
             _players = players;
@@ -36,6 +42,7 @@ namespace BlackJack.Services.Game
             _dealerService = dealerService;
             _handRepository = handRepository;
             _handEvaluationService = handEvaluationService;
+            _gameRoomRepository = gameRoomRepository;
             _logger = logger;
         }
 
@@ -103,30 +110,24 @@ namespace BlackJack.Services.Game
 
         public async Task<Result> JoinTableAsync(Guid tableId, PlayerId playerId, int seatPosition)
         {
-            // DEPRECATED: Ya no transferimos jugadores a Seats
-            // Los jugadores se manejan a través de RoomPlayers
             _logger.LogWarning("[GameService] JoinTableAsync called but is deprecated. Players are managed through RoomPlayers");
             return Result.Success();
         }
 
         public async Task<Result> LeaveTableAsync(Guid tableId, PlayerId playerId)
         {
-            // DEPRECATED: Ya no removemos jugadores de Seats
-            // Los jugadores se manejan a través de RoomPlayers
             _logger.LogWarning("[GameService] LeaveTableAsync called but is deprecated. Players are managed through RoomPlayers");
             return Result.Success();
         }
 
         public async Task<Result<bool>> IsPlayerSeatedAsync(Guid tableId, PlayerId playerId)
         {
-            // Este método ahora debería verificar en RoomPlayers, no en Seats
             _logger.LogWarning("[GameService] IsPlayerSeatedAsync needs to check RoomPlayers, not Seats");
-            return Result<bool>.Success(true); // Por ahora retornamos true
+            return Result<bool>.Success(true);
         }
 
         public async Task<Result<int?>> GetPlayerSeatPositionAsync(Guid tableId, PlayerId playerId)
         {
-            // Este método ahora debería obtener la posición de RoomPlayers
             _logger.LogWarning("[GameService] GetPlayerSeatPositionAsync needs to check RoomPlayers, not Seats");
             return Result<int?>.Success(null);
         }
@@ -203,6 +204,14 @@ namespace BlackJack.Services.Game
                     return Result.Failure("Table not found");
                 }
 
+                // NUEVO: Verificar límite de rondas
+                if (table.RoundNumber >= MAX_ROUNDS_PER_GAME)
+                {
+                    await transaction.RollbackAsync();
+                    _logger.LogInformation("[GameService] Game completed - reached maximum {MaxRounds} rounds", MAX_ROUNDS_PER_GAME);
+                    return Result.Failure($"Juego completado - máximo {MAX_ROUNDS_PER_GAME} rondas alcanzadas");
+                }
+
                 if (table.Status == GameStatus.InProgress)
                 {
                     await transaction.RollbackAsync();
@@ -210,17 +219,29 @@ namespace BlackJack.Services.Game
                     return Result.Success();
                 }
 
+                // NUEVO: Resetear turnos de jugadores para nueva ronda
+                var room = await _gameRoomRepository.GetByTableIdAsync(tableId);
+                if (room != null)
+                {
+                    foreach (var player in room.SeatedPlayers)
+                    {
+                        player.ResetTurn();
+                    }
+                    // Establecer turno del primer jugador
+                    if (room.SeatedPlayers.Any())
+                    {
+                        room.SetCurrentPlayer(room.SeatedPlayers.First().PlayerId);
+                    }
+                    await _gameRoomRepository.UpdateAsync(room);
+                }
+
                 // Iniciar la ronda
                 table.ForceStartRound();
                 await _tables.UpdateAsync(table);
                 await transaction.CommitAsync();
 
-                // NOTA: Ya NO llamamos _dealerService.DealInitialCardsAsync(table) aquí
-                // porque ese método está deprecated y usa Seats.
-                // La lógica de repartir cartas ahora se hace en GameControlHub
-                // usando el nuevo método _dealerService.DealInitialCardsAsync(table, seatedPlayers)
-
-                _logger.LogInformation("[GameService] Round started successfully - cards will be dealt by GameControlHub");
+                _logger.LogInformation("[GameService] Round {RoundNumber}/{MaxRounds} started successfully - cards will be dealt by GameControlHub",
+                    table.RoundNumber, MAX_ROUNDS_PER_GAME);
                 return Result.Success();
             }
             catch (Exception ex)
@@ -239,15 +260,6 @@ namespace BlackJack.Services.Game
 
                 using var transaction = await _tables.BeginTransactionAsync();
 
-                // Obtener el jugador directamente
-                var player = await _players.GetByPlayerIdAsync(playerId);
-                if (player == null)
-                {
-                    _logger.LogError("[GameService] Player {PlayerId} not found", playerId);
-                    await transaction.RollbackAsync();
-                    return Result.Failure("Player not found");
-                }
-
                 // Obtener la mesa para el deck y validación de estado
                 var table = await _tables.GetByIdAsync(tableId);
                 if (table == null)
@@ -264,7 +276,47 @@ namespace BlackJack.Services.Game
                     return Result.Failure("La ronda no está en progreso");
                 }
 
-                _logger.LogInformation("[GameService] Processing {Action} for player {Name}", action, player.Name);
+                // ✅ OBTENER LA SALA PARA VALIDACIÓN DE TURNOS
+                var room = await _gameRoomRepository.GetByTableIdAsync(tableId);
+                if (room == null)
+                {
+                    _logger.LogError("[GameService] Room not found for table {TableId}", tableId);
+                    await transaction.RollbackAsync();
+                    return Result.Failure("Sala no encontrada");
+                }
+
+                // ✅ VALIDACIÓN DE TURNO CRÍTICA
+                if (!room.IsPlayerTurn(playerId))
+                {
+                    var currentPlayer = room.CurrentPlayer;
+                    _logger.LogWarning("[GameService] Player {PlayerId} attempted action but it's {CurrentPlayer}'s turn",
+                        playerId, currentPlayer?.Name ?? "unknown");
+                    await transaction.RollbackAsync();
+                    return Result.Failure($"No es tu turno. Es el turno de {currentPlayer?.Name ?? "otro jugador"}");
+                }
+
+                // Obtener el jugador directamente
+                var player = await _players.GetByPlayerIdAsync(playerId);
+                if (player == null)
+                {
+                    _logger.LogError("[GameService] Player {PlayerId} not found", playerId);
+                    await transaction.RollbackAsync();
+                    return Result.Failure("Player not found");
+                }
+
+                // Obtener RoomPlayer para marcar turno jugado
+                var roomPlayer = room.GetPlayer(playerId);
+                if (roomPlayer == null)
+                {
+                    _logger.LogError("[GameService] RoomPlayer {PlayerId} not found in room", playerId);
+                    await transaction.RollbackAsync();
+                    return Result.Failure("Jugador no encontrado en la sala");
+                }
+
+                _logger.LogInformation("[GameService] Processing {Action} for player {Name} (turn: {CurrentIndex})",
+                    action, player.Name, room.CurrentPlayerIndex);
+
+                bool shouldAdvanceTurn = false;
 
                 switch (action)
                 {
@@ -275,6 +327,15 @@ namespace BlackJack.Services.Game
                             await transaction.RollbackAsync();
                             return hitResult;
                         }
+
+                        // Verificar si el jugador se pasó (bust) - si es así, avanzar turno
+                        var playerHand = await GetPlayerActiveHand(player);
+                        if (playerHand != null && playerHand.IsBust)
+                        {
+                            shouldAdvanceTurn = true;
+                            roomPlayer.MarkTurnPlayed();
+                            _logger.LogInformation("[GameService] Player {Name} busted, advancing turn", player.Name);
+                        }
                         break;
 
                     case PlayerAction.Stand:
@@ -284,6 +345,11 @@ namespace BlackJack.Services.Game
                             await transaction.RollbackAsync();
                             return standResult;
                         }
+
+                        // Stand siempre avanza el turno
+                        shouldAdvanceTurn = true;
+                        roomPlayer.MarkTurnPlayed();
+                        _logger.LogInformation("[GameService] Player {Name} stands, advancing turn", player.Name);
                         break;
 
                     case PlayerAction.Double:
@@ -303,8 +369,22 @@ namespace BlackJack.Services.Game
                         return Result.Failure("Acción no válida");
                 }
 
+                // Actualizar entidades
                 await _players.UpdateAsync(player);
                 await _tables.UpdateAsync(table);
+
+                // ✅ AVANZAR TURNO SI ES NECESARIO
+                if (shouldAdvanceTurn)
+                {
+                    var advanceResult = await AdvanceToNextTurn(room, table);
+                    if (!advanceResult.IsSuccess)
+                    {
+                        // Log pero no fallar - el juego puede continuar
+                        _logger.LogWarning("[GameService] Failed to advance turn: {Error}", advanceResult.Error);
+                    }
+                }
+
+                await _gameRoomRepository.UpdateAsync(room);
                 await transaction.CommitAsync();
 
                 _logger.LogInformation("[GameService] Action {Action} completed successfully for player {PlayerId}",
@@ -346,9 +426,24 @@ namespace BlackJack.Services.Game
                     var dealerHand = await _handRepository.GetByIdAsync(table.DealerHandId.Value);
                     if (dealerHand != null && !dealerHand.IsComplete)
                     {
-                        // Dealer juega su mano
                         var finalDealerHand = _dealerService.PlayDealerHand(dealerHand, table.Deck);
                         await _handRepository.UpdateAsync(finalDealerHand);
+                    }
+                }
+
+                // ✅ NUEVO: Verificar si es la última ronda
+                var isLastRound = table.RoundNumber >= MAX_ROUNDS_PER_GAME;
+
+                if (isLastRound)
+                {
+                    _logger.LogInformation("[GameService] Final round ({RoundNumber}/{MaxRounds}) completed, determining winner",
+                        table.RoundNumber, MAX_ROUNDS_PER_GAME);
+
+                    // Determinar ganador del juego completo
+                    var winnerResult = await DetermineGameWinner(tableId);
+                    if (winnerResult.IsSuccess)
+                    {
+                        _logger.LogInformation("[GameService] Game winner determined: {Winner}", winnerResult.Value ?? "Empate");
                     }
                 }
 
@@ -357,7 +452,9 @@ namespace BlackJack.Services.Game
                 await _tables.UpdateAsync(table);
                 await transaction.CommitAsync();
 
-                _logger.LogInformation("[GameService] Round ended successfully for table {TableId}", tableId);
+                _logger.LogInformation("[GameService] Round {RoundNumber} ended successfully for table {TableId}{GameStatus}",
+                    table.RoundNumber, tableId, isLastRound ? " (GAME COMPLETED)" : "");
+
                 return Result.Success();
             }
             catch (Exception ex)
@@ -384,6 +481,14 @@ namespace BlackJack.Services.Game
                 {
                     await transaction.RollbackAsync();
                     return Result.Failure("Table not found");
+                }
+
+                // NUEVO: Reset también la sala asociada
+                var room = await _gameRoomRepository.GetByTableIdAsync(tableId);
+                if (room != null)
+                {
+                    room.ResetForNewGame();
+                    await _gameRoomRepository.UpdateAsync(room);
                 }
 
                 table.Reset();
@@ -415,11 +520,8 @@ namespace BlackJack.Services.Game
                     return Result.Failure("Table not found");
                 }
 
-                // La mesa no tiene método Pause, usamos SetStatus si existe o marcamos como Paused
                 if (table.Status == GameStatus.InProgress)
                 {
-                    // Pausar el juego actual
-                    // Nota: Necesitaría agregar estado Paused al enum GameStatus si no existe
                     _logger.LogInformation("[GameService] Table {TableId} paused", tableId);
                 }
 
@@ -531,6 +633,126 @@ namespace BlackJack.Services.Game
                 player.Name, playerHand.Value);
 
             return Result.Success();
+        }
+
+        private async Task<Hand?> GetPlayerActiveHand(Player player)
+        {
+            if (!player.HandIds.Any())
+                return null;
+
+            var handId = player.HandIds.First();
+            return await _handRepository.GetByIdAsync(handId);
+        }
+
+        // ✅ NUEVO: Avanzar turno y verificar si todos han jugado
+        private async Task<Result> AdvanceToNextTurn(GameRoom room, BlackjackTable table)
+        {
+            try
+            {
+                var seatedPlayers = room.SeatedPlayers.ToList();
+                var currentPlayerIndex = room.CurrentPlayerIndex;
+
+                _logger.LogInformation("[GameService] Advancing turn from player {CurrentIndex}/{Total}",
+                    currentPlayerIndex, seatedPlayers.Count);
+
+                // Verificar si todos los jugadores han jugado
+                var allPlayersPlayed = seatedPlayers.All(p => p.HasPlayedTurn);
+
+                if (allPlayersPlayed)
+                {
+                    _logger.LogInformation("[GameService] All players have played their turn, ending round");
+
+                    // Todos han jugado, terminar ronda automáticamente
+                    await EndRoundAsync(table.Id);
+
+                    // Resetear turnos para siguiente ronda si no es la última
+                    if (table.RoundNumber < MAX_ROUNDS_PER_GAME)
+                    {
+                        foreach (var player in seatedPlayers)
+                        {
+                            player.ResetTurn();
+                        }
+                        room.SetCurrentPlayer(seatedPlayers.First().PlayerId);
+                        _logger.LogInformation("[GameService] Turns reset for next round");
+                    }
+                    else
+                    {
+                        _logger.LogInformation("[GameService] Game completed after {MaxRounds} rounds", MAX_ROUNDS_PER_GAME);
+                    }
+                }
+                else
+                {
+                    // Avanzar al siguiente jugador
+                    room.NextTurn();
+                    _logger.LogInformation("[GameService] Turn advanced to player {NewIndex} ({PlayerName})",
+                        room.CurrentPlayerIndex, room.CurrentPlayer?.Name ?? "unknown");
+                }
+
+                return Result.Success();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[GameService] Error advancing turn: {Message}", ex.Message);
+                return Result.Failure($"Error advancing turn: {ex.Message}");
+            }
+        }
+
+        // ✅ NUEVO: Determinar ganador del juego completo
+        private async Task<Result<string?>> DetermineGameWinner(Guid tableId)
+        {
+            try
+            {
+                var room = await _gameRoomRepository.GetByTableIdAsync(tableId);
+                if (room == null)
+                {
+                    return Result<string?>.Failure("Room not found");
+                }
+
+                var seatedPlayers = room.SeatedPlayers.ToList();
+                var playerScores = new Dictionary<string, int>();
+
+                // Calcular puntuación de cada jugador (simplificado: balance final)
+                foreach (var roomPlayer in seatedPlayers)
+                {
+                    var player = await _players.GetByPlayerIdAsync(roomPlayer.PlayerId);
+                    if (player != null)
+                    {
+                        // Por ahora, usamos balance como indicador de rendimiento
+                        // En un sistema completo, rastrearías victorias/derrotas por ronda
+                        var score = (int)player.Balance.Amount;
+                        playerScores[player.Name] = score;
+
+                        _logger.LogInformation("[GameService] Player {Name} final score: {Score}",
+                            player.Name, score);
+                    }
+                }
+
+                if (!playerScores.Any())
+                {
+                    return Result<string?>.Success(null);
+                }
+
+                // Encontrar el jugador con mayor puntuación
+                var winner = playerScores.OrderByDescending(kvp => kvp.Value).First();
+                var hasMultipleWinners = playerScores.Values.Count(score => score == winner.Value) > 1;
+
+                if (hasMultipleWinners)
+                {
+                    var winners = playerScores.Where(kvp => kvp.Value == winner.Value).Select(kvp => kvp.Key);
+                    _logger.LogInformation("[GameService] Game ended in tie between: {Winners}", string.Join(", ", winners));
+                    return Result<string?>.Success(null); // Empate
+                }
+                else
+                {
+                    _logger.LogInformation("[GameService] Game winner: {Winner} with score {Score}", winner.Key, winner.Value);
+                    return Result<string?>.Success(winner.Key);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[GameService] Error determining game winner: {Message}", ex.Message);
+                return Result<string?>.Failure($"Error determining winner: {ex.Message}");
+            }
         }
 
         #endregion

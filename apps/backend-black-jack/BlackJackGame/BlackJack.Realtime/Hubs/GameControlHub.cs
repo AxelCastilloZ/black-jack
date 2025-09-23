@@ -1,4 +1,4 @@
-// BlackJack.Realtime/Hubs/GameControlHub.cs - ARCHIVO COMPLETO CORREGIDO
+// BlackJack.Realtime/Hubs/GameControlHub.cs - CON INFORMACIÓN DE TURNOS COMPLETA
 using BlackJack.Data.Repositories.Game;
 using BlackJack.Domain.Enums;
 using BlackJack.Domain.Models.Game;
@@ -294,6 +294,14 @@ public class GameControlHub : BaseHub
                 return;
             }
 
+            // ✅ NUEVA VALIDACIÓN: Verificar turno antes de permitir acción
+            if (!room.IsPlayerTurn(playerId))
+            {
+                var currentPlayerName = room.CurrentPlayer?.Name ?? "otro jugador";
+                await SendErrorAsync($"No es tu turno. Es el turno de {currentPlayerName}");
+                return;
+            }
+
             var actionResult = await _gameService.PlayerActionAsync(tableId, playerId, PlayerAction.Hit);
 
             if (actionResult.IsSuccess)
@@ -350,6 +358,14 @@ public class GameControlHub : BaseHub
             if (!room.IsPlayerInRoom(playerId))
             {
                 await SendErrorAsync("No estás en esta sala");
+                return;
+            }
+
+            // ✅ NUEVA VALIDACIÓN: Verificar turno antes de permitir acción
+            if (!room.IsPlayerTurn(playerId))
+            {
+                var currentPlayerName = room.CurrentPlayer?.Name ?? "otro jugador";
+                await SendErrorAsync($"No es tu turno. Es el turno de {currentPlayerName}");
                 return;
             }
 
@@ -436,6 +452,7 @@ public class GameControlHub : BaseHub
         }
     }
 
+    // ✅ MÉTODO CRÍTICO ACTUALIZADO: BuildGameStatePayload CON INFORMACIÓN DE TURNOS
     private async Task<object> BuildGameStatePayload(string roomCode, BlackjackTable table)
     {
         _logger.LogInformation("[GameControlHub] Building game state payload for room {RoomCode}", roomCode);
@@ -510,6 +527,10 @@ public class GameControlHub : BaseHub
                     name = roomPlayer.Name,
                     seat = roomPlayer.SeatPosition!.Value,
                     hand = (object?)null,
+                    // ✅ NUEVA INFORMACIÓN DE TURNOS
+                    isCurrentTurn = false,
+                    canMakeActions = false,
+                    availableActions = new string[] { },
                     debug = "player_entity_not_found"
                 });
                 continue;
@@ -550,23 +571,68 @@ public class GameControlHub : BaseHub
                 _logger.LogWarning("[GameControlHub] Player {Name} has no HandIds", player.Name);
             }
 
+            // ✅ CALCULAR INFORMACIÓN DE TURNOS Y ACCIONES
+            var isCurrentTurn = room.IsPlayerTurn(roomPlayer.PlayerId);
+            var canMakeActions = isCurrentTurn &&
+                                 room.Status == RoomStatus.InProgress &&
+                                 table.Status == GameStatus.InProgress &&
+                                 handPayload != null;
+
+            // Determinar acciones disponibles
+            var availableActions = new List<string>();
+            if (canMakeActions && handPayload != null)
+            {
+                // Siempre se puede hacer Hit o Stand si es tu turno y tienes una mano activa
+                availableActions.Add("hit");
+                availableActions.Add("stand");
+
+                // TODO: Agregar lógica para Double, Split, etc. cuando se implementen
+            }
+
+            _logger.LogInformation("[GameControlHub] Player {Name}: isCurrentTurn={IsCurrentTurn}, canMakeActions={CanMakeActions}, actions={Actions}",
+                player.Name, isCurrentTurn, canMakeActions, string.Join(",", availableActions));
+
             playersPayload.Add(new
             {
                 playerId = roomPlayer.PlayerId.Value,
                 name = roomPlayer.Name,
                 seat = roomPlayer.SeatPosition!.Value,
-                hand = handPayload
+                hand = handPayload,
+                // ✅ INFORMACIÓN DE TURNOS CRÍTICA PARA EL FRONTEND
+                isCurrentTurn = isCurrentTurn,
+                canMakeActions = canMakeActions,
+                availableActions = availableActions.ToArray()
             });
         }
 
-        _logger.LogInformation("[GameControlHub] Built game state with {Count} players", playersPayload.Count);
+        // ✅ INFORMACIÓN GLOBAL DE TURNOS
+        var currentPlayerTurn = room.CurrentPlayer?.PlayerId.Value;
+        var gameCanMakeActions = room.Status == RoomStatus.InProgress && table.Status == GameStatus.InProgress;
+        var roundInfo = new
+        {
+            current = table.RoundNumber,
+            maximum = 5 // MAX_ROUNDS_PER_GAME constante
+        };
+
+        _logger.LogInformation("[GameControlHub] Built game state with {Count} players, currentTurn: {CurrentTurn}, round: {Round}/5",
+            playersPayload.Count, currentPlayerTurn, table.RoundNumber);
 
         return new
         {
             roomCode = roomCode,
             status = table.Status.ToString(),
             dealerHand = dealerPayload,
-            players = playersPayload
+            players = playersPayload,
+            // ✅ INFORMACIÓN DE TURNOS GLOBAL PARA EL FRONTEND
+            currentPlayerTurn = currentPlayerTurn,
+            canMakeActions = gameCanMakeActions,
+            roundInfo = roundInfo,
+            gameInfo = new
+            {
+                maxRounds = 5,
+                currentRound = table.RoundNumber,
+                isLastRound = table.RoundNumber >= 5
+            }
         };
     }
 
