@@ -121,8 +121,8 @@ app.MapHealthChecks("/api/health").AllowAnonymous();
 Console.WriteLine($"[STARTUP-DEBUG] Mapping SignalR hubs (3 HUBS ACTIVOS)...");
 // ARQUITECTURA DE 3 HUBS DIVIDIDOS POR FUNCIONALIDAD
 app.MapHub<LobbyHub>("/hubs/lobby");                // Hub de navegación 
-app.MapHub<GameRoomHub>("/hubs/game-room");         // Hub básico - salas, asientos, espectadores, conexión
-app.MapHub<GameControlHub>("/hubs/game-control");   // Hub avanzado - control de juego, auto-betting, estadísticas
+app.MapHub<GameRoomHub>("/hubs/gameroom");
+app.MapHub<GameControlHub>("/hubs/gamecontrol"); // Hub avanzado - control de juego, auto-betting, estadísticas
 
 Console.WriteLine($"[STARTUP-DEBUG] 3 SignalR hubs mapped successfully:");
 Console.WriteLine($"[STARTUP-DEBUG] - LobbyHub: /hubs/lobby (navegación y lobby)");
@@ -320,8 +320,8 @@ if (app.Environment.IsDevelopment())
             ExpectedEndpoints = new[]
             {
                 "/hubs/lobby",
-                "/hubs/game-room",
-                "/hubs/game-control"
+                "/hubs/gameroom",
+                "/hubs/gamecontrol"
             },
             Configuration = "3-Hub Architecture - LobbyHub + GameRoomHub + GameControlHub",
             Timestamp = DateTime.UtcNow

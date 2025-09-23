@@ -1,4 +1,4 @@
-﻿// LobbyHub.cs - En BlackJack.Realtime/Hubs/ - SIN AUTENTICACIÓN
+﻿// BlackJack.Realtime/Hubs/LobbyHub.cs - Lobby y lista de salas
 using BlackJack.Realtime.Models;
 using BlackJack.Realtime.Services;
 using BlackJack.Services.Game;
@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 
 namespace BlackJack.Realtime.Hubs;
+
 [AllowAnonymous]
 public class LobbyHub : BaseHub
 {
@@ -36,7 +37,9 @@ public class LobbyHub : BaseHub
 
         if (playerId != null && userName != null)
         {
-            // Agregar al grupo del lobby automáticamente
+            await _connectionManager.AddConnectionAsync(Context.ConnectionId, playerId, userName);
+
+            // Unirse al grupo del lobby automáticamente
             await JoinGroupAsync(HubMethodNames.Groups.LobbyGroup);
             await _connectionManager.AddToGroupAsync(Context.ConnectionId, HubMethodNames.Groups.LobbyGroup);
 
@@ -47,15 +50,15 @@ public class LobbyHub : BaseHub
         }
         else
         {
-            await SendErrorAsync("Error generando ID de jugador");
+            await SendErrorAsync("Error de autenticación en lobby");
         }
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        // Remover del grupo del lobby
         await LeaveGroupAsync(HubMethodNames.Groups.LobbyGroup);
         await _connectionManager.RemoveFromGroupAsync(Context.ConnectionId, HubMethodNames.Groups.LobbyGroup);
+        await _connectionManager.RemoveConnectionAsync(Context.ConnectionId);
 
         await base.OnDisconnectedAsync(exception);
     }
@@ -71,7 +74,7 @@ public class LobbyHub : BaseHub
             var playerId = GetCurrentPlayerId();
             if (playerId == null)
             {
-                await SendErrorAsync("Error generando ID de jugador");
+                await SendErrorAsync("Error de autenticación");
                 return;
             }
 
@@ -123,24 +126,14 @@ public class LobbyHub : BaseHub
     {
         try
         {
-            _logger.LogInformation("[LobbyHub] Refreshing room list for connection {ConnectionId}", Context.ConnectionId);
+            _logger.LogInformation("[LobbyHub] Refreshing room list for connection {ConnectionId}",
+                Context.ConnectionId);
             await SendActiveRoomsToClient();
         }
         catch (Exception ex)
         {
             await HandleExceptionAsync(ex, "RefreshRooms");
         }
-    }
-
-    public async Task TestConnection()
-    {
-        await Clients.Caller.SendAsync("TestResponse", new
-        {
-            message = "LobbyHub funcionando correctamente",
-            timestamp = DateTime.UtcNow,
-            connectionId = Context.ConnectionId,
-            playerId = GetCurrentPlayerId()?.Value
-        });
     }
 
     #endregion
@@ -210,6 +203,52 @@ public class LobbyHub : BaseHub
         }
     }
 
+    public async Task QuickJoinTable(string tableId)
+    {
+        try
+        {
+            var playerId = GetCurrentPlayerId();
+            var userName = GetCurrentUserName();
+
+            if (playerId == null || userName == null)
+            {
+                await SendErrorAsync("Error obteniendo información del jugador");
+                return;
+            }
+
+            if (!ValidateInput(tableId, nameof(tableId)))
+            {
+                await SendErrorAsync("ID de mesa inválido");
+                return;
+            }
+
+            _logger.LogInformation("[LobbyHub] Player {PlayerId} attempting quick join to table {TableId}",
+                playerId, tableId);
+
+            // Verificar si ya está en una sala
+            var currentRoomResult = await _gameRoomService.GetPlayerCurrentRoomCodeAsync(playerId);
+            if (currentRoomResult.IsSuccess && !string.IsNullOrEmpty(currentRoomResult.Value))
+            {
+                await SendErrorAsync("Ya estás en una sala. Sal de esa sala primero.");
+                return;
+            }
+
+            // Redirigir al GameRoomHub para manejar la lógica de unión/creación
+            await Clients.Caller.SendAsync("QuickJoinTableRedirect", new
+            {
+                tableId = tableId,
+                playerName = userName
+            });
+
+            _logger.LogInformation("[LobbyHub] Redirected player {PlayerId} to join table {TableId}",
+                playerId, tableId);
+        }
+        catch (Exception ex)
+        {
+            await HandleExceptionAsync(ex, "QuickJoinTable");
+        }
+    }
+
     #endregion
 
     #region Statistics Methods
@@ -228,7 +267,12 @@ public class LobbyHub : BaseHub
                 TotalConnections = totalConnections,
                 ActiveRooms = activeRoomsResult.IsSuccess ? activeRoomsResult.Value!.Count : 0,
                 PlayersInGame = activeRoomsResult.IsSuccess ?
-                    activeRoomsResult.Value!.Where(r => r.Status == BlackJack.Domain.Models.Game.RoomStatus.InProgress).Sum(r => r.PlayerCount) : 0,
+                    activeRoomsResult.Value!
+                        .Where(r => r.Status == BlackJack.Domain.Models.Game.RoomStatus.InProgress)
+                        .Sum(r => r.PlayerCount) : 0,
+                AvailableRooms = activeRoomsResult.IsSuccess ?
+                    activeRoomsResult.Value!
+                        .Count(r => !r.IsFull && r.Status == BlackJack.Domain.Models.Game.RoomStatus.WaitingForPlayers) : 0,
                 Timestamp = DateTime.UtcNow
             };
 
@@ -240,51 +284,7 @@ public class LobbyHub : BaseHub
         }
     }
 
-    #endregion
-
-    #region Private Helper Methods
-
-    private async Task SendActiveRoomsToClient()
-    {
-        try
-        {
-            var result = await _gameRoomService.GetActiveRoomsAsync();
-
-            if (result.IsSuccess)
-            {
-                var activeRooms = result.Value!.Select(room => new ActiveRoomModel(
-                    RoomCode: room.RoomCode,
-                    Name: room.Name,
-                    PlayerCount: room.PlayerCount,
-                    MaxPlayers: room.MaxPlayers,
-                    Status: room.Status.ToString(),
-                    CreatedAt: room.CreatedAt
-                )).ToList();
-
-                await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.ActiveRoomsUpdated,
-                    SignalRResponse<List<ActiveRoomModel>>.Ok(activeRooms));
-
-                _logger.LogDebug("[LobbyHub] Sent {RoomCount} active rooms to connection {ConnectionId}",
-                    activeRooms.Count, Context.ConnectionId);
-            }
-            else
-            {
-                await SendErrorAsync("Error obteniendo salas activas");
-                _logger.LogWarning("[LobbyHub] Failed to get active rooms: {Error}", result.Error);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[LobbyHub] Error sending active rooms to client: {Error}", ex.Message);
-            await SendErrorAsync("Error interno del servidor");
-        }
-    }
-
-    #endregion
-
-    #region Admin Methods (Optional)
-
-    public async Task GetDetailedRoomInfo(string roomCode)
+    public async Task GetRoomDetails(string roomCode)
     {
         try
         {
@@ -311,6 +311,7 @@ public class LobbyHub : BaseHub
                     CanStart = room.CanStart,
                     IsGameInProgress = room.IsGameInProgress,
                     BlackjackTableId = room.BlackjackTableId,
+                    MinBetPerRound = room.MinBetPerRound?.Amount ?? 0,
                     CreatedAt = room.CreatedAt,
                     UpdatedAt = room.UpdatedAt,
                     Players = room.Players.Select(p => new
@@ -319,6 +320,7 @@ public class LobbyHub : BaseHub
                         Name = p.Name,
                         Position = p.Position,
                         IsReady = p.IsReady,
+                        IsSeated = p.IsSeated,
                         HasPlayedTurn = p.HasPlayedTurn,
                         JoinedAt = p.JoinedAt
                     }).ToList(),
@@ -330,8 +332,7 @@ public class LobbyHub : BaseHub
                     }).ToList()
                 };
 
-                await Clients.Caller.SendAsync("DetailedRoomInfo",
-                    SignalRResponse<object>.Ok(detailedInfo));
+                await Clients.Caller.SendAsync("DetailedRoomInfo", detailedInfo);
             }
             else
             {
@@ -340,7 +341,64 @@ public class LobbyHub : BaseHub
         }
         catch (Exception ex)
         {
-            await HandleExceptionAsync(ex, "GetDetailedRoomInfo");
+            await HandleExceptionAsync(ex, "GetRoomDetails");
+        }
+    }
+
+    #endregion
+
+    #region Test Methods
+
+    public async Task TestConnection()
+    {
+        var response = new
+        {
+            message = "LobbyHub funcionando correctamente",
+            timestamp = DateTime.UtcNow,
+            connectionId = Context.ConnectionId,
+            playerId = GetCurrentPlayerId()?.Value,
+            capabilities = new[] { "QuickJoin", "GetActiveRooms", "GetLobbyStats" }
+        };
+
+        await Clients.Caller.SendAsync("TestResponse", response);
+    }
+
+    #endregion
+
+    #region Private Helper Methods
+
+    private async Task SendActiveRoomsToClient()
+    {
+        try
+        {
+            var result = await _gameRoomService.GetActiveRoomsAsync();
+
+            if (result.IsSuccess)
+            {
+                var activeRooms = result.Value!.Select(room => new ActiveRoomModel(
+                    RoomCode: room.RoomCode,
+                    Name: room.Name,
+                    PlayerCount: room.PlayerCount,
+                    MaxPlayers: room.MaxPlayers,
+                    Status: room.Status.ToString(),
+                    CreatedAt: room.CreatedAt
+                )).ToList();
+
+                await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.ActiveRoomsUpdated, activeRooms);
+
+                _logger.LogDebug("[LobbyHub] Sent {RoomCount} active rooms to connection {ConnectionId}",
+                    activeRooms.Count, Context.ConnectionId);
+            }
+            else
+            {
+                await SendErrorAsync("Error obteniendo salas activas");
+                _logger.LogWarning("[LobbyHub] Failed to get active rooms: {Error}", result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[LobbyHub] Error sending active rooms to client: {Error}", ex.Message);
+            await SendErrorAsync("Error interno del servidor");
         }
     }
 

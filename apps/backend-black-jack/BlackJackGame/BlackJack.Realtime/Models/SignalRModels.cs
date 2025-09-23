@@ -1,4 +1,4 @@
-﻿// BlackJack.Realtime/Models/SignalRModels.cs - ARCHIVO COMPLETO CON auto-betting integrado
+﻿// BlackJack.Realtime/Models/SignalRModels.cs - Modelos consolidados
 namespace BlackJack.Realtime.Models;
 
 #region Response Wrappers
@@ -35,40 +35,23 @@ public record SignalRResponse(
 
 #region Request Models (Client -> Server)
 
-public record CreateRoomRequest(
-    string RoomName,
-    int MaxPlayers = 6
-);
+// === GameRoomHub Requests ===
+public record CreateRoomRequest(string RoomName, int MaxPlayers = 6);
+public record JoinRoomRequest(string RoomCode, string PlayerName);
+public record JoinSeatRequest(string RoomCode, int Position);
+public record LeaveSeatRequest(string RoomCode);
 
-public record JoinRoomRequest(
-    string RoomCode,
-    string PlayerName
-);
+// === GameControlHub Requests ===
+public record PlayerActionRequest(string RoomCode, string Action);
+public record PlaceBetRequest(string RoomCode, decimal Amount);
 
-public record JoinSeatRequest(
-    string RoomCode,
-    int Position
-);
-
-public record LeaveSeatRequest(
-    string RoomCode
-);
-
-public record PlaceBetRequest(
-    string RoomCode,
-    decimal Amount
-);
-
-public record PlayerActionRequest(
-    string RoomCode,
-    string Action
-);
+// === LobbyHub Requests ===
+public record QuickJoinRequest(string? PreferredRoomCode = null);
 
 #endregion
 
-#region Response Models (Server -> Client)
+#region Core Response Models
 
-// CORREGIDO: RoomInfoModel con campos de auto-betting agregados
 public record RoomInfoModel(
     string RoomCode,
     string Name,
@@ -80,22 +63,19 @@ public record RoomInfoModel(
     string? CurrentPlayerTurn,
     bool CanStart,
     DateTime CreatedAt,
-
-    // NUEVOS: Campos de auto-betting
+    // Auto-betting fields
     decimal MinBetPerRound,
     bool AutoBettingActive
 );
 
-// CORREGIDO: RoomPlayerModel con campos de balance y auto-betting agregados
 public record RoomPlayerModel(
     Guid PlayerId,
     string Name,
-    int Position, // -1 = no seat assigned
+    int Position, // -1 = no seat assigned, 0-5 = seat position
     bool IsReady,
     bool IsHost,
     bool HasPlayedTurn,
-
-    // NUEVOS: Campos de balance y auto-betting
+    // Balance and betting fields
     decimal CurrentBalance,
     decimal TotalBetThisSession,
     bool CanAffordBet
@@ -118,8 +98,9 @@ public record ActiveRoomModel(
 
 #endregion
 
-#region Event Models
+#region Game Event Models
 
+// === Basic Player Events ===
 public record PlayerJoinedEventModel(
     string RoomCode,
     Guid PlayerId,
@@ -137,11 +118,20 @@ public record PlayerLeftEventModel(
     DateTime Timestamp
 );
 
+// === Game State Events ===
 public record GameStartedEventModel(
     string RoomCode,
     Guid GameTableId,
     List<string> PlayerNames,
     Guid FirstPlayerTurn,
+    DateTime Timestamp
+);
+
+public record GameEndedEventModel(
+    string RoomCode,
+    List<PlayerResultModel> Results,
+    int DealerHandValue,
+    Guid? WinnerId,
     DateTime Timestamp
 );
 
@@ -154,24 +144,7 @@ public record TurnChangedEventModel(
     DateTime Timestamp
 );
 
-public record GameEndedEventModel(
-    string RoomCode,
-    List<PlayerResultModel> Results,
-    int DealerHandValue,
-    Guid? WinnerId,
-    DateTime Timestamp
-);
-
-public record PlayerResultModel(
-    Guid PlayerId,
-    string PlayerName,
-    int HandValue,
-    bool Won,
-    decimal Winnings,
-    string PayoutType,
-    decimal FinalBalance
-);
-
+// === Game Action Events ===
 public record PlayerActionEventModel(
     string RoomCode,
     Guid PlayerId,
@@ -180,15 +153,6 @@ public record PlayerActionEventModel(
     Guid HandId,
     int HandValue,
     List<object>? NewCards,
-    DateTime Timestamp
-);
-
-public record BetPlacedEventModel(
-    string RoomCode,
-    Guid PlayerId,
-    string PlayerName,
-    decimal BetAmount,
-    decimal NewBalance,
     DateTime Timestamp
 );
 
@@ -203,13 +167,30 @@ public record CardDealtEventModel(
     DateTime Timestamp
 );
 
+public record BetPlacedEventModel(
+    string RoomCode,
+    Guid PlayerId,
+    string PlayerName,
+    decimal BetAmount,
+    decimal NewBalance,
+    DateTime Timestamp
+);
+
+public record PlayerResultModel(
+    Guid PlayerId,
+    string PlayerName,
+    int HandValue,
+    bool Won,
+    decimal Winnings,
+    string PayoutType,
+    decimal FinalBalance
+);
+
 #endregion
 
-#region Auto-Betting Event Models
+#region Auto-Betting Models (Consolidado)
 
-/// <summary>
-/// Modelo para notificar el resultado completo del procesamiento de apuestas automáticas
-/// </summary>
+// === Modelo principal de resultado de auto-betting ===
 public record AutoBetProcessedEventModel(
     string RoomCode,
     int TotalPlayersProcessed,
@@ -223,9 +204,6 @@ public record AutoBetProcessedEventModel(
     decimal SuccessRate
 );
 
-/// <summary>
-/// Modelo para el resultado de apuesta automática de un jugador individual
-/// </summary>
 public record AutoBetPlayerResultModel(
     Guid PlayerId,
     string PlayerName,
@@ -237,23 +215,7 @@ public record AutoBetPlayerResultModel(
     string? ErrorMessage = null
 );
 
-/// <summary>
-/// Modelo para notificar cuando un jugador es removido de su asiento por fondos insuficientes
-/// </summary>
-public record PlayerRemovedFromSeatEventModel(
-    string RoomCode,
-    Guid PlayerId,
-    string PlayerName,
-    int SeatPosition,
-    decimal RequiredAmount,
-    decimal AvailableBalance,
-    string Reason,
-    DateTime RemovedAt
-);
-
-/// <summary>
-/// Modelo para notificar actualizaciones de balance de jugadores
-/// </summary>
+// === Eventos específicos de auto-betting ===
 public record PlayerBalanceUpdatedEventModel(
     string RoomCode,
     Guid PlayerId,
@@ -265,9 +227,17 @@ public record PlayerBalanceUpdatedEventModel(
     DateTime UpdatedAt
 );
 
-/// <summary>
-/// Modelo para advertencias de fondos insuficientes
-/// </summary>
+public record PlayerRemovedFromSeatEventModel(
+    string RoomCode,
+    Guid PlayerId,
+    string PlayerName,
+    int SeatPosition,
+    decimal RequiredAmount,
+    decimal AvailableBalance,
+    string Reason,
+    DateTime RemovedAt
+);
+
 public record InsufficientFundsWarningEventModel(
     string RoomCode,
     Guid PlayerId,
@@ -275,14 +245,12 @@ public record InsufficientFundsWarningEventModel(
     decimal CurrentBalance,
     decimal RequiredAmount,
     decimal DeficitAmount,
-    int RoundsRemaining, // Cuántas rondas más puede costear el jugador
+    int RoundsRemaining,
     bool WillBeRemovedNextRound,
     DateTime WarningTime
 );
 
-/// <summary>
-/// Modelo para estadísticas de auto-betting de una sala
-/// </summary>
+// === Estadísticas y control de auto-betting ===
 public record AutoBetStatisticsEventModel(
     string RoomCode,
     decimal MinBetPerRound,
@@ -297,9 +265,6 @@ public record AutoBetStatisticsEventModel(
     DateTime CalculatedAt
 );
 
-/// <summary>
-/// Modelo para detalles de auto-betting por jugador
-/// </summary>
 public record PlayerAutoBetDetailModel(
     Guid PlayerId,
     string PlayerName,
@@ -307,12 +272,9 @@ public record PlayerAutoBetDetailModel(
     decimal CurrentBalance,
     bool CanAffordBet,
     decimal BalanceAfterBet,
-    int RoundsAffordable // Cuántas rondas más puede costear
+    int RoundsAffordable
 );
 
-/// <summary>
-/// Modelo para notificar el inicio del procesamiento de apuestas automáticas
-/// </summary>
 public record AutoBetProcessingStartedEventModel(
     string RoomCode,
     int SeatedPlayersCount,
@@ -321,22 +283,6 @@ public record AutoBetProcessingStartedEventModel(
     DateTime StartedAt
 );
 
-/// <summary>
-/// Modelo para validación de auto-betting de una sala
-/// </summary>
-public record AutoBetValidationEventModel(
-    string RoomCode,
-    bool IsValid,
-    List<string> ErrorMessages,
-    string RoomStatus,
-    int SeatedPlayersCount,
-    decimal MinBetPerRound,
-    DateTime ValidatedAt
-);
-
-/// <summary>
-/// Modelo para notificar fallos en el procesamiento de auto-betting
-/// </summary>
 public record AutoBetFailedEventModel(
     string RoomCode,
     string ErrorMessage,
@@ -347,9 +293,6 @@ public record AutoBetFailedEventModel(
     bool RequiresManualIntervention
 );
 
-/// <summary>
-/// Modelo para notificar cuando se configura/cambia la apuesta mínima por ronda
-/// </summary>
 public record MinBetPerRoundUpdatedEventModel(
     string RoomCode,
     decimal PreviousMinBet,
@@ -359,9 +302,6 @@ public record MinBetPerRoundUpdatedEventModel(
     DateTime UpdatedAt
 );
 
-/// <summary>
-/// Modelo para notificar el resumen de una ronda de apuestas automáticas
-/// </summary>
 public record AutoBetRoundSummaryEventModel(
     string RoomCode,
     int RoundNumber,
@@ -369,34 +309,48 @@ public record AutoBetRoundSummaryEventModel(
     DateTime RoundCompletedAt,
     TimeSpan ProcessingDuration,
     AutoBetProcessedEventModel Results,
-    List<string> Notifications // Mensajes adicionales para mostrar al usuario
+    List<string> Notifications
 );
 
 #endregion
 
-#region Game Models
+#region Game State Models
 
 public record GameStateModel(
     string RoomCode,
     string Status,
     int RoundNumber,
-    List<object> Players, // Simplificado por ahora
-    object Dealer,
+    List<object> Players,
+    object? Dealer,
     string? CurrentPlayerTurn,
     bool CanPlaceBets,
     bool CanStartRound
 );
 
-#endregion
+public record HandStateModel(
+    Guid HandId,
+    List<CardModel> Cards,
+    int Value,
+    string Status,
+    bool IsVisible
+);
 
-#region Chat Models
+public record CardModel(
+    string Suit,
+    string Rank,
+    int Value,
+    bool IsVisible = true
+);
 
-public record ChatMessageModel(
+public record PlayerGameStateModel(
     Guid PlayerId,
-    string PlayerName,
-    string Message,
-    DateTime Timestamp,
-    string Type = "player"
+    string Name,
+    int SeatPosition,
+    List<HandStateModel> Hands,
+    decimal CurrentBet,
+    decimal Balance,
+    bool HasPlayedTurn,
+    string Status
 );
 
 #endregion
@@ -418,9 +372,6 @@ public record ReconnectionInfo(
     bool WasInGame
 );
 
-/// <summary>
-/// Estado detallado de sala del jugador para reconexión robusta
-/// </summary>
 public record PlayerRoomState(
     Guid PlayerId,
     string RoomCode,
@@ -430,9 +381,6 @@ public record PlayerRoomState(
     DateTime? ConnectionLostAt
 );
 
-/// <summary>
-/// Estadísticas del ConnectionManager para monitoreo
-/// </summary>
 public record ConnectionManagerStats
 {
     public int TotalConnections { get; init; }
@@ -444,7 +392,19 @@ public record ConnectionManagerStats
 
 #endregion
 
-#region Utility Models
+#region Chat Models
+
+public record ChatMessageModel(
+    Guid PlayerId,
+    string PlayerName,
+    string Message,
+    DateTime Timestamp,
+    string Type = "player"
+);
+
+#endregion
+
+#region Error and Success Models
 
 public record ErrorModel(
     string Message,
@@ -458,5 +418,72 @@ public record SuccessModel(
     object? Data,
     DateTime Timestamp
 );
+
+#endregion
+
+#region Validation Extensions
+
+public static class ModelValidationExtensions
+{
+    public static bool IsValidSeatPosition(this int position) => position >= -1 && position <= 5;
+
+    public static bool IsValidRoomCode(this string? roomCode) =>
+        !string.IsNullOrWhiteSpace(roomCode) && roomCode.Length <= 10;
+
+    public static bool IsValidPlayerName(this string? playerName) =>
+        !string.IsNullOrWhiteSpace(playerName) && playerName.Length <= 30;
+
+    public static bool IsValidBetAmount(this decimal amount) => amount > 0 && amount <= 10000;
+
+    public static bool IsActiveRoom(this RoomInfoModel room) =>
+        room.Status != "Closed" && room.PlayerCount > 0;
+
+    public static bool HasAvailableSeats(this RoomInfoModel room) =>
+        room.Players.Count(p => p.Position >= 0) < room.MaxPlayers;
+
+    public static bool CanAffordAutoBet(this RoomPlayerModel player, decimal minBetPerRound) =>
+        player.CurrentBalance >= minBetPerRound;
+}
+
+#endregion
+
+#region Enum Models
+
+public static class GameStatuses
+{
+    public const string WaitingForPlayers = "WaitingForPlayers";
+    public const string InProgress = "InProgress";
+    public const string Completed = "Completed";
+    public const string Paused = "Paused";
+    public const string Cancelled = "Cancelled";
+    public const string Closed = "Closed";
+}
+
+public static class PlayerActions
+{
+    public const string Hit = "Hit";
+    public const string Stand = "Stand";
+    public const string DoubleDown = "DoubleDown";
+    public const string Split = "Split";
+    public const string Surrender = "Surrender";
+}
+
+public static class HandStatuses
+{
+    public const string Active = "Active";
+    public const string Busted = "Busted";
+    public const string Blackjack = "Blackjack";
+    public const string Completed = "Completed";
+    public const string Surrendered = "Surrendered";
+}
+
+public static class AutoBetStatuses
+{
+    public const string BetDeducted = "BetDeducted";
+    public const string InsufficientFunds = "InsufficientFunds";
+    public const string RemovedFromSeat = "RemovedFromSeat";
+    public const string Failed = "Failed";
+    public const string Skipped = "Skipped";
+}
 
 #endregion

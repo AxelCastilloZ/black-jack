@@ -1,4 +1,3 @@
-// src/components/game/GameSeats.tsx - FUSIONADO: Development design + Cartas
 //development
 
 import React, { useCallback } from 'react'
