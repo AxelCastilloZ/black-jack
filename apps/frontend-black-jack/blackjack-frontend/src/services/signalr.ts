@@ -1,4 +1,4 @@
-// src/services/signalr.ts - REFACTORIZADO para hubs especializados
+// src/services/signalr.ts - FUSIONADO: Hubs especializados + Auto-betting completo
 import {
   HubConnection,
   HubConnectionBuilder,
@@ -10,6 +10,107 @@ import { authService } from './auth'
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:7102'
 
 export type ConnectionState = 'Disconnected' | 'Connecting' | 'Connected' | 'Reconnecting'
+
+// TIPOS para Auto-Betting Events (del documento 4)
+export interface AutoBetProcessedEvent {
+  roomCode: string
+  totalPlayersProcessed: number
+  successfulBets: number
+  failedBets: number
+  playersRemovedFromSeats: number
+  totalAmountProcessed: number
+  playerResults: AutoBetPlayerResult[]
+  processedAt: string
+  hasErrors: boolean
+  successRate: number
+}
+
+export interface AutoBetPlayerResult {
+  playerId: string
+  playerName: string
+  seatPosition: number
+  status: 'BetDeducted' | 'InsufficientFunds' | 'RemovedFromSeat' | 'Failed'
+  originalBalance: number
+  newBalance: number
+  betAmount: number
+  errorMessage?: string
+}
+
+export interface AutoBetStatistics {
+  roomCode: string
+  minBetPerRound: number
+  seatedPlayersCount: number
+  totalBetPerRound: number
+  playersWithSufficientFunds: number
+  playersWithInsufficientFunds: number
+  totalAvailableFunds: number
+  expectedSuccessfulBets: number
+  expectedTotalDeduction: number
+  playerDetails: PlayerAutoBetDetail[]
+  calculatedAt: string
+}
+
+export interface PlayerAutoBetDetail {
+  playerId: string
+  playerName: string
+  seatPosition: number
+  currentBalance: number
+  canAffordBet: boolean
+  balanceAfterBet: number
+  roundsAffordable: number
+}
+
+export interface PlayerRemovedFromSeatEvent {
+  roomCode: string
+  playerId: string
+  playerName: string
+  seatPosition: number
+  requiredAmount: number
+  availableBalance: number
+  reason: string
+  removedAt: string
+}
+
+export interface PlayerBalanceUpdatedEvent {
+  roomCode: string
+  playerId: string
+  playerName: string
+  previousBalance: number
+  newBalance: number
+  amountChanged: number
+  changeReason: string
+  updatedAt: string
+}
+
+export interface InsufficientFundsWarningEvent {
+  roomCode: string
+  playerId: string
+  playerName: string
+  currentBalance: number
+  requiredAmount: number
+  deficitAmount: number
+  roundsRemaining: number
+  willBeRemovedNextRound: boolean
+  warningTime: string
+}
+
+export interface AutoBetProcessingStartedEvent {
+  roomCode: string
+  seatedPlayersCount: number
+  minBetPerRound: number
+  totalBetAmount: number
+  startedAt: string
+}
+
+export interface AutoBetRoundSummaryEvent {
+  roomCode: string
+  roundNumber: number
+  roundStartedAt: string
+  roundCompletedAt: string
+  processingDuration: number
+  results: AutoBetProcessedEvent
+  notifications: string[]
+}
 
 class SignalRService {
   // HUBS ESPECIALIZADOS
@@ -23,7 +124,7 @@ class SignalRService {
   private isStarting = false
   private isDestroying = false
 
-  // Event callbacks para el UI
+  // Event callbacks para el UI - BÁSICOS (del documento 3)
   public onPlayerJoined?: (player: any) => void
   public onPlayerLeft?: (player: any) => void
   public onRoomInfo?: (roomData: any) => void
@@ -34,6 +135,23 @@ class SignalRService {
   public onSeatLeft?: (data: any) => void
   public onGameStateChanged?: (gameState: any) => void
   public onError?: (message: string) => void
+
+  // Event callbacks para Auto-Betting - GRUPALES (del documento 4)
+  public onAutoBetProcessed?: (event: AutoBetProcessedEvent) => void
+  public onAutoBetStatistics?: (event: AutoBetStatistics) => void
+  public onAutoBetProcessingStarted?: (event: AutoBetProcessingStartedEvent) => void
+  public onAutoBetRoundSummary?: (event: AutoBetRoundSummaryEvent) => void
+  public onPlayerRemovedFromSeat?: (event: PlayerRemovedFromSeatEvent) => void
+  public onPlayerBalanceUpdated?: (event: PlayerBalanceUpdatedEvent) => void
+  public onInsufficientFundsWarning?: (event: InsufficientFundsWarningEvent) => void
+  public onAutoBetFailed?: (event: any) => void
+  public onMinBetPerRoundUpdated?: (event: any) => void
+  
+  // Event callbacks personales - INDIVIDUALES (del documento 4)
+  public onYouWereRemovedFromSeat?: (event: PlayerRemovedFromSeatEvent) => void
+  public onYourBalanceUpdated?: (event: PlayerBalanceUpdatedEvent) => void
+  public onInsufficientFundsWarningPersonal?: (event: InsufficientFundsWarningEvent) => void
+  public onAutoBetFailedPersonal?: (event: any) => void
 
   private buildConnection(hubPath: string): HubConnection {
     const fullUrl = `${API_BASE}${hubPath}`
@@ -195,7 +313,7 @@ class SignalRService {
           this.onRoomInfoUpdated?.(data)
         })
 
-        // Some servers emit RoomUpdated; treat it like RoomInfoUpdated
+        // FUSIONADO: Handler adicional del documento 3
         connection.on('RoomUpdated', (roomData: any) => {
           if (this.isDestroying) return
           console.log('[SignalR] 📥 RoomUpdated event:', roomData)
@@ -221,7 +339,7 @@ class SignalRService {
           this.onPlayerLeft?.(data)
         })
 
-        // Game events can come through RoomHub as well
+        // FUSIONADO: Game events que pueden venir por RoomHub (del documento 3)
         connection.on('GameStarted', (gameData: any) => {
           if (this.isDestroying) return
           console.log('[SignalR] 📥 GameStarted event (via RoomHub):', gameData)
@@ -250,6 +368,7 @@ class SignalRService {
         break
 
       case 'GameControl':
+        // Eventos de juego básicos
         connection.on('GameStarted', (gameData: any) => {
           if (this.isDestroying) return
           console.log('[SignalR] 📥 GameStarted event:', gameData)
@@ -262,12 +381,93 @@ class SignalRService {
           this.onGameStateChanged?.(gameState)
         })
 
-        // Some servers emit GameStateUpdated instead of GameStateChanged
+        // FUSIONADO: Handler adicional del documento 3
         connection.on('GameStateUpdated', (gameState: any) => {
           if (this.isDestroying) return
           console.log('[SignalR] 📥 GameStateUpdated event:', gameState)
           this.onGameStateChanged?.(gameState)
         })
+
+        // EVENTOS DE AUTO-BETTING - GRUPALES (del documento 4)
+        connection.on('AutoBetProcessed', (event: AutoBetProcessedEvent) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 🎰 AutoBetProcessed event:', event)
+          this.onAutoBetProcessed?.(event)
+        })
+
+        connection.on('AutoBetStatistics', (event: AutoBetStatistics) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 📊 AutoBetStatistics event:', event)
+          this.onAutoBetStatistics?.(event)
+        })
+
+        connection.on('AutoBetProcessingStarted', (event: AutoBetProcessingStartedEvent) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 🚀 AutoBetProcessingStarted event:', event)
+          this.onAutoBetProcessingStarted?.(event)
+        })
+
+        connection.on('AutoBetRoundSummary', (event: AutoBetRoundSummaryEvent) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 📋 AutoBetRoundSummary event:', event)
+          this.onAutoBetRoundSummary?.(event)
+        })
+
+        connection.on('PlayerRemovedFromSeat', (event: PlayerRemovedFromSeatEvent) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 🚪 PlayerRemovedFromSeat event:', event)
+          this.onPlayerRemovedFromSeat?.(event)
+        })
+
+        connection.on('PlayerBalanceUpdated', (event: PlayerBalanceUpdatedEvent) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 💰 PlayerBalanceUpdated event:', event)
+          this.onPlayerBalanceUpdated?.(event)
+        })
+
+        connection.on('InsufficientFundsWarning', (event: InsufficientFundsWarningEvent) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 ⚠️ InsufficientFundsWarning event:', event)
+          this.onInsufficientFundsWarning?.(event)
+        })
+
+        connection.on('AutoBetFailed', (event: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 ❌ AutoBetFailed event:', event)
+          this.onAutoBetFailed?.(event)
+        })
+
+        connection.on('MinBetPerRoundUpdated', (event: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 🎯 MinBetPerRoundUpdated event:', event)
+          this.onMinBetPerRoundUpdated?.(event)
+        })
+
+        // EVENTOS DE AUTO-BETTING - PERSONALES (del documento 4)
+        connection.on('YouWereRemovedFromSeat', (event: PlayerRemovedFromSeatEvent) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 🔴 YouWereRemovedFromSeat event:', event)
+          this.onYouWereRemovedFromSeat?.(event)
+        })
+
+        connection.on('YourBalanceUpdated', (event: PlayerBalanceUpdatedEvent) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 💳 YourBalanceUpdated event:', event)
+          this.onYourBalanceUpdated?.(event)
+        })
+
+        connection.on('InsufficientFundsWarningPersonal', (event: InsufficientFundsWarningEvent) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 🟠 InsufficientFundsWarningPersonal event:', event)
+          this.onInsufficientFundsWarningPersonal?.(event)
+        })
+
+        connection.on('AutoBetFailedPersonal', (event: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 🔻 AutoBetFailedPersonal event:', event)
+          this.onAutoBetFailedPersonal?.(event)
+        })
+
         break
 
       case 'Spectator':
@@ -442,7 +642,7 @@ class SignalRService {
     this.seatHub = undefined
     this.gameControlHub = undefined
     
-    // Limpiar callbacks
+    // Limpiar callbacks básicos
     this.onPlayerJoined = undefined
     this.onPlayerLeft = undefined
     this.onRoomInfo = undefined
@@ -453,6 +653,23 @@ class SignalRService {
     this.onSeatLeft = undefined
     this.onGameStateChanged = undefined
     this.onError = undefined
+    
+    // Limpiar callbacks de auto-betting - GRUPALES
+    this.onAutoBetProcessed = undefined
+    this.onAutoBetStatistics = undefined
+    this.onAutoBetProcessingStarted = undefined
+    this.onAutoBetRoundSummary = undefined
+    this.onPlayerRemovedFromSeat = undefined
+    this.onPlayerBalanceUpdated = undefined
+    this.onInsufficientFundsWarning = undefined
+    this.onAutoBetFailed = undefined
+    this.onMinBetPerRoundUpdated = undefined
+    
+    // Limpiar callbacks de auto-betting - PERSONALES
+    this.onYouWereRemovedFromSeat = undefined
+    this.onYourBalanceUpdated = undefined
+    this.onInsufficientFundsWarningPersonal = undefined
+    this.onAutoBetFailedPersonal = undefined
     
     console.log('[SignalR] ✅ All specialized hub connections stopped and cleaned')
   }
@@ -632,7 +849,7 @@ class SignalRService {
     }
   }
 
-  // MÉTODOS QUE USAN GAMECONTROLHUB
+  // MÉTODOS QUE USAN GAMECONTROLHUB - BÁSICOS
   async startGame(roomCode: string): Promise<void> {
     if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
       if (!(await this.verifyConnections())) {
@@ -642,6 +859,43 @@ class SignalRService {
 
     console.log(`[SignalR] 🎮 [GameControlHub] Starting game for room: ${roomCode}`)
     await this.gameControlHub!.invoke('StartGame', roomCode)
+  }
+
+  // MÉTODOS QUE USAN GAMECONTROLHUB - AUTO-BETTING (del documento 4)
+  async processRoundAutoBets(roomCode: string, removePlayersWithoutFunds: boolean = true): Promise<void> {
+    if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameControlHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] 🎰 [GameControlHub] Processing auto-bets for room: ${roomCode}, removeWithoutFunds: ${removePlayersWithoutFunds}`)
+    
+    try {
+      await this.gameControlHub!.invoke('ProcessRoundAutoBets', roomCode, removePlayersWithoutFunds)
+      console.log(`[SignalR] ✅ Successfully invoked ProcessRoundAutoBets via GameControlHub`)
+    } catch (error) {
+      console.error(`[SignalR] ❌ Error in ProcessRoundAutoBets:`, error)
+      throw error
+    }
+  }
+
+  async getAutoBetStatistics(roomCode: string): Promise<void> {
+    if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameControlHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] 📊 [GameControlHub] Getting auto-bet statistics for room: ${roomCode}`)
+    
+    try {
+      await this.gameControlHub!.invoke('GetAutoBetStatistics', roomCode)
+      console.log(`[SignalR] ✅ Successfully invoked GetAutoBetStatistics via GameControlHub`)
+    } catch (error) {
+      console.error(`[SignalR] ❌ Error in GetAutoBetStatistics:`, error)
+      throw error
+    }
   }
 
   // MÉTODOS DE TEST
@@ -663,7 +917,7 @@ class SignalRService {
     }
   }
 
-  // MÉTODOS DE JUEGO (pueden ir a GameControlHub en el futuro)
+  // MÉTODOS DE JUEGO
   async placeBet(roomCode: string, amount: number): Promise<void> {
     if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
       if (!(await this.verifyConnections())) {

@@ -1,17 +1,28 @@
-// src/pages/GamePage.tsx - CORREGIDO: Estado de loading centralizado
+// src/pages/GamePage.tsx - FUSIONADO: Auto-betting + Cartas + Development Design
+
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
-import { signalRService } from '../services/signalr'
+import { 
+  signalRService, 
+  AutoBetProcessedEvent, 
+  AutoBetStatistics, 
+  PlayerRemovedFromSeatEvent,
+  PlayerBalanceUpdatedEvent,
+  InsufficientFundsWarningEvent,
+  AutoBetProcessingStartedEvent,
+  AutoBetRoundSummaryEvent 
+} from '../services/signalr'
 import { authService } from '../services/auth'
 import { apiService } from '../api/apiService'
 
-// Componentes extraídos
+// Componentes
 import GameHeader from '../components/game/GameHeader'
 import GameTable from '../components/game/GameTable'
 import GameSeats from '../components/game/GameSeats'
 import GameChat from '../components/game/GameChat'
 import GameBettings from '../components/game/GameBettings'
 
+// Interfaces para cartas (del documento 2)
 interface Card {
   suit: 'Hearts' | 'Diamonds' | 'Clubs' | 'Spades'
   rank: 'Ace' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'Jack' | 'Queen' | 'King'
@@ -25,6 +36,7 @@ interface Hand {
   status: 'Active' | 'Stand' | 'Bust' | 'Blackjack'
 }
 
+// GameState fusionado: auto-betting + cartas
 interface GameState {
   roomCode: string
   name: string
@@ -36,7 +48,10 @@ interface GameState {
   currentPlayerTurn?: string
   canStart: boolean
   createdAt: string
-  // New game state
+  // Auto-betting (del documento 1)
+  minBetPerRound?: number
+  autoBettingActive?: boolean
+  // Cartas (del documento 2)
   dealerHand?: Hand | null
   playerHand?: Hand | null
   playersWithHands?: Array<RoomPlayer & { hand?: Hand | null }>
@@ -49,6 +64,30 @@ interface RoomPlayer {
   isReady: boolean
   isHost: boolean
   hasPlayedTurn: boolean
+  // Auto-betting stats (del documento 1)
+  currentBalance?: number
+  totalBetThisSession?: number
+  canAffordBet?: boolean
+}
+
+// Estados de Auto-Betting (del documento 1)
+interface AutoBettingState {
+  isProcessing: boolean
+  statistics: AutoBetStatistics | null
+  lastProcessedResult: AutoBetProcessedEvent | null
+  processingStartedAt: Date | null
+  roundSummary: AutoBetRoundSummaryEvent | null
+}
+
+// Notificaciones (del documento 1)
+interface Notification {
+  id: string
+  type: 'success' | 'warning' | 'error' | 'info'
+  title: string
+  message: string
+  timestamp: Date
+  autoClose?: boolean
+  duration?: number
 }
 
 export default function GamePage() {
@@ -66,16 +105,61 @@ export default function GamePage() {
     overall: false
   })
   const [isJoining, setIsJoining] = useState(false)
-  const [isStartingRound, setIsStartingRound] = useState(false)
+  const [isStartingRound, setIsStartingRound] = useState(false) // Del documento 2
   const [error, setError] = useState<string | null>(null)
   
-  // CORREGIDO: Estado de loading centralizado aquí
+  // Estado de loading centralizado
   const [seatClickLoading, setSeatClickLoading] = useState<number | null>(null)
+  
+  // Estados de Auto-Betting (del documento 1)
+  const [autoBettingState, setAutoBettingState] = useState<AutoBettingState>({
+    isProcessing: false,
+    statistics: null,
+    lastProcessedResult: null,
+    processingStartedAt: null,
+    roundSummary: null
+  })
+  
+  // Notificaciones (del documento 1)
+  const [notifications, setNotifications] = useState<Notification[]>([])
   
   // Refs
   const hasJoinedTable = useRef(false)
   const currentUser = useRef(authService.getCurrentUser())
   const isComponentMounted = useRef(true)
+
+  // COMPUTED: Lógica centralizada de auto-betting (del documento 1)
+  const isAutoBettingActive = useCallback(() => {
+    if (!gameState || !gameState.minBetPerRound || gameState.minBetPerRound <= 0) {
+      return false
+    }
+    const seatedPlayers = gameState.players?.filter(p => p.position >= 0) || []
+    return seatedPlayers.length > 0
+  }, [gameState])
+
+  // Helper para agregar notificaciones (del documento 1)
+  const addNotification = useCallback((notification: Omit<Notification, 'id' | 'timestamp'>) => {
+    if (!isComponentMounted.current) return
+    
+    const newNotification: Notification = {
+      ...notification,
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date()
+    }
+    
+    setNotifications(prev => [newNotification, ...prev].slice(0, 5))
+    
+    if (notification.autoClose !== false) {
+      const duration = notification.duration || 5000
+      setTimeout(() => {
+        removeNotification(newNotification.id)
+      }, duration)
+    }
+  }, [])
+
+  const removeNotification = useCallback((id: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== id))
+  }, [])
 
   // Detectar modo viewer y inicializar componente
   useEffect(() => {
@@ -117,7 +201,7 @@ export default function GamePage() {
     }
     
     checkConnections()
-    const interval = setInterval(checkConnections, 10000) // 10 segundos
+    const interval = setInterval(checkConnections, 10000)
     
     return () => {
       mounted = false
@@ -125,13 +209,13 @@ export default function GamePage() {
     }
   }, [])
 
-  // Handlers para eventos SignalR
+  // Handlers para eventos SignalR básicos (fusionado)
   const handleRoomInfo = useCallback((response: any) => {
     if (!isComponentMounted.current) return
     const roomData = response?.data || response
     console.log('[GamePage] Room info received via RoomHub:', roomData)
     setGameState(prev => {
-      // Preserve hand information when updating room info
+      // Preserve hand information when updating room info (del documento 2)
       return {
         ...roomData,
         playerHand: prev?.playerHand || null,
@@ -147,7 +231,7 @@ export default function GamePage() {
     const roomData = response?.data || response
     console.log('[GamePage] Room created via RoomHub:', roomData)
     setGameState(prev => {
-      // Preserve hand information when updating room info
+      // Preserve hand information when updating room info (del documento 2)
       return {
         ...roomData,
         playerHand: prev?.playerHand || null,
@@ -163,7 +247,7 @@ export default function GamePage() {
     const roomData = response?.data || response
     console.log('[GamePage] Room joined via RoomHub:', roomData)
     setGameState(prev => {
-      // Preserve hand information when updating room info
+      // Preserve hand information when updating room info (del documento 2)
       return {
         ...roomData,
         playerHand: prev?.playerHand || null,
@@ -177,15 +261,16 @@ export default function GamePage() {
   const handleRoomInfoUpdated = useCallback((roomData: any) => {
     if (!isComponentMounted.current) return
     console.log('[GamePage] Room info updated via RoomHub:', roomData)
-    setGameState(prev => {
-      // Preserve hand information when updating room info
-      return {
-        ...roomData,
-        playerHand: prev?.playerHand || null,
-        playersWithHands: prev?.playersWithHands || [],
-        dealerHand: prev?.dealerHand || null
-      }
-    })
+    setGameState(prev => ({
+      ...roomData,
+      // Mantener continuidad con datos existentes (fusionado)
+      autoBettingActive: roomData.autoBettingActive !== undefined ? roomData.autoBettingActive : prev?.autoBettingActive,
+      minBetPerRound: roomData.minBetPerRound !== undefined ? roomData.minBetPerRound : prev?.minBetPerRound,
+      // Preserve hand information (del documento 2)
+      playerHand: prev?.playerHand || null,
+      playersWithHands: prev?.playersWithHands || [],
+      dealerHand: prev?.dealerHand || null
+    }))
     setError(null)
   }, [])
 
@@ -197,8 +282,6 @@ export default function GamePage() {
       setGameState(roomInfo)
     }
     setError(null)
-    
-    // CORREGIDO: Resetear loading state cuando operación es exitosa
     setSeatClickLoading(null)
     console.log('[GamePage] Loading state reset after successful seat join')
   }, [])
@@ -211,8 +294,6 @@ export default function GamePage() {
       setGameState(roomData)
     }
     setError(null)
-    
-    // CORREGIDO: Resetear loading state cuando operación es exitosa
     setSeatClickLoading(null)
     console.log('[GamePage] Loading state reset after successful seat leave')
   }, [])
@@ -236,7 +317,11 @@ export default function GamePage() {
         position: eventData.position || -1,
         isReady: false,
         isHost: false,
-        hasPlayedTurn: false
+        hasPlayedTurn: false,
+        // Auto-betting props (del documento 1)
+        currentBalance: eventData.currentBalance || 0,
+        totalBetThisSession: eventData.totalBetThisSession || 0,
+        canAffordBet: eventData.canAffordBet || false
       }]
 
       console.log('[GamePage] Adding new player to local state:', eventData.playerName)
@@ -266,6 +351,7 @@ export default function GamePage() {
     })
   }, [])
 
+  // FUSIONADO: Game state changed con cartas + auto-betting
   const handleGameStateChanged = useCallback((newState: any) => {
     if (!isComponentMounted.current) return
     console.log('[GamePage] Game state changed via GameControlHub:', newState)
@@ -281,20 +367,17 @@ export default function GamePage() {
     setGameState(prev => {
       const prevState: any = prev || {}
 
-      // Normalize payloads from GameStarted/GameStateChanged/GameStateUpdated
+      // Normalize payloads from GameStarted/GameStateChanged/GameStateUpdated (del documento 2)
       const status = (newState?.status as string) || 'InProgress'
       const dealerHand = newState?.dealerHand || prevState.dealerHand || null
 
-      // If server sends players array with hand per player
+      // If server sends players array with hand per player (del documento 2)
       let playerHand = prevState.playerHand || null
       let playersWithHands = prevState.playersWithHands || []
       const currentUserId = (authService.getCurrentUser()?.id) as string | undefined
       if (Array.isArray(newState?.players)) {
-        // Set current player's hand if available
-        // console.log('[GamePage] currentUserId:', currentUserId)
         if (currentUserId) {
           const me = newState.players.find((p: any) => p.playerId === currentUserId)
-          // console.log('[GamePage] Found current user in players:', me)
           if (me?.hand) {
             playerHand = {
               id: me.hand.handId || me.hand.id,
@@ -302,13 +385,10 @@ export default function GamePage() {
               value: me.hand.value || 0,
               status: me.hand.status || 'Active'
             }
-            // console.log('[GamePage] Set playerHand:', playerHand)
           }
-        } else {
-          // console.log('[GamePage] No currentUserId available, will try to set playerHand later')
         }
 
-        // Map all players with their hands
+        // Map all players with their hands (fusionando con auto-betting props)
         playersWithHands = newState.players.map((p: any) => ({
           ...p,
           position: p.seat, // Map seat to position for consistency
@@ -317,43 +397,48 @@ export default function GamePage() {
             cards: p.hand.cards || [],
             value: p.hand.value || 0,
             status: p.hand.status || 'Active'
-          } : null
+          } : null,
+          // Auto-betting props (del documento 1)
+          currentBalance: p.currentBalance || 0,
+          totalBetThisSession: p.totalBetThisSession || 0,
+          canAffordBet: p.canAffordBet || false
         }))
-        // console.log('[GamePage] Mapped playersWithHands:', playersWithHands)
       }
 
-      // Coerce canStart=false when game is in progress
+      // Coerce canStart=false when game is in progress (del documento 2)
       const canStart = status === 'InProgress' ? false : (prevState.canStart ?? false)
 
-        const newGameState = {
-          ...prevState,
-          status: 'InProgress',
-          canStart,
-          dealerHand: dealerHand ? {
-            id: dealerHand.handId || dealerHand.id,
-            cards: dealerHand.cards || [],
-            value: dealerHand.value || 0,
-            status: dealerHand.status || 'Active'
-          } : null,
-          playerHand,
-          playersWithHands
-        } as any
+      const newGameState = {
+        ...prevState,
+        status: 'InProgress',
+        canStart,
+        dealerHand: dealerHand ? {
+          id: dealerHand.handId || dealerHand.id,
+          cards: dealerHand.cards || [],
+          value: dealerHand.value || 0,
+          status: dealerHand.status || 'Active'
+        } : null,
+        playerHand,
+        playersWithHands,
+        // Mantener auto-betting props (del documento 1)
+        minBetPerRound: newState?.minBetPerRound || prevState.minBetPerRound,
+        autoBettingActive: newState?.autoBettingActive !== undefined ? newState.autoBettingActive : prevState.autoBettingActive
+      } as any
 
-        // Fallback: if playerHand is still null but we have currentUserId, try to find it
-        if (!newGameState.playerHand && currentUserId && Array.isArray(newState?.players)) {
-          const me = newState.players.find((p: any) => p.playerId === currentUserId)
-          if (me?.hand) {
-            newGameState.playerHand = {
-              id: me.hand.handId || me.hand.id,
-              cards: me.hand.cards || [],
-              value: me.hand.value || 0,
-              status: me.hand.status || 'Active'
-            }
-            // console.log('[GamePage] Fallback: Set playerHand:', newGameState.playerHand)
+      // Fallback: if playerHand is still null but we have currentUserId, try to find it (del documento 2)
+      if (!newGameState.playerHand && currentUserId && Array.isArray(newState?.players)) {
+        const me = newState.players.find((p: any) => p.playerId === currentUserId)
+        if (me?.hand) {
+          newGameState.playerHand = {
+            id: me.hand.handId || me.hand.id,
+            cards: me.hand.cards || [],
+            value: me.hand.value || 0,
+            status: me.hand.status || 'Active'
           }
         }
+      }
 
-        return newGameState
+      return newGameState
     })
   }, [])
 
@@ -361,18 +446,239 @@ export default function GamePage() {
     if (!isComponentMounted.current) return
     console.error('[GamePage] SignalR Error from any hub:', errorMessage)
     setError(errorMessage)
-    
-    // CORREGIDO: Resetear loading state en caso de error
     setSeatClickLoading(null)
     console.log('[GamePage] Loading state reset after error')
   }, [])
 
-  // Setup de listeners SignalR
+  // Handlers para Auto-Betting Events (del documento 1)
+  const handleAutoBetProcessed = useCallback((event: AutoBetProcessedEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 🎰 AutoBetProcessed event:', event)
+    
+    setAutoBettingState(prev => ({
+      ...prev,
+      isProcessing: false,
+      lastProcessedResult: event,
+      processingStartedAt: null
+    }))
+
+    const { successfulBets, failedBets, totalAmountProcessed, playersRemovedFromSeats } = event
+    
+    addNotification({
+      type: failedBets > 0 ? 'warning' : 'success',
+      title: 'Apuestas Automáticas Procesadas',
+      message: `Exitosas: ${successfulBets}, Fallidas: ${failedBets}, Total: $${totalAmountProcessed}${
+        playersRemovedFromSeats > 0 ? `, ${playersRemovedFromSeats} removidos por fondos` : ''
+      }`,
+      duration: 6000
+    })
+  }, [addNotification])
+
+  const handleAutoBetStatistics = useCallback((event: AutoBetStatistics) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 📊 AutoBetStatistics event:', event)
+    
+    setAutoBettingState(prev => ({
+      ...prev,
+      statistics: event
+    }))
+
+    setGameState(prev => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        minBetPerRound: event.minBetPerRound,
+        autoBettingActive: event.seatedPlayersCount > 0 && event.minBetPerRound > 0
+      }
+    })
+  }, [])
+
+  const handleAutoBetProcessingStarted = useCallback((event: AutoBetProcessingStartedEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 🚀 AutoBetProcessingStarted event:', event)
+    
+    setAutoBettingState(prev => ({
+      ...prev,
+      isProcessing: true,
+      processingStartedAt: new Date(event.startedAt)
+    }))
+
+    addNotification({
+      type: 'info',
+      title: 'Procesando Apuestas Automáticas',
+      message: `${event.seatedPlayersCount} jugadores sentados, apuesta total: $${event.totalBetAmount}`,
+      duration: 3000
+    })
+  }, [addNotification])
+
+  const handleAutoBetRoundSummary = useCallback((event: AutoBetRoundSummaryEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 📋 AutoBetRoundSummary event:', event)
+    
+    setAutoBettingState(prev => ({
+      ...prev,
+      roundSummary: event
+    }))
+
+    event.notifications.forEach(notification => {
+      addNotification({
+        type: 'info',
+        title: `Ronda ${event.roundNumber} Completada`,
+        message: notification,
+        duration: 4000
+      })
+    })
+  }, [addNotification])
+
+  const handlePlayerRemovedFromSeat = useCallback((event: PlayerRemovedFromSeatEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 🚪 PlayerRemovedFromSeat event:', event)
+    
+    addNotification({
+      type: 'warning',
+      title: 'Jugador Removido',
+      message: `${event.playerName} fue removido del asiento ${event.seatPosition} - ${event.reason}`,
+      duration: 7000
+    })
+
+    setGameState(prev => {
+      if (!prev) return prev
+      
+      const updatedPlayers = prev.players.map(player => {
+        if (player.playerId === event.playerId) {
+          return { ...player, position: -1 }
+        }
+        return player
+      })
+      
+      return {
+        ...prev,
+        players: updatedPlayers
+      }
+    })
+  }, [addNotification])
+
+  const handlePlayerBalanceUpdated = useCallback((event: PlayerBalanceUpdatedEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 💰 PlayerBalanceUpdated event:', event)
+    
+    setGameState(prev => {
+      if (!prev) return prev
+      
+      const updatedPlayers = prev.players.map(player => {
+        if (player.playerId === event.playerId) {
+          return { 
+            ...player, 
+            currentBalance: event.newBalance,
+            canAffordBet: prev.minBetPerRound ? event.newBalance >= prev.minBetPerRound : true
+          }
+        }
+        return player
+      })
+      
+      return {
+        ...prev,
+        players: updatedPlayers
+      }
+    })
+
+    if (event.playerId === currentUser.current?.id) {
+      const amountText = event.amountChanged > 0 
+        ? `+$${event.amountChanged}` 
+        : `-$${Math.abs(event.amountChanged)}`
+      
+      addNotification({
+        type: event.amountChanged > 0 ? 'success' : 'warning',
+        title: 'Balance Actualizado',
+        message: `${amountText} (${event.changeReason}). Nuevo balance: $${event.newBalance}`,
+        duration: 5000
+      })
+    }
+  }, [addNotification])
+
+  const handleInsufficientFundsWarning = useCallback((event: InsufficientFundsWarningEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] ⚠️ InsufficientFundsWarning event:', event)
+    
+    addNotification({
+      type: 'warning',
+      title: 'Advertencia: Fondos Insuficientes',
+      message: `${event.playerName} no tiene fondos suficientes. Balance: $${event.currentBalance}, Requerido: $${event.requiredAmount}`,
+      duration: 8000
+    })
+  }, [addNotification])
+
+  const handleAutoBetFailed = useCallback((event: any) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] ❌ AutoBetFailed event:', event)
+    
+    setAutoBettingState(prev => ({
+      ...prev,
+      isProcessing: false,
+      processingStartedAt: null
+    }))
+
+    addNotification({
+      type: 'error',
+      title: 'Error en Apuestas Automáticas',
+      message: event.errorMessage || 'Error desconocido en el procesamiento',
+      duration: 10000,
+      autoClose: false
+    })
+  }, [addNotification])
+
+  // Handlers para eventos personales (del documento 1)
+  const handleYouWereRemovedFromSeat = useCallback((event: PlayerRemovedFromSeatEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 🔴 YouWereRemovedFromSeat event:', event)
+    
+    addNotification({
+      type: 'error',
+      title: 'Fuiste Removido del Asiento',
+      message: `Removido del asiento ${event.seatPosition}: ${event.reason}. Balance: $${event.availableBalance}, Requerido: $${event.requiredAmount}`,
+      duration: 12000,
+      autoClose: false
+    })
+  }, [addNotification])
+
+  const handleYourBalanceUpdated = useCallback((event: PlayerBalanceUpdatedEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 💳 YourBalanceUpdated event:', event)
+    
+    const amountText = event.amountChanged > 0 
+      ? `+$${event.amountChanged}` 
+      : `-$${Math.abs(event.amountChanged)}`
+    
+    addNotification({
+      type: event.amountChanged > 0 ? 'success' : 'info',
+      title: 'Tu Balance Actualizado',
+      message: `${amountText} (${event.changeReason}). Nuevo balance: $${event.newBalance}`,
+      duration: 6000
+    })
+  }, [addNotification])
+
+  const handleInsufficientFundsWarningPersonal = useCallback((event: InsufficientFundsWarningEvent) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] 🟠 InsufficientFundsWarningPersonal event:', event)
+    
+    addNotification({
+      type: 'warning',
+      title: 'Fondos Insuficientes',
+      message: `Tu balance ($${event.currentBalance}) es menor al requerido ($${event.requiredAmount}). ${
+        event.willBeRemovedNextRound ? 'Serás removido en la próxima ronda.' : `Te quedan ${event.roundsRemaining} rondas.`
+      }`,
+      duration: 10000,
+      autoClose: false
+    })
+  }, [addNotification])
+
+  // Setup de listeners SignalR (fusionado)
   useEffect(() => {
     if (!isComponentMounted.current) return
     
-    console.log('[GamePage] Setting up hub listeners...')
+    console.log('[GamePage] Setting up hub listeners including auto-betting and cards...')
     
+    // Listeners básicos
     signalRService.onRoomInfo = handleRoomInfo
     signalRService.onRoomCreated = handleRoomCreated
     signalRService.onRoomJoined = handleRoomJoined
@@ -384,8 +690,24 @@ export default function GamePage() {
     signalRService.onGameStateChanged = handleGameStateChanged
     signalRService.onError = handleError
 
+    // Listeners de auto-betting (del documento 1)
+    signalRService.onAutoBetProcessed = handleAutoBetProcessed
+    signalRService.onAutoBetStatistics = handleAutoBetStatistics
+    signalRService.onAutoBetProcessingStarted = handleAutoBetProcessingStarted
+    signalRService.onAutoBetRoundSummary = handleAutoBetRoundSummary
+    signalRService.onPlayerRemovedFromSeat = handlePlayerRemovedFromSeat
+    signalRService.onPlayerBalanceUpdated = handlePlayerBalanceUpdated
+    signalRService.onInsufficientFundsWarning = handleInsufficientFundsWarning
+    signalRService.onAutoBetFailed = handleAutoBetFailed
+    
+    // Listeners personales (del documento 1)
+    signalRService.onYouWereRemovedFromSeat = handleYouWereRemovedFromSeat
+    signalRService.onYourBalanceUpdated = handleYourBalanceUpdated
+    signalRService.onInsufficientFundsWarningPersonal = handleInsufficientFundsWarningPersonal
+
     return () => {
-      console.log('[GamePage] Cleaning up hub listeners...')
+      console.log('[GamePage] Cleaning up hub listeners including auto-betting and cards...')
+      
       signalRService.onRoomInfo = undefined
       signalRService.onRoomCreated = undefined
       signalRService.onRoomJoined = undefined
@@ -396,6 +718,18 @@ export default function GamePage() {
       signalRService.onPlayerLeft = undefined
       signalRService.onGameStateChanged = undefined
       signalRService.onError = undefined
+      
+      signalRService.onAutoBetProcessed = undefined
+      signalRService.onAutoBetStatistics = undefined
+      signalRService.onAutoBetProcessingStarted = undefined
+      signalRService.onAutoBetRoundSummary = undefined
+      signalRService.onPlayerRemovedFromSeat = undefined
+      signalRService.onPlayerBalanceUpdated = undefined
+      signalRService.onInsufficientFundsWarning = undefined
+      signalRService.onAutoBetFailed = undefined
+      signalRService.onYouWereRemovedFromSeat = undefined
+      signalRService.onYourBalanceUpdated = undefined
+      signalRService.onInsufficientFundsWarningPersonal = undefined
     }
   }, [])
 
@@ -439,6 +773,7 @@ export default function GamePage() {
           await signalRService.joinOrCreateRoomForTableAsViewer(tableId, playerName)
         } else {
           await signalRService.joinOrCreateRoomForTable(tableId, playerName)
+          console.log('[GamePage] Player joined table, auto-betting status will be determined by game state')
         }
         
         console.log('[GamePage] Successfully joined table')
@@ -463,6 +798,26 @@ export default function GamePage() {
       clearTimeout(timeoutId)
     }
   }, [connectionStatus.overall, connectionStatus.room, connectionStatus.spectator, tableId, isViewer])
+
+  // Obtener estadísticas de auto-betting
+  useEffect(() => {
+    const autoBettingActive = isAutoBettingActive()
+    
+    if (
+      gameState?.roomCode && 
+      connectionStatus.gameControl && 
+      autoBettingActive &&
+      !autoBettingState.statistics &&
+      !isViewer
+    ) {
+      console.log('[GamePage] Getting auto-bet statistics for room:', gameState.roomCode)
+      
+      signalRService.getAutoBetStatistics(gameState.roomCode)
+        .catch(error => {
+          console.warn('[GamePage] Could not get auto-bet statistics:', error)
+        })
+    }
+  }, [gameState?.roomCode, connectionStatus.gameControl, isAutoBettingActive, autoBettingState.statistics, isViewer])
 
   // Cleanup en beforeunload
   useEffect(() => {
@@ -496,18 +851,18 @@ export default function GamePage() {
   }, [gameState?.roomCode, navigate])
 
   const handleStartRound = useCallback(async () => {
-    if (isStartingRound) return
+    if (isStartingRound) return // Del documento 2
     if (!connectionStatus.gameControl || !gameState?.roomCode || !isComponentMounted.current) {
       console.log('[GamePage] Cannot start game - GameControlHub not connected')
       return
     }
     
     try {
-      setIsStartingRound(true)
+      setIsStartingRound(true) // Del documento 2
       setError(null)
       console.log('[GamePage] Starting game via GameControlHub')
       await signalRService.startGame(gameState.roomCode)
-      // Optimistically update local status and request fresh room info
+      // Optimistically update local status and request fresh room info (del documento 2)
       setGameState(prev => (prev ? { ...prev, status: 'InProgress' } as any : prev))
       signalRService.getRoomInfo(gameState.roomCode).catch(() => {})
     } catch (error) {
@@ -515,12 +870,11 @@ export default function GamePage() {
       console.error('[GamePage] Error starting game:', error)
       setError(error instanceof Error ? error.message : 'Error iniciando juego')
     } finally {
-      // Keep disabled until status flips to InProgress; re-enable otherwise
-      setIsStartingRound(false)
+      setIsStartingRound(false) // Del documento 2
     }
   }, [connectionStatus.gameControl, gameState?.roomCode, isStartingRound])
 
-  // Game action handlers
+  // Handlers para cartas (del documento 2)
   const handleHit = useCallback(async () => {
     if (!gameState?.roomCode || !isComponentMounted.current) {
       console.log('[GamePage] Cannot hit - no room code')
@@ -557,14 +911,7 @@ export default function GamePage() {
 
   // Computed values
   const currentPlayer = gameState?.players?.find(p => p.playerId === currentUser.current?.id)
-  const isPlayerSeated = !!currentPlayer
-  // Debug logging for troubleshooting
-  // console.log('[GamePage] currentUser.current?.id:', currentUser.current?.id)
-  // console.log('[GamePage] currentPlayer:', currentPlayer)
-  // console.log('[GamePage] isPlayerSeated:', isPlayerSeated)
-  // console.log('[GamePage] playerHand:', gameState?.playerHand)
-  // console.log('[GamePage] currentPlayerTurn:', gameState?.currentPlayerTurn)
-  // console.log('[GamePage] isPlayerTurn:', gameState?.currentPlayerTurn === currentPlayer?.name)
+  const isPlayerSeated = !!currentPlayer && currentPlayer.position >= 0
 
   // Loading screen
   if (!connectionStatus.overall || isJoining) {
@@ -629,6 +976,38 @@ export default function GamePage() {
         onLeaveRoom={handleLeaveRoom}
       />
 
+      {/* Notificaciones (del documento 1) */}
+      <div className="fixed top-20 right-4 space-y-2 z-30 max-w-md">
+        {notifications.map((notification) => (
+          <div
+            key={notification.id}
+            className={`
+              rounded-lg shadow-lg p-4 border-l-4 transform transition-all duration-300 ease-in-out
+              ${notification.type === 'success' ? 'bg-green-800/90 border-green-400 text-green-100' :
+                notification.type === 'warning' ? 'bg-yellow-800/90 border-yellow-400 text-yellow-100' :
+                notification.type === 'error' ? 'bg-red-800/90 border-red-400 text-red-100' :
+                'bg-blue-800/90 border-blue-400 text-blue-100'}
+            `}
+          >
+            <div className="flex items-start justify-between">
+              <div className="flex-1">
+                <div className="font-semibold text-sm">{notification.title}</div>
+                <div className="text-xs mt-1 opacity-90">{notification.message}</div>
+                <div className="text-xs mt-1 opacity-70">
+                  {notification.timestamp.toLocaleTimeString()}
+                </div>
+              </div>
+              <button
+                onClick={() => removeNotification(notification.id)}
+                className="ml-2 text-white/70 hover:text-white text-lg leading-none"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
       {/* Error Banner */}
       {error && (
         <div className="absolute top-16 left-1/2 transform -translate-x-1/2 bg-red-600/90 text-white px-6 py-3 rounded-lg shadow-lg z-20 max-w-md">
@@ -645,7 +1024,7 @@ export default function GamePage() {
         </div>
       )}
 
-      {/* Game Table - Dealer and Central Banner */}
+      {/* Game Table - FUSIONADO: Props de cartas + auto-betting */}
       <GameTable
         gameStatus={gameState?.status}
         canStart={gameState?.canStart || false}
@@ -655,6 +1034,7 @@ export default function GamePage() {
         gameControlConnected={connectionStatus.gameControl}
         isStarting={isStartingRound}
         onStartRound={handleStartRound}
+        // Props de cartas (del documento 2)
         dealerHand={gameState?.dealerHand}
         playerHand={gameState?.playerHand}
         isPlayerTurn={gameState?.currentPlayerTurn === currentPlayer?.name}
@@ -662,7 +1042,7 @@ export default function GamePage() {
         onStand={handleStand}
       />
 
-      {/* Game Seats - All 6 player positions */}
+      {/* Game Seats - FUSIONADO: Props de cartas + auto-betting */}
       <GameSeats
         players={gameState?.players || []}
         roomCode={gameState?.roomCode}
@@ -675,17 +1055,20 @@ export default function GamePage() {
         onError={setError}
         seatClickLoading={seatClickLoading}
         setSeatClickLoading={setSeatClickLoading}
-        // Pass hand information for each player
+        // Auto-betting props (del documento 1)
+        autoBettingActive={isAutoBettingActive()}
+        minBetPerRound={gameState?.minBetPerRound || 0}
+        // Cartas props (del documento 2)
         playersWithHands={gameState?.playersWithHands || []}
       />
 
-      {/* Game Bettings - hidden for gameplay testing (handled by coworker) */}
+      {/* Game Bettings - Opcional (del documento 2) */}
       {false && (
         <GameBettings
           isPlayerSeated={isPlayerSeated}
           gameStatus={gameState?.status}
           isViewer={isViewer}
-          currentPlayerBalance={1000}
+          currentPlayerBalance={currentPlayer?.currentBalance || 1000}
           isPlayerTurn={gameState?.currentPlayerTurn === currentPlayer?.name}
           roomCode={gameState?.roomCode}
         />
