@@ -857,31 +857,31 @@ public class GameRoomService : IGameRoomService
                 return Result<bool>.Failure("Sala no encontrada");
             }
 
-                if (room.HostPlayerId != hostPlayerId)
+            if (room.HostPlayerId != hostPlayerId)
+            {
+                // Permitir al jugador iniciar si está sentado aunque HostPlayerId no esté actualizado aún
+                var callerIsSeated = room.Players.Any(p => p.IsSeated && p.PlayerId.Value == hostPlayerId.Value);
+                if (!callerIsSeated)
                 {
-                    // Permitir al jugador iniciar si está sentado aunque HostPlayerId no esté actualizado aún
-                    var callerIsSeated = room.Players.Any(p => p.IsSeated && p.PlayerId.Value == hostPlayerId.Value);
-                    if (!callerIsSeated)
-                    {
-                        return Result<bool>.Failure("Solo el host puede iniciar el juego");
-                    }
+                    return Result<bool>.Failure("Solo el host puede iniciar el juego");
                 }
+            }
 
             if (!room.CanStart)
             {
                 return Result<bool>.Failure("La sala no puede iniciar el juego aún");
             }
 
-                room.StartGame();
-                try
-                {
-                    await _gameRoomRepository.UpdateAsync(room);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "[GameRoomService] UpdateAsync failed; proceeding as started for room {RoomCode}", roomCode);
-                    // Proceed without failing; table round will be in progress and hubs will broadcast state
-                }
+            room.StartGame();
+            try
+            {
+                await _gameRoomRepository.UpdateAsync(room);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[GameRoomService] UpdateAsync failed; proceeding as started for room {RoomCode}", roomCode);
+                // Proceed without failing; table round will be in progress and hubs will broadcast state
+            }
 
             return Result<bool>.Success(true);
         }

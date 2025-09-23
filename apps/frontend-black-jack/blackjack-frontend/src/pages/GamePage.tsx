@@ -1,4 +1,4 @@
-// src/pages/GamePage.tsx - FIXED: Removed race condition causing loading stuck
+// src/pages/GamePage.tsx - ARCHIVO COMPLETO CORREGIDO
 
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
@@ -10,7 +10,11 @@ import {
   PlayerBalanceUpdatedEvent,
   InsufficientFundsWarningEvent,
   AutoBetProcessingStartedEvent,
-  AutoBetRoundSummaryEvent 
+  AutoBetRoundSummaryEvent,
+  CreateRoomRequest,
+  JoinRoomRequest,
+  JoinSeatRequest,
+  LeaveSeatRequest
 } from '../services/signalr'
 import { authService } from '../services/auth'
 
@@ -99,8 +103,8 @@ export default function GamePage() {
   // Estado de conexiones ALINEADO con 3 hubs
   const [connectionStatus, setConnectionStatus] = useState({
     lobby: false,
-    gameRoom: false,     // CORREGIDO: GameRoomHub maneja rooms, seats, spectators
-    gameControl: false,  // CORREGIDO: GameControlHub maneja game actions y auto-betting
+    gameRoom: false,     // GameRoomHub maneja rooms, seats, spectators
+    gameControl: false,  // GameControlHub maneja game actions y auto-betting
     overall: false
   })
   
@@ -176,7 +180,7 @@ export default function GamePage() {
     }
   }, [])
 
-  // CORREGIDO: Verificar conexiones de 3 hubs específicos
+  // Verificar conexiones de 3 hubs específicos
   useEffect(() => {
     let mounted = true
     
@@ -185,8 +189,8 @@ export default function GamePage() {
       
       const status = {
         lobby: signalRService.isLobbyConnected,
-        gameRoom: signalRService.isGameRoomConnected,      // CORREGIDO: GameRoomHub
-        gameControl: signalRService.isGameControlConnected, // CORREGIDO: GameControlHub
+        gameRoom: signalRService.isGameRoomConnected,
+        gameControl: signalRService.isGameControlConnected,
         overall: signalRService.areAllConnected
       }
       
@@ -262,7 +266,7 @@ export default function GamePage() {
     setError(null)
   }, [])
 
-  // CORREGIDO: SeatJoined/SeatLeft vienen de GameRoomHub
+  // SeatJoined/SeatLeft vienen de GameRoomHub
   const handleSeatJoined = useCallback((response: any) => {
     if (!isComponentMounted.current) return
     console.log('[GamePage] Seat joined via GameRoomHub:', response)
@@ -352,10 +356,16 @@ export default function GamePage() {
         handValue: p.hand?.value
       })))
     }
+    
     setGameState(prev => {
       const prevState: any = prev || {}
 
-      const status = (newState?.status as string) || 'InProgress'
+      // CORREGIDO: Usar el status real del backend, no hardcodear
+      const status = newState?.status || prevState.status || 'WaitingForPlayers'
+      
+      // CORREGIDO: canStart debe ser false cuando el juego está InProgress
+      const canStart = status === 'InProgress' ? false : (prevState.canStart ?? true)
+
       const dealerHand = newState?.dealerHand || prevState.dealerHand || null
 
       let playerHand = prevState.playerHand || null
@@ -390,11 +400,9 @@ export default function GamePage() {
         }))
       }
 
-      const canStart = status === 'InProgress' ? false : (prevState.canStart ?? false)
-
       const newGameState = {
         ...prevState,
-        status: 'InProgress',
+        status: status,  // CORREGIDO: Usar status real del backend
         canStart,
         dealerHand: dealerHand ? {
           id: dealerHand.handId || dealerHand.id,
@@ -407,6 +415,14 @@ export default function GamePage() {
         minBetPerRound: newState?.minBetPerRound || prevState.minBetPerRound,
         autoBettingActive: newState?.autoBettingActive !== undefined ? newState.autoBettingActive : prevState.autoBettingActive
       } as any
+
+      // Debugging para GameTable
+      console.log('[GamePage] New game state for GameTable:', {
+        status: newGameState.status,
+        canStart: newGameState.canStart,
+        hasPlayerHand: !!newGameState.playerHand,
+        playerHandStatus: newGameState.playerHand?.status
+      })
 
       if (!newGameState.playerHand && currentUserId && Array.isArray(newState?.players)) {
         const me = newState.players.find((p: any) => p.playerId === currentUserId)
@@ -717,7 +733,7 @@ export default function GamePage() {
     }
   }, [])
 
-  // FIXED: Auto-join logic usando GameRoomHub (REMOVED PROBLEMATIC GAMECONTROL JOIN)
+  // Auto-join logic usando GameRoomHub
   useEffect(() => {
     let mounted = true
     
@@ -733,7 +749,7 @@ export default function GamePage() {
         return
       }
 
-      // CORREGIDO: GameRoomHub maneja tanto players como viewers
+      // GameRoomHub maneja tanto players como viewers
       const requiredHub = connectionStatus.gameRoom
       
       if (!requiredHub) {
@@ -754,9 +770,13 @@ export default function GamePage() {
         
         const playerName = currentUser.current?.displayName || (isViewer ? 'Viewer' : 'Jugador')
         
-        // CORREGIDO: Usar método alineado con signalRService
+        // CORREGIDO: Usar métodos exactos del signalRService actualizado
         if (isViewer) {
-          await signalRService.joinAsViewer(tableId, playerName)
+          const request: JoinRoomRequest = {
+            roomCode: tableId,
+            playerName: playerName
+          }
+          await signalRService.joinAsViewer(request)
         } else {
           await signalRService.joinOrCreateRoomForTable(tableId, playerName)
         }
@@ -770,7 +790,6 @@ export default function GamePage() {
         setError(error instanceof Error ? error.message : 'Error conectando a la mesa')
         hasJoinedTable.current = false
       } finally {
-        // FIXED: This finally block was getting blocked by the race condition
         console.log('[GamePage] FINALLY BLOCK EXECUTING:', { mounted, isComponentMounted: isComponentMounted.current })
         if (mounted && isComponentMounted.current) {
           console.log('[GamePage] Setting isJoining to FALSE')
@@ -789,7 +808,7 @@ export default function GamePage() {
     }
   }, [connectionStatus.overall, connectionStatus.gameRoom, tableId, isViewer])
 
-  // FIXED: Separate useEffect for GameControlHub join (NO RACE CONDITION)
+  // Separate useEffect for GameControlHub join (NO RACE CONDITION)
   useEffect(() => {
     const joinGameControl = async () => {
       if (
@@ -853,24 +872,15 @@ export default function GamePage() {
       console.log('[GamePage] === EXPLICIT LEAVE ROOM ===')
       console.log('[GamePage] RoomCode:', gameState.roomCode)
       
-      // CORREGIDO: Usar GameRoomHub.leaveRoom
+      // CORREGIDO: Usar GameRoomHub.leaveRoom con método exacto
       await signalRService.leaveRoom(gameState.roomCode)
-      
-      // También salir de GameControlHub si estamos conectados
-      if (connectionStatus.gameControl) {
-        try {
-          await signalRService.leaveRoomGameControl(gameState.roomCode)
-        } catch (error) {
-          console.warn('[GamePage] Could not leave GameControlHub:', error)
-        }
-      }
       
       navigate({ to: '/lobby' })
     } catch (error) {
       console.error('[GamePage] Error leaving room:', error)
       navigate({ to: '/lobby' })
     }
-  }, [gameState?.roomCode, navigate, connectionStatus.gameControl])
+  }, [gameState?.roomCode, navigate])
 
   // CORREGIDO: Start round usando GameControlHub
   const handleStartRound = useCallback(async () => {
@@ -885,7 +895,7 @@ export default function GamePage() {
       setError(null)
       console.log('[GamePage] Starting game via GameControlHub')
       await signalRService.startGame(gameState.roomCode)
-      setGameState(prev => (prev ? { ...prev, status: 'InProgress' } as any : prev))
+      // ELIMINADO: No forzar status localmente, el backend enviará gameStateUpdated
       signalRService.getRoomInfo(gameState.roomCode).catch(() => {})
     } catch (error) {
       if (!isComponentMounted.current) return
@@ -896,7 +906,7 @@ export default function GamePage() {
     }
   }, [connectionStatus.gameControl, gameState?.roomCode, isStartingRound])
 
-  // CORREGIDO: Handlers para cartas usando GameControlHub
+  // Handlers para cartas usando GameControlHub
   const handleHit = useCallback(async () => {
     if (!gameState?.roomCode || !isComponentMounted.current) {
       console.log('[GamePage] Cannot hit - no room code')
@@ -928,6 +938,52 @@ export default function GamePage() {
       if (!isComponentMounted.current) return
       console.error('[GamePage] Error standing:', error)
       setError(error instanceof Error ? error.message : 'Error al plantarse')
+    }
+  }, [gameState?.roomCode])
+
+  // NUEVOS: Handlers para asientos usando métodos exactos del signalRService
+  const handleJoinSeat = useCallback(async (position: number) => {
+    if (!gameState?.roomCode || seatClickLoading !== null) return
+    
+    try {
+      setSeatClickLoading(position)
+      setError(null)
+      
+      const request: JoinSeatRequest = {
+        roomCode: gameState.roomCode,
+        position: position
+      }
+      
+      console.log('[GamePage] Joining seat via GameRoomHub:', request)
+      await signalRService.joinSeat(request)
+      
+    } catch (error) {
+      if (!isComponentMounted.current) return
+      console.error('[GamePage] Error joining seat:', error)
+      setError(error instanceof Error ? error.message : 'Error al unirse al asiento')
+      setSeatClickLoading(null)
+    }
+  }, [gameState?.roomCode, seatClickLoading])
+
+  const handleLeaveSeat = useCallback(async () => {
+    if (!gameState?.roomCode) return
+    
+    try {
+      setSeatClickLoading(-1) // Usar -1 para indicar "leaving seat"
+      setError(null)
+      
+      const request: LeaveSeatRequest = {
+        roomCode: gameState.roomCode
+      }
+      
+      console.log('[GamePage] Leaving seat via GameRoomHub:', request)
+      await signalRService.leaveSeat(request)
+      
+    } catch (error) {
+      if (!isComponentMounted.current) return
+      console.error('[GamePage] Error leaving seat:', error)
+      setError(error instanceof Error ? error.message : 'Error al salir del asiento')
+      setSeatClickLoading(null)
     }
   }, [gameState?.roomCode])
 
@@ -1052,12 +1108,12 @@ export default function GamePage() {
         onStartRound={handleStartRound}
         dealerHand={gameState?.dealerHand}
         playerHand={gameState?.playerHand}
-        isPlayerTurn={gameState?.currentPlayerTurn === currentPlayer?.name}
+        isPlayerTurn={gameState?.currentPlayerTurn === currentPlayer?.playerId}
         onHit={handleHit}
         onStand={handleStand}
       />
 
-      {/* Game Seats usando la prop correcta */}
+      {/* Game Seats - ACTUALIZADO con handlers exactos */}
       <GameSeats
         players={gameState?.players || []}
         roomCode={gameState?.roomCode}
@@ -1073,6 +1129,9 @@ export default function GamePage() {
         autoBettingActive={isAutoBettingActive()}
         minBetPerRound={gameState?.minBetPerRound || 0}
         playersWithHands={gameState?.playersWithHands || []}
+        // NUEVOS: Handlers exactos para asientos
+        onJoinSeat={handleJoinSeat}
+        onLeaveSeat={handleLeaveSeat}
       />
       
       {/* Game Chat */}

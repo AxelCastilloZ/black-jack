@@ -1,10 +1,11 @@
-// BlackJack.Realtime/Hubs/GameControlHub.cs - Control de juego y auto-betting
+// BlackJack.Realtime/Hubs/GameControlHub.cs - ARCHIVO COMPLETO REFACTORIZADO
+using BlackJack.Data.Repositories.Game;
+using BlackJack.Domain.Enums;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Realtime.Models;
-using BlackJack.Services.Game;
 using BlackJack.Realtime.Services;
-using BlackJack.Data.Repositories.Game;
+using BlackJack.Services.Game;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
@@ -20,6 +21,8 @@ public class GameControlHub : BaseHub
     private readonly IGameService _gameService;
     private readonly ITableRepository _tableRepository;
     private readonly IHandRepository _handRepository;
+    private readonly IPlayerRepository _playerRepository;
+    private readonly IDealerService _dealerService;
 
     public GameControlHub(
         IGameRoomService gameRoomService,
@@ -28,6 +31,8 @@ public class GameControlHub : BaseHub
         IGameService gameService,
         ITableRepository tableRepository,
         IHandRepository handRepository,
+        IPlayerRepository playerRepository,
+        IDealerService dealerService,
         ILogger<GameControlHub> logger) : base(logger)
     {
         _gameRoomService = gameRoomService;
@@ -36,6 +41,8 @@ public class GameControlHub : BaseHub
         _gameService = gameService;
         _tableRepository = tableRepository;
         _handRepository = handRepository;
+        _playerRepository = playerRepository;
+        _dealerService = dealerService;
     }
 
     #region Connection Management
@@ -80,7 +87,6 @@ public class GameControlHub : BaseHub
             _logger.LogInformation("[GameControlHub] Player {PlayerId} starting game in room {RoomCode}",
                 playerId, roomCode);
 
-            // Obtener la sala y verificar el estado
             var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
             if (!roomResult.IsSuccess)
             {
@@ -90,29 +96,75 @@ public class GameControlHub : BaseHub
 
             var room = roomResult.Value!;
 
-            // Si hay mesa de blackjack, inicializar cartas
+            // Verificar si el juego ya está en progreso
+            if (room.Status == RoomStatus.InProgress)
+            {
+                _logger.LogInformation("[GameControlHub] Game already in progress for room {RoomCode}", roomCode);
+
+                if (room.BlackjackTableId.HasValue)
+                {
+                    await SendInitialGameState(roomCode, room.BlackjackTableId.Value);
+                }
+
+                await SendSuccessAsync("El juego ya está en progreso");
+                return;
+            }
+
+            // Verificar estado de la mesa
+            if (room.BlackjackTableId.HasValue)
+            {
+                var tableResult = await _gameService.GetTableAsync(room.BlackjackTableId.Value);
+                if (tableResult.IsSuccess && tableResult.Value!.Status == GameStatus.InProgress)
+                {
+                    _logger.LogInformation("[GameControlHub] Table already in progress for room {RoomCode}", roomCode);
+
+                    await SendInitialGameState(roomCode, room.BlackjackTableId.Value);
+                    await SendSuccessAsync("El juego ya está en progreso");
+                    return;
+                }
+            }
+
+            // REFACTORIZADO: Usar nuevo DealerService con RoomPlayers
             if (room.BlackjackTableId.HasValue)
             {
                 var tableId = room.BlackjackTableId.Value;
+                var seatedPlayers = room.Players.Where(p => p.SeatPosition.HasValue).ToList();
 
-                // Sentar jugadores en la mesa
-                foreach (var rp in room.Players.Where(p => p.SeatPosition.HasValue))
+                _logger.LogInformation("[GameControlHub] Starting round for {Count} seated players", seatedPlayers.Count);
+
+                if (seatedPlayers.Any())
                 {
-                    try
+                    // Iniciar la ronda (sin repartir cartas aún)
+                    var startRoundResult = await _gameService.StartRoundAsync(tableId);
+                    if (!startRoundResult.IsSuccess)
                     {
-                        await _gameService.JoinTableAsync(tableId, rp.PlayerId, rp.SeatPosition!.Value);
+                        _logger.LogError("[GameControlHub] StartRoundAsync failed: {Error}", startRoundResult.Error);
+                        await SendErrorAsync(startRoundResult.Error);
+                        return;
                     }
-                    catch (Exception ex)
+
+                    // Obtener la mesa actualizada
+                    var table = await _tableRepository.GetByIdAsync(tableId);
+                    if (table == null)
                     {
-                        _logger.LogWarning(ex, "[GameControlHub] Error seating player {PlayerId}", rp.PlayerId);
+                        _logger.LogError("[GameControlHub] Table not found after StartRoundAsync");
+                        await SendErrorAsync("Error obteniendo mesa después de iniciar ronda");
+                        return;
                     }
+
+                    // NUEVO: Usar DealerService refactorizado con RoomPlayers
+                    await _dealerService.DealInitialCardsAsync(table, seatedPlayers);
+
+                    // Actualizar la mesa con los cambios
+                    await _tableRepository.UpdateAsync(table);
+
+                    _logger.LogInformation("[GameControlHub] Initial cards dealt successfully for {Count} players", seatedPlayers.Count);
                 }
-
-                // Iniciar la ronda de blackjack
-                var startRoundResult = await _gameService.StartRoundAsync(tableId);
-                if (!startRoundResult.IsSuccess)
+                else
                 {
-                    _logger.LogWarning("[GameControlHub] StartRoundAsync failed: {Error}", startRoundResult.Error);
+                    _logger.LogWarning("[GameControlHub] No seated players found, cannot start game");
+                    await SendErrorAsync("No hay jugadores sentados para iniciar el juego");
+                    return;
                 }
             }
 
@@ -135,7 +187,6 @@ public class GameControlHub : BaseHub
 
                     await _notificationService.NotifyGameStartedAsync(roomCode, gameStartedEvent);
 
-                    // Enviar estado inicial del juego con cartas
                     if (updatedRoom.BlackjackTableId.HasValue)
                     {
                         await SendInitialGameState(roomCode, updatedRoom.BlackjackTableId.Value);
@@ -197,180 +248,6 @@ public class GameControlHub : BaseHub
 
     #endregion
 
-    #region Auto-Betting
-
-    public async Task ProcessRoundAutoBets(string roomCode, bool removePlayersWithoutFunds = true)
-    {
-        try
-        {
-            var playerId = await ValidateAuthenticationAsync();
-            if (playerId == null) return;
-
-            if (!ValidateInput(roomCode, nameof(roomCode)))
-            {
-                await SendErrorAsync("Código de sala inválido");
-                return;
-            }
-
-            _logger.LogInformation("[GameControlHub] Player {PlayerId} processing auto-bets for room {RoomCode}",
-                playerId, roomCode);
-
-            // Notificar inicio del procesamiento
-            var processingStartedEvent = new AutoBetProcessingStartedEventModel(
-                RoomCode: roomCode,
-                SeatedPlayersCount: 0,
-                MinBetPerRound: 0,
-                TotalBetAmount: 0,
-                StartedAt: DateTime.UtcNow
-            );
-
-            var statsResult = await _gameRoomService.CalculateAutoBetStatisticsAsync(roomCode);
-            if (statsResult.IsSuccess)
-            {
-                var stats = statsResult.Value!;
-                processingStartedEvent = processingStartedEvent with
-                {
-                    SeatedPlayersCount = stats.SeatedPlayersCount,
-                    MinBetPerRound = stats.MinBetPerRound.Amount,
-                    TotalBetAmount = stats.TotalBetPerRound.Amount
-                };
-
-                await _notificationService.NotifyAutoBetProcessingStartedAsync(roomCode, processingStartedEvent);
-            }
-
-            // Procesar auto-bets
-            var result = await _gameRoomService.ProcessRoundAutoBetsAsync(roomCode, removePlayersWithoutFunds);
-
-            if (result.IsSuccess)
-            {
-                var autoBetResult = result.Value!;
-
-                var autoBetEventModel = new AutoBetProcessedEventModel(
-                    RoomCode: autoBetResult.RoomCode,
-                    TotalPlayersProcessed: autoBetResult.TotalPlayersProcessed,
-                    SuccessfulBets: autoBetResult.SuccessfulBets,
-                    FailedBets: autoBetResult.FailedBets,
-                    PlayersRemovedFromSeats: autoBetResult.PlayersRemovedFromSeats,
-                    TotalAmountProcessed: autoBetResult.TotalAmountProcessed.Amount,
-                    PlayerResults: autoBetResult.PlayerResults.Select(pr => new AutoBetPlayerResultModel(
-                        PlayerId: pr.PlayerId.Value,
-                        PlayerName: pr.PlayerName,
-                        SeatPosition: pr.SeatPosition,
-                        Status: pr.Status.ToString(),
-                        OriginalBalance: pr.OriginalBalance.Amount,
-                        NewBalance: pr.NewBalance.Amount,
-                        BetAmount: pr.BetAmount.Amount,
-                        ErrorMessage: pr.ErrorMessage
-                    )).ToList(),
-                    ProcessedAt: autoBetResult.ProcessedAt,
-                    HasErrors: autoBetResult.HasErrors,
-                    SuccessRate: autoBetResult.SuccessRate
-                );
-
-                await _notificationService.NotifyAutoBetProcessedAsync(roomCode, autoBetEventModel);
-
-                // Notificar eventos específicos por jugador
-                foreach (var playerResult in autoBetResult.PlayerResults)
-                {
-                    if (playerResult.Status == BetStatus.BetDeducted)
-                    {
-                        var balanceUpdateEvent = new PlayerBalanceUpdatedEventModel(
-                            RoomCode: roomCode,
-                            PlayerId: playerResult.PlayerId.Value,
-                            PlayerName: playerResult.PlayerName,
-                            PreviousBalance: playerResult.OriginalBalance.Amount,
-                            NewBalance: playerResult.NewBalance.Amount,
-                            AmountChanged: -playerResult.BetAmount.Amount,
-                            ChangeReason: "AutoBet",
-                            UpdatedAt: DateTime.UtcNow
-                        );
-
-                        await _notificationService.NotifyPlayerBalanceUpdatedAsync(roomCode, balanceUpdateEvent);
-                    }
-                }
-
-                await SendSuccessAsync($"Auto-bets procesadas: {autoBetResult.SuccessfulBets} exitosas", autoBetEventModel);
-            }
-            else
-            {
-                var failedEvent = new AutoBetFailedEventModel(
-                    RoomCode: roomCode,
-                    ErrorMessage: result.Error,
-                    ErrorCode: "AUTO_BET_PROCESSING_FAILED",
-                    AffectedPlayersCount: 0,
-                    AffectedPlayerIds: new List<Guid>(),
-                    FailedAt: DateTime.UtcNow,
-                    RequiresManualIntervention: true
-                );
-
-                await _notificationService.NotifyAutoBetFailedAsync(roomCode, failedEvent);
-                await SendErrorAsync(result.Error);
-            }
-        }
-        catch (Exception ex)
-        {
-            await HandleExceptionAsync(ex, "ProcessRoundAutoBets");
-        }
-    }
-
-    public async Task GetAutoBetStatistics(string roomCode)
-    {
-        try
-        {
-            var playerId = await ValidateAuthenticationAsync();
-            if (playerId == null) return;
-
-            if (!ValidateInput(roomCode, nameof(roomCode)))
-            {
-                await SendErrorAsync("Código de sala inválido");
-                return;
-            }
-
-            var result = await _gameRoomService.CalculateAutoBetStatisticsAsync(roomCode);
-
-            if (result.IsSuccess)
-            {
-                var stats = result.Value!;
-
-                var statsEventModel = new AutoBetStatisticsEventModel(
-                    RoomCode: stats.RoomCode,
-                    MinBetPerRound: stats.MinBetPerRound.Amount,
-                    SeatedPlayersCount: stats.SeatedPlayersCount,
-                    TotalBetPerRound: stats.TotalBetPerRound.Amount,
-                    PlayersWithSufficientFunds: stats.PlayersWithSufficientFunds,
-                    PlayersWithInsufficientFunds: stats.PlayersWithInsufficientFunds,
-                    TotalAvailableFunds: stats.TotalAvailableFunds.Amount,
-                    ExpectedSuccessfulBets: stats.ExpectedSuccessfulBets,
-                    ExpectedTotalDeduction: stats.ExpectedTotalDeduction.Amount,
-                    PlayerDetails: stats.PlayerDetails.Select(pd => new PlayerAutoBetDetailModel(
-                        PlayerId: pd.PlayerId.Value,
-                        PlayerName: pd.PlayerName,
-                        SeatPosition: 0,
-                        CurrentBalance: pd.CurrentBalance.Amount,
-                        CanAffordBet: pd.CanAffordBet,
-                        BalanceAfterBet: pd.BalanceAfterBet.Amount,
-                        RoundsAffordable: pd.CanAffordBet ?
-                            (int)(pd.CurrentBalance.Amount / stats.MinBetPerRound.Amount) : 0
-                    )).ToList(),
-                    CalculatedAt: stats.CalculatedAt
-                );
-
-                await _notificationService.NotifyAutoBetStatisticsAsync(roomCode, statsEventModel);
-                await SendSuccessAsync("Estadísticas obtenidas", statsEventModel);
-            }
-            else
-            {
-                await SendErrorAsync(result.Error);
-            }
-        }
-        catch (Exception ex)
-        {
-            await HandleExceptionAsync(ex, "GetAutoBetStatistics");
-        }
-    }
-
-    #endregion
-
     #region Player Actions
 
     public async Task Hit(string roomCode)
@@ -386,8 +263,45 @@ public class GameControlHub : BaseHub
                 return;
             }
 
-            // TODO: Implementar lógica de Hit en GameService
-            await SendSuccessAsync("Hit realizado");
+            _logger.LogInformation("[GameControlHub] Player {PlayerId} hitting in room {RoomCode}",
+                playerId, roomCode);
+
+            var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
+            if (!roomResult.IsSuccess)
+            {
+                await SendErrorAsync(roomResult.Error ?? "Sala no encontrada");
+                return;
+            }
+
+            var room = roomResult.Value!;
+
+            if (!room.BlackjackTableId.HasValue)
+            {
+                await SendErrorAsync("La sala no tiene una mesa de blackjack asociada");
+                return;
+            }
+
+            var tableId = room.BlackjackTableId.Value;
+
+            if (!room.IsPlayerInRoom(playerId))
+            {
+                await SendErrorAsync("No estás en esta sala");
+                return;
+            }
+
+            var actionResult = await _gameService.PlayerActionAsync(tableId, playerId, PlayerAction.Hit);
+
+            if (actionResult.IsSuccess)
+            {
+                _logger.LogInformation("[GameControlHub] Hit action successful for player {PlayerId}", playerId);
+                await SendUpdatedGameState(roomCode, tableId);
+                await SendSuccessAsync("Hit ejecutado correctamente");
+            }
+            else
+            {
+                _logger.LogError("[GameControlHub] Hit action failed: {Error}", actionResult.Error);
+                await SendErrorAsync(actionResult.Error ?? "Error ejecutando Hit");
+            }
         }
         catch (Exception ex)
         {
@@ -408,8 +322,45 @@ public class GameControlHub : BaseHub
                 return;
             }
 
-            // TODO: Implementar lógica de Stand en GameService
-            await SendSuccessAsync("Stand realizado");
+            _logger.LogInformation("[GameControlHub] Player {PlayerId} standing in room {RoomCode}",
+                playerId, roomCode);
+
+            var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
+            if (!roomResult.IsSuccess)
+            {
+                await SendErrorAsync(roomResult.Error ?? "Sala no encontrada");
+                return;
+            }
+
+            var room = roomResult.Value!;
+
+            if (!room.BlackjackTableId.HasValue)
+            {
+                await SendErrorAsync("La sala no tiene una mesa de blackjack asociada");
+                return;
+            }
+
+            var tableId = room.BlackjackTableId.Value;
+
+            if (!room.IsPlayerInRoom(playerId))
+            {
+                await SendErrorAsync("No estás en esta sala");
+                return;
+            }
+
+            var actionResult = await _gameService.PlayerActionAsync(tableId, playerId, PlayerAction.Stand);
+
+            if (actionResult.IsSuccess)
+            {
+                _logger.LogInformation("[GameControlHub] Stand action successful for player {PlayerId}", playerId);
+                await SendUpdatedGameState(roomCode, tableId);
+                await SendSuccessAsync("Stand ejecutado correctamente");
+            }
+            else
+            {
+                _logger.LogError("[GameControlHub] Stand action failed: {Error}", actionResult.Error);
+                await SendErrorAsync(actionResult.Error ?? "Error ejecutando Stand");
+            }
         }
         catch (Exception ex)
         {
@@ -417,53 +368,175 @@ public class GameControlHub : BaseHub
         }
     }
 
-    public async Task DoubleDown(string roomCode)
+    private async Task SendUpdatedGameState(string roomCode, Guid tableId)
     {
         try
         {
-            var playerId = await ValidateAuthenticationAsync();
-            if (playerId == null) return;
-
-            if (!ValidateInput(roomCode, nameof(roomCode)))
+            var table = await _tableRepository.GetByIdAsync(tableId);
+            if (table == null)
             {
-                await SendErrorAsync("Código de sala inválido");
+                _logger.LogWarning("[GameControlHub] Cannot send updated game state - table not found");
                 return;
             }
 
-            // TODO: Implementar lógica de DoubleDown en GameService
-            await SendSuccessAsync("Double Down realizado");
+            var gameState = await BuildGameStatePayload(roomCode, table);
+
+            _logger.LogInformation("[GameControlHub] Sending updated game state to room {RoomCode}", roomCode);
+            await _notificationService.NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.GameStateUpdated, gameState);
         }
         catch (Exception ex)
         {
-            await HandleExceptionAsync(ex, "DoubleDown");
-        }
-    }
-
-    public async Task Split(string roomCode)
-    {
-        try
-        {
-            var playerId = await ValidateAuthenticationAsync();
-            if (playerId == null) return;
-
-            if (!ValidateInput(roomCode, nameof(roomCode)))
-            {
-                await SendErrorAsync("Código de sala inválido");
-                return;
-            }
-
-            // TODO: Implementar lógica de Split en GameService
-            await SendSuccessAsync("Split realizado");
-        }
-        catch (Exception ex)
-        {
-            await HandleExceptionAsync(ex, "Split");
+            _logger.LogError(ex, "[GameControlHub] Error sending updated game state: {Error}", ex.Message);
         }
     }
 
     #endregion
 
-    #region Room Group Management
+    #region Private Methods
+
+    private async Task SendInitialGameState(string roomCode, Guid tableId)
+    {
+        try
+        {
+            var table = await _tableRepository.GetByIdAsync(tableId);
+            if (table == null) return;
+
+            var gameState = await BuildGameStatePayload(roomCode, table);
+
+            _logger.LogInformation("[GameControlHub] Sending initial game state to room {RoomCode}", roomCode);
+            await _notificationService.NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.GameStateUpdated, gameState);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameControlHub] Error sending initial game state: {Error}", ex.Message);
+        }
+    }
+
+    private async Task SendInitialGameStateToConnection(string connectionId, string roomCode, Guid tableId)
+    {
+        try
+        {
+            var table = await _tableRepository.GetByIdAsync(tableId);
+            if (table == null) return;
+
+            var gameState = await BuildGameStatePayload(roomCode, table);
+
+            _logger.LogInformation("[GameControlHub] Sending game state to connection {ConnectionId}", connectionId);
+
+            await Clients.Client(connectionId).SendAsync(HubMethodNames.ServerMethods.GameStateUpdated, gameState);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameControlHub] Error sending game state to connection: {Error}", ex.Message);
+        }
+    }
+
+    private async Task<object> BuildGameStatePayload(string roomCode, BlackjackTable table)
+    {
+        _logger.LogInformation("[GameControlHub] Building game state payload for room {RoomCode}", roomCode);
+
+        // Obtener la sala con sus jugadores
+        var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
+        if (!roomResult.IsSuccess || roomResult.Value == null)
+        {
+            _logger.LogError("[GameControlHub] Room not found for {RoomCode}", roomCode);
+            return new { roomCode, status = "Error", players = new List<object>() };
+        }
+
+        var room = roomResult.Value;
+
+        // Construir dealer payload
+        object? dealerPayload = null;
+        if (table.DealerHandId.HasValue)
+        {
+            var dealerHand = await _handRepository.GetByIdAsync(table.DealerHandId.Value);
+            if (dealerHand != null)
+            {
+                dealerPayload = new
+                {
+                    handId = dealerHand.Id,
+                    cards = dealerHand.Cards.Select(c => new {
+                        suit = c.Suit.ToString(),
+                        rank = c.Rank.ToString()
+                    }).ToList(),
+                    value = dealerHand.Value,
+                    status = dealerHand.Status.ToString()
+                };
+            }
+        }
+
+        // REFACTORIZADO: Usar RoomPlayers en lugar de Seats
+        var playersPayload = new List<object>();
+        var seatedPlayers = room.Players.Where(p => p.SeatPosition.HasValue).ToList();
+
+        _logger.LogInformation("[GameControlHub] Processing {Count} seated players", seatedPlayers.Count);
+
+        foreach (var roomPlayer in seatedPlayers)
+        {
+            _logger.LogInformation("[GameControlHub] Processing player {Name} at seat {Seat}",
+                roomPlayer.Name, roomPlayer.SeatPosition);
+
+            // Obtener el Player entity
+            Player? player = null;
+            if (roomPlayer.PlayerEntityId != Guid.Empty)
+            {
+                player = await _playerRepository.GetByIdAsync(roomPlayer.PlayerEntityId);
+            }
+
+            if (player == null)
+            {
+                // Si no hay Player entity, intentar obtenerlo por PlayerId
+                player = await _playerRepository.GetByPlayerIdAsync(roomPlayer.PlayerId);
+            }
+
+            if (player == null)
+            {
+                _logger.LogWarning("[GameControlHub] Player entity not found for {Name}", roomPlayer.Name);
+                continue;
+            }
+
+            // Construir hand payload
+            object? handPayload = null;
+            if (player.HandIds.Any())
+            {
+                var firstHandId = player.HandIds.First();
+                var hand = await _handRepository.GetByIdAsync(firstHandId);
+                if (hand != null)
+                {
+                    handPayload = new
+                    {
+                        handId = hand.Id,
+                        cards = hand.Cards.Select(c => new {
+                            suit = c.Suit.ToString(),
+                            rank = c.Rank.ToString()
+                        }).ToList(),
+                        value = hand.Value,
+                        status = hand.Status.ToString()
+                    };
+                }
+            }
+
+            playersPayload.Add(new
+            {
+                playerId = roomPlayer.PlayerId.Value,
+                name = roomPlayer.Name,
+                seat = roomPlayer.SeatPosition!.Value,
+                hand = handPayload
+            });
+        }
+
+        _logger.LogInformation("[GameControlHub] Built game state with {Count} players", playersPayload.Count);
+
+        return new
+        {
+            roomCode = roomCode,
+            status = table.Status.ToString(),
+            dealerHand = dealerPayload,
+            players = playersPayload
+        };
+    }
+
+    #endregion
 
     public async Task JoinRoomForGameControl(string roomCode)
     {
@@ -471,12 +544,6 @@ public class GameControlHub : BaseHub
         {
             var playerId = await ValidateAuthenticationAsync();
             if (playerId == null) return;
-
-            if (!ValidateInput(roomCode, nameof(roomCode)))
-            {
-                await SendErrorAsync("Código de sala inválido");
-                return;
-            }
 
             var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
             if (!roomResult.IsSuccess)
@@ -488,17 +555,23 @@ public class GameControlHub : BaseHub
             var room = roomResult.Value!;
             var roomGroupName = HubMethodNames.Groups.GetRoomGroup(roomCode);
 
-            await JoinGroupAsync(roomGroupName);
+            await Groups.AddToGroupAsync(Context.ConnectionId, roomGroupName);
             await _connectionManager.AddToGroupAsync(Context.ConnectionId, roomGroupName);
 
             if (room.BlackjackTableId.HasValue)
             {
                 var tableGroupName = HubMethodNames.Groups.GetTableGroup(room.BlackjackTableId.Value.ToString());
-                await JoinGroupAsync(tableGroupName);
+                await Groups.AddToGroupAsync(Context.ConnectionId, tableGroupName);
                 await _connectionManager.AddToGroupAsync(Context.ConnectionId, tableGroupName);
             }
 
             await SendSuccessAsync($"Conectado al control de juego para sala {roomCode}");
+
+            // Enviar estado actual si el juego está en progreso
+            if (room.BlackjackTableId.HasValue && room.Status == RoomStatus.InProgress)
+            {
+                await SendInitialGameStateToConnection(Context.ConnectionId, roomCode, room.BlackjackTableId.Value);
+            }
         }
         catch (Exception ex)
         {
@@ -506,32 +579,40 @@ public class GameControlHub : BaseHub
         }
     }
 
-    public async Task LeaveRoomGameControl(string roomCode)
+    public async Task GetAutoBetStatistics(string roomCode)
     {
         try
         {
             var playerId = await ValidateAuthenticationAsync();
             if (playerId == null) return;
 
-            if (!ValidateInput(roomCode, nameof(roomCode)))
+            var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
+            if (!roomResult.IsSuccess)
             {
-                await SendErrorAsync("Código de sala inválido");
+                await SendErrorAsync("Sala no encontrada");
                 return;
             }
 
-            var roomGroupName = HubMethodNames.Groups.GetRoomGroup(roomCode);
-            await LeaveGroupAsync(roomGroupName);
-            await _connectionManager.RemoveFromGroupAsync(Context.ConnectionId, roomGroupName);
+            var room = roomResult.Value!;
+            var seatedPlayers = room.Players.Where(p => p.SeatPosition.HasValue).ToList();
 
-            await SendSuccessAsync($"Desconectado del control de juego para sala {roomCode}");
+            var stats = new
+            {
+                roomCode = roomCode,
+                minBetPerRound = 20m,
+                seatedPlayersCount = seatedPlayers.Count,
+                totalBetPerRound = 0m,
+                playersWithSufficientFunds = 0,
+                playerDetails = new List<object>()
+            };
+
+            await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.AutoBetStatistics, stats);
         }
         catch (Exception ex)
         {
-            await HandleExceptionAsync(ex, "LeaveRoomGameControl");
+            await HandleExceptionAsync(ex, "GetAutoBetStatistics");
         }
     }
-
-    #endregion
 
     #region Test Methods
 
@@ -548,84 +629,6 @@ public class GameControlHub : BaseHub
         };
 
         await Clients.Caller.SendAsync("TestResponse", response);
-    }
-
-    #endregion
-
-    #region Private Methods
-
-    private async Task SendInitialGameState(string roomCode, Guid tableId)
-    {
-        try
-        {
-            var table = await _tableRepository.GetTableWithPlayersAsync(tableId);
-            if (table == null) return;
-
-            object? dealerPayload = null;
-            if (table.DealerHandId.HasValue)
-            {
-                var dealerHand = await _handRepository.GetByIdAsync(table.DealerHandId.Value);
-                if (dealerHand != null)
-                {
-                    dealerPayload = new
-                    {
-                        handId = dealerHand.Id,
-                        cards = dealerHand.Cards.Select(c => new {
-                            suit = c.Suit.ToString(),
-                            rank = c.Rank.ToString()
-                        }).ToList(),
-                        value = dealerHand.Value,
-                        status = dealerHand.Status.ToString()
-                    };
-                }
-            }
-
-            var playersPayload = new List<object>();
-            foreach (var seat in table.Seats.Where(s => s.IsOccupied && s.Player != null))
-            {
-                object? handPayload = null;
-                if (seat.Player!.HandIds.Any())
-                {
-                    var firstHandId = seat.Player.HandIds.First();
-                    var hand = await _handRepository.GetByIdAsync(firstHandId);
-                    if (hand != null)
-                    {
-                        handPayload = new
-                        {
-                            handId = hand.Id,
-                            cards = hand.Cards.Select(c => new {
-                                suit = c.Suit.ToString(),
-                                rank = c.Rank.ToString()
-                            }).ToList(),
-                            value = hand.Value,
-                            status = hand.Status.ToString()
-                        };
-                    }
-                }
-
-                playersPayload.Add(new
-                {
-                    playerId = seat.Player.Id,
-                    name = seat.Player.Name,
-                    seat = seat.Position,
-                    hand = handPayload
-                });
-            }
-
-            var gameState = new
-            {
-                roomCode = roomCode,
-                status = "InProgress",
-                dealerHand = dealerPayload,
-                players = playersPayload
-            };
-
-            await _notificationService.NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.GameStateUpdated, gameState);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[GameControlHub] Error sending initial game state: {Error}", ex.Message);
-        }
     }
 
     #endregion

@@ -1,77 +1,77 @@
-﻿// BlackJack.Realtime/Models/HubMethodNames.cs - Constantes organizadas por hub
+﻿// BlackJack.Realtime/Models/HubMethodNames.cs - CORREGIDO: camelCase para eventos
 using BlackJack.Realtime.Hubs;
 
 namespace BlackJack.Realtime.Models;
 
 public static class HubMethodNames
 {
-    #region Métodos del servidor (Server -> Client)
+    #region Métodos del servidor (Server -> Client) - CORREGIDOS A camelCase
 
     public static class ServerMethods
     {
         // === Respuestas generales ===
-        public const string Success = "Success";
-        public const string Error = "Error";
-        public const string TestResponse = "TestResponse";
+        public const string Success = "success";
+        public const string Error = "error";
+        public const string TestResponse = "testResponse";
 
         // === GameRoomHub - Gestión de salas ===
-        public const string RoomCreated = "RoomCreated";
-        public const string RoomJoined = "RoomJoined";
-        public const string RoomLeft = "RoomLeft";
-        public const string RoomInfo = "RoomInfo";
-        public const string RoomInfoUpdated = "RoomInfoUpdated";
+        public const string RoomCreated = "roomCreated";
+        public const string RoomJoined = "roomJoined";
+        public const string RoomLeft = "roomLeft";
+        public const string RoomInfo = "roomInfo";
+        public const string RoomInfoUpdated = "roomInfoUpdated";
 
         // === GameRoomHub - Gestión de asientos ===
-        public const string SeatJoined = "SeatJoined";
-        public const string SeatLeft = "SeatLeft";
+        public const string SeatJoined = "seatJoined";
+        public const string SeatLeft = "seatLeft";
 
         // === GameRoomHub - Eventos de jugadores ===
-        public const string PlayerJoined = "PlayerJoined";
-        public const string PlayerLeft = "PlayerLeft";
-        public const string SpectatorJoined = "SpectatorJoined";
-        public const string SpectatorLeft = "SpectatorLeft";
+        public const string PlayerJoined = "playerJoined";
+        public const string PlayerLeft = "playerLeft";
+        public const string SpectatorJoined = "spectatorJoined";
+        public const string SpectatorLeft = "spectatorLeft";
 
         // === GameControlHub - Control de juego ===
-        public const string GameStarted = "GameStarted";
-        public const string GameEnded = "GameEnded";
-        public const string GameStateUpdated = "GameStateUpdated";
-        public const string TurnChanged = "TurnChanged";
+        public const string GameStarted = "gameStarted";
+        public const string GameEnded = "gameEnded";
+        public const string GameStateUpdated = "gameStateUpdated";
+        public const string TurnChanged = "turnChanged";
 
         // === GameControlHub - Acciones de cartas ===
-        public const string CardDealt = "CardDealt";
-        public const string PlayerActionPerformed = "PlayerActionPerformed";
-        public const string BetPlaced = "BetPlaced";
+        public const string CardDealt = "cardDealt";
+        public const string PlayerActionPerformed = "playerActionPerformed";
+        public const string BetPlaced = "betPlaced";
 
         // === GameControlHub - Auto-Betting (Eventos grupales) ===
-        public const string AutoBetProcessed = "AutoBetProcessed";
-        public const string AutoBetProcessingStarted = "AutoBetProcessingStarted";
-        public const string AutoBetStatistics = "AutoBetStatistics";
-        public const string AutoBetFailed = "AutoBetFailed";
-        public const string AutoBetRoundSummary = "AutoBetRoundSummary";
+        public const string AutoBetProcessed = "autoBetProcessed";
+        public const string AutoBetProcessingStarted = "autoBetProcessingStarted";
+        public const string AutoBetStatistics = "autoBetStatistics";
+        public const string AutoBetFailed = "autoBetFailed";
+        public const string AutoBetRoundSummary = "autoBetRoundSummary";
 
         // === GameControlHub - Auto-Betting (Eventos de jugadores) ===
-        public const string PlayerRemovedFromSeat = "PlayerRemovedFromSeat";
-        public const string PlayerBalanceUpdated = "PlayerBalanceUpdated";
-        public const string InsufficientFundsWarning = "InsufficientFundsWarning";
-        public const string MinBetPerRoundUpdated = "MinBetPerRoundUpdated";
+        public const string PlayerRemovedFromSeat = "playerRemovedFromSeat";
+        public const string PlayerBalanceUpdated = "playerBalanceUpdated";
+        public const string InsufficientFundsWarning = "insufficientFundsWarning";
+        public const string MinBetPerRoundUpdated = "minBetPerRoundUpdated";
 
         // === GameControlHub - Auto-Betting (Notificaciones personales) ===
-        public const string YouWereRemovedFromSeat = "YouWereRemovedFromSeat";
-        public const string YourBalanceUpdated = "YourBalanceUpdated";
-        public const string InsufficientFundsWarningPersonal = "InsufficientFundsWarningPersonal";
-        public const string AutoBetFailedPersonal = "AutoBetFailedPersonal";
+        public const string YouWereRemovedFromSeat = "youWereRemovedFromSeat";
+        public const string YourBalanceUpdated = "yourBalanceUpdated";
+        public const string InsufficientFundsWarningPersonal = "insufficientFundsWarningPersonal";
+        public const string AutoBetFailedPersonal = "autoBetFailedPersonal";
 
         // === LobbyHub - Gestión del lobby ===
-        public const string ActiveRoomsUpdated = "ActiveRoomsUpdated";
-        public const string RoomListUpdated = "RoomListUpdated";
+        public const string ActiveRoomsUpdated = "activeRoomsUpdated";
+        public const string RoomListUpdated = "roomListUpdated";
 
         // === Chat (opcional) ===
-        public const string MessageReceived = "MessageReceived";
+        public const string MessageReceived = "messageReceived";
     }
 
     #endregion
 
-    #region Métodos del cliente (Client -> Server)
+    #region Métodos del cliente (Client -> Server) - MANTIENEN PascalCase
 
     public static class ClientMethods
     {
@@ -151,7 +151,7 @@ public static class HubMethodNames
 
     #endregion
 
-    #region Categorías de métodos por funcionalidad
+    #region Categorías de métodos por funcionalidad - ACTUALIZADAS
 
     public static class Categories
     {
