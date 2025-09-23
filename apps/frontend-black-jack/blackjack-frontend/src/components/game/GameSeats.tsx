@@ -277,8 +277,6 @@ function PlayerPosition({
   seatHubConnected,
   autoBettingActive = false,
   minBetPerRound = 0,
-  autoBettingActive = false,
-  minBetPerRound = 0,
   isMainPosition = false 
 }: {
   position: number
@@ -293,8 +291,6 @@ function PlayerPosition({
   seatClickLoading: number | null
   isViewer: boolean
   seatHubConnected: boolean
-  autoBettingActive?: boolean
-  minBetPerRound?: number
   autoBettingActive?: boolean
   minBetPerRound?: number
   isMainPosition?: boolean
@@ -329,15 +325,10 @@ function PlayerPosition({
   if (isEmpty) {
     return (
       <div className="flex flex-col items-center">
-      <div className="flex flex-col items-center">
         <div className="flex items-center mb-2">
           <div 
             className={`w-12 h-12 rounded-full border-2 border-dashed flex items-center justify-center mr-3 font-bold transition-all duration-200 ${
-            className={`w-12 h-12 rounded-full border-2 border-dashed flex items-center justify-center mr-3 font-bold transition-all duration-200 ${
               canJoinSeat 
-                ? 'bg-gray-600/80 border-gray-400 text-gray-300 hover:bg-gray-500 hover:border-gray-300 cursor-pointer transform hover:scale-110 hover:shadow-lg backdrop-blur-sm' 
-                : 'bg-gray-700/60 border-gray-500 text-gray-500 cursor-not-allowed backdrop-blur-sm'
-            } ${isMainPosition ? 'w-14 h-14 text-lg' : ''}`}
                 ? 'bg-gray-600/80 border-gray-400 text-gray-300 hover:bg-gray-500 hover:border-gray-300 cursor-pointer transform hover:scale-110 hover:shadow-lg backdrop-blur-sm' 
                 : 'bg-gray-700/60 border-gray-500 text-gray-500 cursor-not-allowed backdrop-blur-sm'
             } ${isMainPosition ? 'w-14 h-14 text-lg' : ''}`}
@@ -349,8 +340,6 @@ function PlayerPosition({
               position + 1
             )}
           </div>
-          
-          <div className="bg-gray-800/90 backdrop-blur-sm px-3 py-2 rounded-lg border border-gray-600 text-gray-300">
           
           <div className="bg-gray-800/90 backdrop-blur-sm px-3 py-2 rounded-lg border border-gray-600 text-gray-300">
             <div className="font-bold text-sm">
@@ -371,11 +360,7 @@ function PlayerPosition({
   // Jugador sentado - FUSIONADO
   return (
     <div className="flex flex-col items-center">
-    <div className="flex flex-col items-center">
       <div className="flex items-center mb-2">
-        <div className={`rounded-full bg-white flex items-center justify-center mr-3 font-bold text-black border-2 relative transition-all duration-200 ${
-          isCurrentUser ? 'border-red-500 shadow-lg shadow-red-500/25' : 'border-gray-300'
-        } ${isMainPosition ? 'w-14 h-14 text-lg' : 'w-12 h-12'}`}>
         <div className={`rounded-full bg-white flex items-center justify-center mr-3 font-bold text-black border-2 relative transition-all duration-200 ${
           isCurrentUser ? 'border-red-500 shadow-lg shadow-red-500/25' : 'border-gray-300'
         } ${isMainPosition ? 'w-14 h-14 text-lg' : 'w-12 h-12'}`}>
@@ -387,7 +372,6 @@ function PlayerPosition({
           
           {isCurrentUser && !isLoading && (
             <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full flex items-center justify-center">
-              <div className="w-1.5 h-1.5 bg-red-600 rounded-full animate-pulse"></div>
               <div className="w-1.5 h-1.5 bg-red-600 rounded-full animate-pulse"></div>
             </div>
           )}
@@ -464,7 +448,6 @@ function PlayerPosition({
           )}
           {isLoading && (
             <div className="text-orange-400 text-xs mt-2 text-center bg-orange-900/20 rounded px-2 py-1">
-            <div className="text-orange-400 text-xs mt-2 text-center bg-orange-900/20 rounded px-2 py-1">
               {seatClickLoading === -1 ? 'Saliendo...' : 'Procesando...'}
             </div>
           )}
@@ -508,14 +491,7 @@ function PlayerPosition({
           )}
         </div>
 
-        {/* BOTÓN CORRECTO: Solo aparece fuera de partida en progreso */}
         {isCurrentUser && !isLoading && gameStatus !== 'InProgress' && !isViewer && seatHubConnected && (
-          <button
-            onClick={handleLeaveSeat}
-            className="text-xs bg-orange-500/90 hover:bg-orange-600 backdrop-blur-sm text-white px-3 py-1 rounded-full transition-all duration-200 border border-orange-400 hover:shadow-lg hover:shadow-orange-500/25"
-          >
-            Salir del asiento
-          </button>
           <button
             onClick={handleLeaveSeat}
             className="text-xs bg-orange-500/90 hover:bg-orange-600 backdrop-blur-sm text-white px-3 py-1 rounded-full transition-all duration-200 border border-orange-400 hover:shadow-lg hover:shadow-orange-500/25"

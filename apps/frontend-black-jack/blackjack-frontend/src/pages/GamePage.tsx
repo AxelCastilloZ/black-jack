@@ -12,16 +12,6 @@ import {
   AutoBetProcessingStartedEvent,
   AutoBetRoundSummaryEvent 
 } from '../services/signalr'
-import { 
-  signalRService, 
-  AutoBetProcessedEvent, 
-  AutoBetStatistics, 
-  PlayerRemovedFromSeatEvent,
-  PlayerBalanceUpdatedEvent,
-  InsufficientFundsWarningEvent,
-  AutoBetProcessingStartedEvent,
-  AutoBetRoundSummaryEvent 
-} from '../services/signalr'
 import { authService } from '../services/auth'
 import { apiService } from '../api/apiService'
 
@@ -119,7 +109,6 @@ export default function GamePage() {
   const [error, setError] = useState<string | null>(null)
   
   // Estado de loading centralizado
-  // Estado de loading centralizado
   const [seatClickLoading, setSeatClickLoading] = useState<number | null>(null)
   
   // Estados de Auto-Betting (del documento 1)
@@ -212,7 +201,6 @@ export default function GamePage() {
     }
     
     checkConnections()
-    const interval = setInterval(checkConnections, 10000)
     const interval = setInterval(checkConnections, 10000)
     
     return () => {
@@ -742,22 +730,10 @@ export default function GamePage() {
       signalRService.onYouWereRemovedFromSeat = undefined
       signalRService.onYourBalanceUpdated = undefined
       signalRService.onInsufficientFundsWarningPersonal = undefined
-      
-      signalRService.onAutoBetProcessed = undefined
-      signalRService.onAutoBetStatistics = undefined
-      signalRService.onAutoBetProcessingStarted = undefined
-      signalRService.onAutoBetRoundSummary = undefined
-      signalRService.onPlayerRemovedFromSeat = undefined
-      signalRService.onPlayerBalanceUpdated = undefined
-      signalRService.onInsufficientFundsWarning = undefined
-      signalRService.onAutoBetFailed = undefined
-      signalRService.onYouWereRemovedFromSeat = undefined
-      signalRService.onYourBalanceUpdated = undefined
-      signalRService.onInsufficientFundsWarningPersonal = undefined
     }
   }, [])
 
-  // Auto-join logic - CORREGIDO: Sin auto-activar auto-betting
+  // Auto-join logic
   useEffect(() => {
     let mounted = true
     
@@ -936,7 +912,6 @@ export default function GamePage() {
   // Computed values
   const currentPlayer = gameState?.players?.find(p => p.playerId === currentUser.current?.id)
   const isPlayerSeated = !!currentPlayer && currentPlayer.position >= 0
-  const isPlayerSeated = !!currentPlayer && currentPlayer.position >= 0
 
   // Loading screen
   if (!connectionStatus.overall || isJoining) {
@@ -1086,19 +1061,7 @@ export default function GamePage() {
         // Cartas props (del documento 2)
         playersWithHands={gameState?.playersWithHands || []}
       />
-
-      {/* Game Bettings - Opcional (del documento 2) */}
-      {false && (
-        <GameBettings
-          isPlayerSeated={isPlayerSeated}
-          gameStatus={gameState?.status}
-          isViewer={isViewer}
-          currentPlayerBalance={currentPlayer?.currentBalance || 1000}
-          isPlayerTurn={gameState?.currentPlayerTurn === currentPlayer?.name}
-          roomCode={gameState?.roomCode}
-        />
-      )}
-
+      
       {/* Game Chat */}
       <GameChat
         currentUser={currentUser.current}
