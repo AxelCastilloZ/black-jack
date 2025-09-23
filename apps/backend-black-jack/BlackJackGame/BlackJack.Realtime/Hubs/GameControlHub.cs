@@ -187,31 +187,38 @@ public class GameControlHub : BaseHub
                             }
 
                             var playersPayload = new List<object>();
-                            foreach (var seat in tableAfterStart.Seats.Where(s => s.IsOccupied && s.Player != null))
+                            // Prefer room players (with seat positions) to ensure we always send seated players
+                            foreach (var rp in updatedRoom.Players.Where(p => p.SeatPosition.HasValue)
+                                                                .OrderBy(p => p.SeatPosition!.Value))
                             {
-                                var player = seat.Player!;
-                                Guid? firstHandId = player.HandIds.FirstOrDefault();
                                 object? handPayload = null;
-                                if (firstHandId.HasValue)
+                                // Try to find matching seat/player from table to fetch hand if available
+                                var matchingSeat = tableAfterStart.Seats.FirstOrDefault(s => s.Position == rp.SeatPosition!.Value && s.IsOccupied && s.Player != null);
+                                if (matchingSeat?.Player != null)
                                 {
-                                    var hand = await _handRepository.GetByIdAsync(firstHandId.Value);
-                                    if (hand != null)
+                                    var player = matchingSeat.Player;
+                                    Guid? firstHandId = player.HandIds.FirstOrDefault();
+                                    if (firstHandId.HasValue)
                                     {
-                                        handPayload = new
+                                        var hand = await _handRepository.GetByIdAsync(firstHandId.Value);
+                                        if (hand != null)
                                         {
-                                            handId = hand.Id,
-                                            cards = hand.Cards.Select(c => new { suit = c.Suit.ToString(), rank = c.Rank.ToString() }).ToList(),
-                                            value = hand.Value,
-                                            status = hand.Status.ToString()
-                                        };
+                                            handPayload = new
+                                            {
+                                                handId = hand.Id,
+                                                cards = hand.Cards.Select(c => new { suit = c.Suit.ToString(), rank = c.Rank.ToString() }).ToList(),
+                                                value = hand.Value,
+                                                status = hand.Status.ToString()
+                                            };
+                                        }
                                     }
                                 }
 
                                 playersPayload.Add(new
                                 {
-                                    playerId = player.PlayerId.Value,
-                                    name = player.Name,
-                                    seat = seat.Position,
+                                    playerId = rp.PlayerId.Value,
+                                    name = rp.Name,
+                                    seat = rp.SeatPosition!.Value,
                                     hand = handPayload
                                 });
                             }
@@ -220,6 +227,7 @@ public class GameControlHub : BaseHub
                             {
                                 roomCode = roomCode,
                                 status = "InProgress",
+                                currentPlayerTurn = updatedRoom.CurrentPlayer?.PlayerId.Value,
                                 dealerHand = dealerPayload,
                                 players = playersPayload
                             };
