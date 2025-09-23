@@ -466,23 +466,30 @@ public class RoomHub : BaseHub
             _logger.LogInformation("[RoomHub] Auto-betting calculation: MinBetPerRound={MinBet}, SeatedPlayers={SeatedCount}, Active={Active}",
                 room.MinBetPerRound?.Amount ?? 0, seatedPlayersCount, isAutoBettingActive);
 
+            // Determinar host efectivo: si el Host actual no está sentado, usar el primer jugador sentado
+            var seatedPlayers = room.Players.Where(p => p.IsSeated).ToList();
+            var effectiveHostId = seatedPlayers.Any() && !seatedPlayers.Any(p => p.PlayerId.Value == room.HostPlayerId.Value)
+                ? seatedPlayers.First().PlayerId
+                : room.HostPlayerId;
+
             var roomInfo = new RoomInfoModel(
                 RoomCode: room.RoomCode,
                 Name: room.Name,
                 Status: room.Status.ToString(),
-                PlayerCount: room.PlayerCount,
+                PlayerCount: seatedPlayersCount,
                 MaxPlayers: room.MaxPlayers,
 
                 // NUEVO: Datos de auto-betting incluidos
                 MinBetPerRound: room.MinBetPerRound?.Amount ?? 0,
                 AutoBettingActive: isAutoBettingActive,
 
-                Players: room.Players.Select(p => new RoomPlayerModel(
+                Players: seatedPlayers
+                    .Select(p => new RoomPlayerModel(
                     PlayerId: p.PlayerId.Value,
                     Name: p.Name,
                     Position: p.GetSeatPosition(), // Usar SeatPosition para el layout
                     IsReady: p.IsReady,
-                    IsHost: room.HostPlayerId == p.PlayerId,
+                    IsHost: effectiveHostId.Value == p.PlayerId.Value,
                     HasPlayedTurn: p.HasPlayedTurn,
 
                     // NUEVO: Datos de balance y auto-betting del jugador
@@ -500,7 +507,7 @@ public class RoomHub : BaseHub
                 )).ToList(),
 
                 CurrentPlayerTurn: room.CurrentPlayer?.Name,
-                CanStart: room.CanStart,
+                CanStart: seatedPlayersCount >= 1,
                 CreatedAt: room.CreatedAt
             );
 
