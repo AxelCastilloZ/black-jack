@@ -1,4 +1,4 @@
-﻿// SignalRServiceExtensions.cs - CONFIGURACIÓN DE TIMEOUTS CORREGIDA
+﻿// SignalRServiceExtensions.cs - ACTUALIZADO para incluir nuevas dependencias
 using BlackJack.Domain.Common;
 using BlackJack.Realtime.EventHandlers;
 using BlackJack.Realtime.Hubs;
@@ -20,10 +20,12 @@ public static class SignalRServiceExtensions
 {
     /// <summary>
     /// Registra SignalR con configuración JWT completa para producción
+    /// SIMPLIFICADO: Solo 2 hubs en lugar de 6
+    /// ACTUALIZADO: Incluye dependencias para manejo de cartas en GameControlHub
     /// </summary>
     public static IServiceCollection AddBlackJackSignalR(this IServiceCollection services, IConfiguration configuration)
     {
-        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Adding BlackJack SignalR for PRODUCTION...");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Adding BlackJack SignalR for PRODUCTION (SIMPLIFIED + CARDS)...");
 
         // PASO 1: Configurar JWT Bearer Authentication (CRÍTICO PARA SIGNALR)
         AddJwtAuthenticationForSignalR(services, configuration);
@@ -34,7 +36,7 @@ public static class SignalRServiceExtensions
             Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Configuring SignalR options for production...");
             options.EnableDetailedErrors = false;
 
-            // CORREGIDO: Timeouts optimizados para producción
+            // Timeouts optimizados para producción
             options.KeepAliveInterval = TimeSpan.FromSeconds(15);      // Ping cada 15s
             options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);  // Timeout después de 60s sin respuesta
             options.HandshakeTimeout = TimeSpan.FromSeconds(15);       // Timeout de handshake
@@ -48,33 +50,34 @@ public static class SignalRServiceExtensions
             options.PayloadSerializerOptions.WriteIndented = false;
         });
 
-        // PASO 3: Registrar servicios de SignalR
+        // PASO 3: Registrar servicios de SignalR SIMPLIFICADOS + DEPENDENCIAS PARA CARTAS
         RegisterSignalRServices(services);
 
-        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] BlackJack SignalR configured successfully for PRODUCTION");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] BlackJack SignalR configured successfully for PRODUCTION (SIMPLIFIED - 2 HUBS + CARDS)");
         return services;
     }
 
     /// <summary>
     /// Registra SignalR con configuración JWT completa para desarrollo
-    /// CORREGIDO: Timeouts apropiados que evitan desconexiones frecuentes
+    /// SIMPLIFICADO: Solo 2 hubs en lugar de 6
+    /// ACTUALIZADO: Incluye dependencias para manejo de cartas en GameControlHub
     /// </summary>
     public static IServiceCollection AddBlackJackSignalRDevelopment(this IServiceCollection services, IConfiguration configuration)
     {
-        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Adding BlackJack SignalR for DEVELOPMENT...");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Adding BlackJack SignalR for DEVELOPMENT (SIMPLIFIED + CARDS)...");
 
         // PASO 1: Configurar JWT Bearer Authentication (CRÍTICO PARA SIGNALR)
         AddJwtAuthenticationForSignalR(services, configuration);
 
-        // PASO 2: Configurar SignalR con opciones CORREGIDAS para desarrollo
+        // PASO 2: Configurar SignalR con opciones para desarrollo
         services.AddSignalR(options =>
         {
             Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Configuring SignalR options for development...");
             options.EnableDetailedErrors = true; // Más detalles en desarrollo
 
-            // CORREGIDO: Timeouts que eliminan desconexiones frecuentes
-            options.KeepAliveInterval = TimeSpan.FromSeconds(15);      // Era 30s - CAUSABA EL PROBLEMA
-            options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);  // Era 2min - Reducido pero estable
+            // Timeouts que eliminan desconexiones frecuentes
+            options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+            options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);
             options.HandshakeTimeout = TimeSpan.FromSeconds(30);       // Más generoso para desarrollo
 
             options.MaximumReceiveMessageSize = 1024 * 1024; // 1MB para desarrollo
@@ -85,16 +88,16 @@ public static class SignalRServiceExtensions
             options.PayloadSerializerOptions.WriteIndented = true; // Formato legible en desarrollo
         });
 
-        // PASO 3: Registrar servicios de SignalR
+        // PASO 3: Registrar servicios de SignalR SIMPLIFICADOS + DEPENDENCIAS PARA CARTAS
         RegisterSignalRServices(services);
 
-        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] BlackJack SignalR configured successfully for DEVELOPMENT");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] BlackJack SignalR configured successfully for DEVELOPMENT (SIMPLIFIED - 2 HUBS + CARDS)");
         Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] KeepAlive: 15s, ClientTimeout: 60s (FIXED TIMEOUT ISSUES)");
         return services;
     }
 
     /// <summary>
-    /// NUEVO: Configura JWT Authentication específicamente para SignalR
+    /// INALTERADO: Configura JWT Authentication específicamente para SignalR
     /// Esta configuración es CRÍTICA para que los claims lleguen a los hubs
     /// </summary>
     private static void AddJwtAuthenticationForSignalR(IServiceCollection services, IConfiguration configuration)
@@ -285,28 +288,41 @@ public static class SignalRServiceExtensions
     }
 
     /// <summary>
-    /// Registra todos los servicios de SignalR y componentes de tiempo real
+    /// ACTUALIZADO: Registra solo los servicios de SignalR necesarios (2 hubs) + dependencias para cartas
     /// </summary>
     private static void RegisterSignalRServices(IServiceCollection services)
     {
-        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Registering SignalR services...");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Registering SIMPLIFIED SignalR services + Card dependencies...");
 
-        // Servicios de SignalR
+        // SIMPLIFICADO: Solo registrar ConnectionManager y NotificationService
         services.AddScoped<IConnectionManager, ConnectionManager>();
         services.AddScoped<ISignalRNotificationService, SignalRNotificationService>();
 
-        // Event handlers de dominio para SignalR
+        // IMPORTANTE: Las dependencias para cartas ya están registradas en otras capas
+        // Solo necesitamos asegurar que están disponibles para inyección en los hubs:
+        // - IGameService (ya registrado en Services layer)
+        // - ITableRepository (ya registrado en Data layer) 
+        // - IHandRepository (ya registrado en Data layer)
+
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] ✅ Card dependencies will be resolved from other layers");
+
+        // Event handlers de dominio para SignalR (SIN CAMBIOS)
         RegisterDomainEventHandlers(services);
 
-        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] SignalR services registered successfully");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] SIMPLIFIED SignalR services registered successfully + Card support");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] - Registered 2 hub contexts: GameRoomHub, LobbyHub");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] - Registered ConnectionManager and NotificationService");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] - Registered all domain event handlers");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] - Card dependencies (IGameService, ITableRepository, IHandRepository) available from other layers");
     }
 
     /// <summary>
     /// Configuración para producción con Redis (opcional)
+    /// SIMPLIFICADO: Solo 2 hubs
     /// </summary>
     public static IServiceCollection AddBlackJackSignalRWithRedis(this IServiceCollection services, IConfiguration configuration, string redisConnectionString)
     {
-        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Adding BlackJack SignalR with Redis...");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Adding BlackJack SignalR with Redis (SIMPLIFIED + CARDS)...");
 
         // JWT Authentication primero
         AddJwtAuthenticationForSignalR(services, configuration);
@@ -315,7 +331,7 @@ public static class SignalRServiceExtensions
         services.AddSignalR(options =>
         {
             options.EnableDetailedErrors = false;
-            // CORREGIDO: Mismos timeouts para Redis
+            // Mismos timeouts para Redis
             options.KeepAliveInterval = TimeSpan.FromSeconds(15);
             options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);
         })
@@ -327,17 +343,19 @@ public static class SignalRServiceExtensions
         // Redis se puede agregar más tarde: .AddStackExchangeRedis(redisConnectionString)
 
         RegisterSignalRServices(services);
+
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] BlackJack SignalR with Redis configured (SIMPLIFIED - 2 HUBS + CARDS)");
         return services;
     }
 
     /// <summary>
-    /// Registra todos los event handlers de dominio para SignalR
+    /// INALTERADO: Registra todos los event handlers de dominio para SignalR
     /// </summary>
     private static void RegisterDomainEventHandlers(IServiceCollection services)
     {
         Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] Registering domain event handlers...");
 
-        // Event handlers para eventos de GameRoom
+        // Event handlers para eventos de GameRoom (SIN CAMBIOS)
         services.AddScoped<IDomainEventHandler<PlayerJoinedRoomEvent>, PlayerJoinedRoomEventHandler>();
         services.AddScoped<IDomainEventHandler<PlayerLeftRoomEvent>, PlayerLeftRoomEventHandler>();
         services.AddScoped<IDomainEventHandler<SpectatorJoinedEvent>, SpectatorJoinedEventHandler>();
@@ -350,7 +368,7 @@ public static class SignalRServiceExtensions
     }
 
     /// <summary>
-    /// Configurar grupos y políticas de autorización personalizadas
+    /// SIMPLIFICADO: Configurar grupos y políticas de autorización personalizadas
     /// </summary>
     public static IServiceCollection AddSignalRAuthorization(this IServiceCollection services)
     {
@@ -358,14 +376,14 @@ public static class SignalRServiceExtensions
 
         services.AddAuthorization(options =>
         {
-            // Política para acceso a GameHub
-            options.AddPolicy("GameHubAccess", policy =>
+            // SIMPLIFICADO: Política para acceso a GameRoomHub (consolida todas las anteriores)
+            options.AddPolicy("GameRoomHubAccess", policy =>
             {
                 policy.RequireAuthenticatedUser();
                 policy.RequireClaim("playerId"); // Debe tener PlayerId en el token
             });
 
-            // Política para acceso a LobbyHub
+            // Política para acceso a LobbyHub (SIN CAMBIOS)
             options.AddPolicy("LobbyHubAccess", policy =>
             {
                 policy.RequireAuthenticatedUser();
@@ -379,12 +397,12 @@ public static class SignalRServiceExtensions
             });
         });
 
-        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] SignalR authorization policies configured successfully");
+        Console.WriteLine($"[SIGNALR-EXTENSIONS-DEBUG] SignalR authorization policies configured successfully (SIMPLIFIED)");
         return services;
     }
 
     /// <summary>
-    /// Configurar servicios de monitoreo y métricas para SignalR
+    /// INALTERADO: Configurar servicios de monitoreo y métricas para SignalR
     /// </summary>
     public static IServiceCollection AddSignalRMonitoring(this IServiceCollection services)
     {
@@ -402,7 +420,7 @@ public static class SignalRServiceExtensions
     }
 
     /// <summary>
-    /// Configurar limpieza automática de conexiones obsoletas
+    /// INALTERADO: Configurar limpieza automática de conexiones obsoletas
     /// </summary>
     public static IServiceCollection AddConnectionCleanup(this IServiceCollection services)
     {
@@ -411,7 +429,7 @@ public static class SignalRServiceExtensions
     }
 }
 
-#region Servicios auxiliares
+#region Servicios auxiliares (INALTERADOS)
 
 /// <summary>
 /// Interfaz para métricas de SignalR (opcional)

@@ -1,7 +1,8 @@
-// src/components/game/GameSeats.tsx - CORREGIDO: Lógica de auto-betting consistente
-import React, { useCallback } from 'react'
-import { signalRService } from '../../services/signalr'
+//GameSeats.tsx - ALINEADO CON BACKEND REFACTORIZADO
 
+import React, { useCallback } from 'react'
+
+// Interfaces combinadas - ALINEADAS CON BACKEND
 interface RoomPlayer {
   playerId: string
   name: string
@@ -13,6 +14,21 @@ interface RoomPlayer {
   currentBalance?: number
   totalBetThisSession?: number
   canAffordBet?: boolean
+}
+
+// Interfaces para cartas
+interface Hand {
+  id: string
+  cards: Array<{
+    suit: string
+    rank: string
+  }>
+  value: number
+  status: string
+}
+
+interface PlayerWithHand extends RoomPlayer {
+  hand?: Hand | null
 }
 
 interface GameSeatsProps {
@@ -27,9 +43,14 @@ interface GameSeatsProps {
   onError: (error: string) => void
   seatClickLoading: number | null
   setSeatClickLoading: (loading: number | null) => void
-  // Props para auto-betting integrado
+  // Props para auto-betting
   autoBettingActive?: boolean
   minBetPerRound?: number
+  // Props para cartas
+  playersWithHands?: PlayerWithHand[]
+  // NUEVOS: Handlers exactos desde GamePage
+  onJoinSeat?: (position: number) => Promise<void>
+  onLeaveSeat?: () => Promise<void>
 }
 
 export default function GameSeats({
@@ -45,58 +66,31 @@ export default function GameSeats({
   seatClickLoading,
   setSeatClickLoading,
   autoBettingActive = false,
-  minBetPerRound = 0
+  minBetPerRound = 0,
+  playersWithHands = [],
+  // RECIBIR handlers desde GamePage
+  onJoinSeat,
+  onLeaveSeat
 }: GameSeatsProps) {
   const getPlayerAtPosition = useCallback((position: number) => {
     return players?.find(p => p.position === position)
   }, [players])
 
+  const getPlayerWithHandAtPosition = useCallback((position: number) => {
+    const player = playersWithHands?.find(p => p.position === position)
+    return player
+  }, [playersWithHands])
+
   const currentPlayer = players?.find(p => p.playerId === currentUser?.id)
   const isPlayerSeated = !!currentPlayer
 
-  const handleJoinSeat = useCallback(async (position: number) => {
-    if (!seatHubConnected || !roomCode || seatClickLoading !== null || !isComponentMounted) {
-      console.log('[GameSeats] Cannot join seat - conditions not met')
-      return
-    }
-    
-    try {
-      setSeatClickLoading(position)
-      console.log(`[GameSeats] Joining seat ${position} via SeatHub`)
-      
-      await signalRService.joinSeat(roomCode, position)
-      
-    } catch (error) {
-      if (!isComponentMounted) return
-      console.error('[GameSeats] Error joining seat:', error)
-      onError(error instanceof Error ? error.message : 'Error uniéndose al asiento')
-      setSeatClickLoading(null)
-    }
-  }, [seatHubConnected, roomCode, seatClickLoading, isComponentMounted, onError, setSeatClickLoading])
+  // REMOVIDO: handleJoinSeat y handleLeaveSeat locales
+  // Ahora usamos los handlers que vienen desde GamePage (onJoinSeat, onLeaveSeat)
 
-  const handleLeaveSeat = useCallback(async () => {
-    if (!seatHubConnected || !roomCode || seatClickLoading !== null || !isComponentMounted) {
-      console.log('[GameSeats] Cannot leave seat - conditions not met')
-      return
-    }
-    
-    try {
-      setSeatClickLoading(-1)
-      console.log('[GameSeats] Leaving seat via SeatHub')
-      
-      await signalRService.leaveSeat(roomCode)
-      
-    } catch (error) {
-      if (!isComponentMounted) return
-      console.error('[GameSeats] Error leaving seat:', error)
-      onError(error instanceof Error ? error.message : 'Error saliendo del asiento')
-      setSeatClickLoading(null)
-    }
-  }, [seatHubConnected, roomCode, seatClickLoading, isComponentMounted, onError, setSeatClickLoading])
-
+  // Layout semicircular
   return (
     <div className="absolute inset-0 pointer-events-none">
-      {/* Layout semicircular - Container principal */}
+      {/* Container principal */}
       <div className="relative w-full h-full flex items-center justify-center">
         
         {/* Asientos superiores - Fila de arriba */}
@@ -106,12 +100,13 @@ export default function GameSeats({
             <PlayerPosition 
               position={0}
               player={getPlayerAtPosition(0)}
+              playerWithHand={getPlayerWithHandAtPosition(0)}
               currentUser={currentUser}
               isCurrentUserSeated={isPlayerSeated}
               gameStatus={gameStatus}
               currentPlayerTurn={currentPlayerTurn}
-              onJoinSeat={handleJoinSeat}
-              onLeaveSeat={handleLeaveSeat}
+              onJoinSeat={onJoinSeat} // USAR handler desde GamePage
+              onLeaveSeat={onLeaveSeat} // USAR handler desde GamePage
               seatClickLoading={seatClickLoading}
               isViewer={isViewer}
               seatHubConnected={seatHubConnected}
@@ -125,12 +120,13 @@ export default function GameSeats({
             <PlayerPosition 
               position={1}
               player={getPlayerAtPosition(1)}
+              playerWithHand={getPlayerWithHandAtPosition(1)}
               currentUser={currentUser}
               isCurrentUserSeated={isPlayerSeated}
               gameStatus={gameStatus}
               currentPlayerTurn={currentPlayerTurn}
-              onJoinSeat={handleJoinSeat}
-              onLeaveSeat={handleLeaveSeat}
+              onJoinSeat={onJoinSeat}
+              onLeaveSeat={onLeaveSeat}
               seatClickLoading={seatClickLoading}
               isViewer={isViewer}
               seatHubConnected={seatHubConnected}
@@ -147,12 +143,13 @@ export default function GameSeats({
             <PlayerPosition 
               position={5}
               player={getPlayerAtPosition(5)}
+              playerWithHand={getPlayerWithHandAtPosition(5)}
               currentUser={currentUser}
               isCurrentUserSeated={isPlayerSeated}
               gameStatus={gameStatus}
               currentPlayerTurn={currentPlayerTurn}
-              onJoinSeat={handleJoinSeat}
-              onLeaveSeat={handleLeaveSeat}
+              onJoinSeat={onJoinSeat}
+              onLeaveSeat={onLeaveSeat}
               seatClickLoading={seatClickLoading}
               isViewer={isViewer}
               seatHubConnected={seatHubConnected}
@@ -166,12 +163,13 @@ export default function GameSeats({
             <PlayerPosition 
               position={2}
               player={getPlayerAtPosition(2)}
+              playerWithHand={getPlayerWithHandAtPosition(2)}
               currentUser={currentUser}
               isCurrentUserSeated={isPlayerSeated}
               gameStatus={gameStatus}
               currentPlayerTurn={currentPlayerTurn}
-              onJoinSeat={handleJoinSeat}
-              onLeaveSeat={handleLeaveSeat}
+              onJoinSeat={onJoinSeat}
+              onLeaveSeat={onLeaveSeat}
               seatClickLoading={seatClickLoading}
               isViewer={isViewer}
               seatHubConnected={seatHubConnected}
@@ -188,12 +186,13 @@ export default function GameSeats({
             <PlayerPosition 
               position={4}
               player={getPlayerAtPosition(4)}
+              playerWithHand={getPlayerWithHandAtPosition(4)}
               currentUser={currentUser}
               isCurrentUserSeated={isPlayerSeated}
               gameStatus={gameStatus}
               currentPlayerTurn={currentPlayerTurn}
-              onJoinSeat={handleJoinSeat}
-              onLeaveSeat={handleLeaveSeat}
+              onJoinSeat={onJoinSeat}
+              onLeaveSeat={onLeaveSeat}
               seatClickLoading={seatClickLoading}
               isViewer={isViewer}
               seatHubConnected={seatHubConnected}
@@ -207,12 +206,13 @@ export default function GameSeats({
             <PlayerPosition 
               position={3}
               player={getPlayerAtPosition(3)}
+              playerWithHand={getPlayerWithHandAtPosition(3)}
               currentUser={currentUser}
               isCurrentUserSeated={isPlayerSeated}
               gameStatus={gameStatus}
               currentPlayerTurn={currentPlayerTurn}
-              onJoinSeat={handleJoinSeat}
-              onLeaveSeat={handleLeaveSeat}
+              onJoinSeat={onJoinSeat}
+              onLeaveSeat={onLeaveSeat}
               seatClickLoading={seatClickLoading}
               isViewer={isViewer}
               seatHubConnected={seatHubConnected}
@@ -227,16 +227,17 @@ export default function GameSeats({
   )
 }
 
-// PlayerPosition component mejorado con estadísticas de auto-betting integradas
+// PlayerPosition component - ACTUALIZADO para usar handlers desde GamePage
 function PlayerPosition({ 
   position, 
   player, 
+  playerWithHand,
   currentUser, 
   isCurrentUserSeated,
   gameStatus,
   currentPlayerTurn,
-  onJoinSeat,
-  onLeaveSeat,
+  onJoinSeat, // RECIBIR desde GamePage
+  onLeaveSeat, // RECIBIR desde GamePage
   seatClickLoading,
   isViewer,
   seatHubConnected,
@@ -246,12 +247,13 @@ function PlayerPosition({
 }: {
   position: number
   player?: RoomPlayer
+  playerWithHand?: PlayerWithHand
   currentUser: any
   isCurrentUserSeated: boolean
   gameStatus?: string
   currentPlayerTurn?: string
-  onJoinSeat: (position: number) => Promise<void>
-  onLeaveSeat: () => Promise<void>
+  onJoinSeat?: (position: number) => Promise<void> // OPCIONAL: puede venir de GamePage
+  onLeaveSeat?: () => Promise<void> // OPCIONAL: puede venir de GamePage
   seatClickLoading: number | null
   isViewer: boolean
   seatHubConnected: boolean
@@ -263,25 +265,24 @@ function PlayerPosition({
   const isEmpty = !player
   const isLoading = seatClickLoading === position || (isCurrentUser && seatClickLoading === -1)
   
-  const canJoinSeat = isEmpty && !isLoading && !isViewer && seatHubConnected
+  const canJoinSeat = isEmpty && !isLoading && !isViewer && seatHubConnected && onJoinSeat
 
-  // Variables para auto-betting - CORREGIDO: Usar datos reales del player
-  const currentBalance = player?.currentBalance || 0  // Usar 0 en vez de fallback hardcodeado
+  // Variables para auto-betting
+  const currentBalance = player?.currentBalance || 0
   const totalBetThisSession = player?.totalBetThisSession || 0
   const canAffordNextBet = !minBetPerRound || currentBalance >= minBetPerRound
   const estimatedRounds = minBetPerRound > 0 ? Math.floor(currentBalance / minBetPerRound) : 0
 
-  // LÓGICA CORREGIDA: Stats se muestran cuando hay apuestas configuradas Y hay un jugador sentado
   const shouldShowStats = !isEmpty && minBetPerRound > 0
 
   const handleSeatClick = useCallback(async () => {
-    if (canJoinSeat && !isViewer) {
+    if (canJoinSeat && !isViewer && onJoinSeat) {
       await onJoinSeat(position)
     }
   }, [canJoinSeat, position, onJoinSeat, isViewer])
 
-  const handleLeaveSeat = useCallback(async () => {
-    if (isCurrentUser && !isLoading && gameStatus !== 'InProgress' && !isViewer && seatHubConnected) {
+  const handleLeaveSeatClick = useCallback(async () => {
+    if (isCurrentUser && !isLoading && gameStatus !== 'InProgress' && !isViewer && seatHubConnected && onLeaveSeat) {
       await onLeaveSeat()
     }
   }, [isCurrentUser, isLoading, gameStatus, onLeaveSeat, isViewer, seatHubConnected])
@@ -312,7 +313,8 @@ function PlayerPosition({
             </div>
             <div className="text-gray-400 text-xs">
               {isViewer ? 'Asiento vacío' :
-               !seatHubConnected ? 'SeatHub desconectado' :
+               !seatHubConnected ? 'GameRoomHub desconectado' :
+               !onJoinSeat ? 'Handler no disponible' :
                canJoinSeat ? 'Clic para unirse' : 
                isLoading ? 'Procesando...' : 'No disponible'}
             </div>
@@ -347,13 +349,12 @@ function PlayerPosition({
         
         <div className="bg-black/90 backdrop-blur-sm px-4 py-2 rounded-lg border border-gray-700 text-white min-w-[180px]">
           <div className={`font-bold ${isMainPosition ? 'text-base' : 'text-sm'} mb-2`}>
-            {isCurrentUser ? `${player.name} (TÚ)` : player.name}
+            {isCurrentUser ? `${player.name} (Tú)` : player.name}
           </div>
           
-          {/* LÓGICA CORREGIDA: Stats solo cuando hay apuestas configuradas Y jugador sentado */}
+          {/* Stats de auto-betting */}
           {shouldShowStats ? (
             <div className="space-y-1">
-              {/* Stats detallados para el jugador actual */}
               {isCurrentUser ? (
                 <>
                   <div className="flex justify-between text-xs bg-slate-800/50 px-2 py-1 rounded">
@@ -385,7 +386,6 @@ function PlayerPosition({
                   </div>
                 </>
               ) : (
-                /* Stats básicos para otros jugadores */
                 <>
                   <div className="flex justify-between text-xs">
                     <span className="text-slate-400">Balance:</span>
@@ -403,7 +403,6 @@ function PlayerPosition({
               )}
             </div>
           ) : (
-            /* Balance simple cuando no hay apuestas configuradas */
             <div className="text-emerald-400 text-sm font-semibold">
               {currentBalance > 0 ? `$${currentBalance.toLocaleString()}` : 'Sin balance'}
             </div>
@@ -422,6 +421,27 @@ function PlayerPosition({
         </div>
       </div>
 
+      {/* Player Hand Display */}
+      {playerWithHand?.hand && gameStatus === 'InProgress' && (
+        <div className="mt-2 mb-2">
+          <div className="flex items-center justify-center space-x-1 bg-black/60 backdrop-blur-sm p-2 rounded-lg border border-gray-600">
+            {playerWithHand.hand.cards.map((card, index) => (
+              <div key={index} className="w-8 h-12 bg-white border border-gray-300 rounded text-black text-xs flex flex-col items-center justify-center shadow-sm">
+                <div className="font-bold">{card.rank}</div>
+                <div className="text-xs">
+                  {card.suit === 'Hearts' ? '♥' : 
+                   card.suit === 'Diamonds' ? '♦' : 
+                   card.suit === 'Clubs' ? '♣' : '♠'}
+                </div>
+              </div>
+            ))}
+            <div className="ml-2 text-white text-sm font-bold bg-blue-600/80 px-2 py-1 rounded backdrop-blur-sm">
+              {playerWithHand.hand.value}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Estados y acciones */}
       <div className="flex flex-col items-center space-y-1">
         <div className="flex gap-2">
@@ -438,10 +458,9 @@ function PlayerPosition({
           )}
         </div>
 
-        {/* BOTÓN CORRECTO: Solo aparece fuera de partida en progreso */}
-        {isCurrentUser && !isLoading && gameStatus !== 'InProgress' && !isViewer && seatHubConnected && (
+        {isCurrentUser && !isLoading && gameStatus !== 'InProgress' && !isViewer && seatHubConnected && onLeaveSeat && (
           <button
-            onClick={handleLeaveSeat}
+            onClick={handleLeaveSeatClick}
             className="text-xs bg-orange-500/90 hover:bg-orange-600 backdrop-blur-sm text-white px-3 py-1 rounded-full transition-all duration-200 border border-orange-400 hover:shadow-lg hover:shadow-orange-500/25"
           >
             Salir del asiento

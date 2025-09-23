@@ -1,4 +1,4 @@
-﻿// BlackJack.Realtime/Hubs/BaseHub.cs - VERSIÓN CORREGIDA PARA RESOLVER AUTENTICACIÓN JWT
+﻿// BlackJack.Realtime/Hubs/BaseHub.cs - Funcionalidad base compartida
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using BlackJack.Domain.Models.Users;
@@ -15,154 +15,89 @@ public abstract class BaseHub : Hub
         _logger = logger;
     }
 
+    #region Autenticación JWT
+
     /// <summary>
     /// Obtiene el PlayerId del usuario actual desde el JWT token
-    /// IGUAL QUE EN LOS CONTROLLERS
     /// </summary>
     protected PlayerId? GetCurrentPlayerId()
     {
         try
         {
-            _logger.LogInformation("[BaseHub] Getting current player ID from JWT...");
-
-            // Debug: log del usuario actual
-            _logger.LogInformation("[BaseHub] User authenticated: {IsAuthenticated}",
-                Context.User?.Identity?.IsAuthenticated ?? false);
-            _logger.LogInformation("[BaseHub] User name: {UserName}",
-                Context.User?.Identity?.Name ?? "NULL");
-
-            var claims = Context.User?.Claims?.ToList() ?? new List<Claim>();
-            _logger.LogInformation("[BaseHub] Claims count: {Count}", claims.Count);
-
-            foreach (var claim in claims)
-            {
-                _logger.LogInformation("[BaseHub] Claim: {Type} = {Value}", claim.Type, claim.Value);
-            }
-
-            // MISMO CÓDIGO QUE EN CONTROLLERS: buscar playerId claim
             var playerIdClaim = Context.User?.FindFirst("playerId")?.Value
                 ?? Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
 
-            _logger.LogInformation("[BaseHub] PlayerId claim found: {PlayerIdClaim}", playerIdClaim ?? "NULL");
-
             if (string.IsNullOrEmpty(playerIdClaim) || !Guid.TryParse(playerIdClaim, out var playerId))
             {
-                _logger.LogWarning("[BaseHub] Invalid or missing playerId claim in JWT token");
                 return null;
             }
 
-            var result = PlayerId.From(playerId);
-            _logger.LogInformation("[BaseHub] PlayerId successfully created: {PlayerId}", result);
-            return result;
+            return PlayerId.From(playerId);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[BaseHub] Error getting current player ID from JWT: {Error}", ex.Message);
+            _logger.LogError(ex, "[BaseHub] Error getting current player ID: {Error}", ex.Message);
             return null;
         }
     }
 
     /// <summary>
     /// Obtiene el nombre del usuario actual desde el JWT token
-    /// IGUAL QUE EN LOS CONTROLLERS
     /// </summary>
-    protected string? GetCurrentUserName()
+    protected string GetCurrentUserName()
     {
         try
         {
-            _logger.LogInformation("[BaseHub] Getting current user name from JWT...");
-
-            // MISMO CÓDIGO QUE EN CONTROLLERS: buscar name claim
             var userName = Context.User?.FindFirst("name")?.Value
                 ?? Context.User?.FindFirst(ClaimTypes.Name)?.Value
                 ?? Context.User?.Identity?.Name;
-
-            _logger.LogInformation("[BaseHub] UserName resolved from JWT: {UserName}", userName ?? "NULL");
 
             return userName ?? "Jugador";
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[BaseHub] Error getting current user name from JWT: {Error}", ex.Message);
+            _logger.LogError(ex, "[BaseHub] Error getting current user name: {Error}", ex.Message);
             return "Jugador";
         }
     }
 
     /// <summary>
-    /// MÉTODO CORREGIDO: Verifica autenticación basada en claims válidos
+    /// Verifica si el usuario está autenticado
     /// </summary>
     protected bool IsAuthenticated()
     {
         try
         {
-            _logger.LogInformation("[BaseHub] === IsAuthenticated CHECK STARTED ===");
-
-            // Método 1: Verificar Identity.IsAuthenticated
             var identityAuth = Context.User?.Identity?.IsAuthenticated ?? false;
-            _logger.LogInformation("[BaseHub] Identity.IsAuthenticated: {IsAuthenticated}", identityAuth);
-
-            // Método 2: Verificar presencia de claims específicos (MÁS CONFIABLE)
             var claims = Context.User?.Claims?.ToList() ?? new List<Claim>();
-            _logger.LogInformation("[BaseHub] Total claims count: {Count}", claims.Count);
 
-            // Buscar claims críticos que indican autenticación válida
             var hasPlayerIdClaim = Context.User?.FindFirst("playerId") != null ||
                                    Context.User?.FindFirst(ClaimTypes.NameIdentifier) != null;
-            var hasNameClaim = Context.User?.FindFirst("name") != null ||
-                              Context.User?.FindFirst(ClaimTypes.Name) != null;
-            var hasSubClaim = Context.User?.FindFirst("sub") != null;
 
-            _logger.LogInformation("[BaseHub] Claims analysis:");
-            _logger.LogInformation("[BaseHub] - Has PlayerId claim: {HasPlayerId}", hasPlayerIdClaim);
-            _logger.LogInformation("[BaseHub] - Has Name claim: {HasName}", hasNameClaim);
-            _logger.LogInformation("[BaseHub] - Has Sub claim: {HasSub}", hasSubClaim);
-
-            // DECISIÓN: Considerar autenticado si hay claims válidos
-            // Esto es más confiable que solo Identity.IsAuthenticated para JWT
-            var isAuthenticatedByClaims = claims.Count > 0 && (hasPlayerIdClaim || hasSubClaim);
-
-            _logger.LogInformation("[BaseHub] Authentication decision:");
-            _logger.LogInformation("[BaseHub] - Identity.IsAuthenticated: {IdentityAuth}", identityAuth);
-            _logger.LogInformation("[BaseHub] - Authenticated by claims: {ClaimsAuth}", isAuthenticatedByClaims);
-
-            // CAMBIO CRÍTICO: Usar autenticación por claims como principal
-            var finalResult = identityAuth || isAuthenticatedByClaims;
-
-            _logger.LogInformation("[BaseHub] === FINAL RESULT: {FinalResult} ===", finalResult);
-
-            if (!finalResult)
-            {
-                _logger.LogWarning("[BaseHub] Authentication FAILED - No valid authentication found");
-                _logger.LogWarning("[BaseHub] Claims dump:");
-                foreach (var claim in claims)
-                {
-                    _logger.LogWarning("[BaseHub] Claim: {Type} = {Value}", claim.Type, claim.Value);
-                }
-            }
-            else
-            {
-                _logger.LogInformation("[BaseHub] Authentication SUCCESS");
-            }
-
-            return finalResult;
+            return identityAuth || (claims.Count > 0 && hasPlayerIdClaim);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[BaseHub] EXCEPTION in IsAuthenticated: {Error}", ex.Message);
+            _logger.LogError(ex, "[BaseHub] Error checking authentication: {Error}", ex.Message);
             return false;
         }
     }
 
+    #endregion
+
+    #region Mensajes al cliente
+
     /// <summary>
     /// Envía mensaje de éxito al cliente
     /// </summary>
-    protected async Task SendSuccessAsync(string message)
+    protected async Task SendSuccessAsync(string message, object? data = null)
     {
         try
         {
             await Clients.Caller.SendAsync("Success", new
             {
                 message,
+                data,
                 timestamp = DateTime.UtcNow
             });
         }
@@ -198,8 +133,12 @@ public abstract class BaseHub : Hub
     {
         _logger.LogError(ex, "[{HubName}] Error in {Operation}: {Error}",
             GetType().Name, operation, ex.Message);
-        await SendErrorAsync($"Error en {operation}: {ex.Message}");
+        await SendErrorAsync($"Error en {operation}");
     }
+
+    #endregion
+
+    #region Validaciones
 
     /// <summary>
     /// Valida entrada de texto
@@ -224,6 +163,31 @@ public abstract class BaseHub : Hub
     }
 
     /// <summary>
+    /// Valida autenticación y obtiene PlayerId
+    /// </summary>
+    protected async Task<PlayerId?> ValidateAuthenticationAsync()
+    {
+        if (!IsAuthenticated())
+        {
+            await SendErrorAsync("Debes estar autenticado");
+            return null;
+        }
+
+        var playerId = GetCurrentPlayerId();
+        if (playerId == null)
+        {
+            await SendErrorAsync("Error de autenticación");
+            return null;
+        }
+
+        return playerId;
+    }
+
+    #endregion
+
+    #region Gestión de grupos
+
+    /// <summary>
     /// Une el cliente a un grupo de SignalR
     /// </summary>
     protected async Task JoinGroupAsync(string groupName)
@@ -231,7 +195,7 @@ public abstract class BaseHub : Hub
         try
         {
             await Groups.AddToGroupAsync(Context.ConnectionId, groupName);
-            _logger.LogInformation("[{HubName}] Connection {ConnectionId} joined group {GroupName}",
+            _logger.LogDebug("[{HubName}] Connection {ConnectionId} joined group {GroupName}",
                 GetType().Name, Context.ConnectionId, groupName);
         }
         catch (Exception ex)
@@ -250,7 +214,7 @@ public abstract class BaseHub : Hub
         try
         {
             await Groups.RemoveFromGroupAsync(Context.ConnectionId, groupName);
-            _logger.LogInformation("[{HubName}] Connection {ConnectionId} left group {GroupName}",
+            _logger.LogDebug("[{HubName}] Connection {ConnectionId} left group {GroupName}",
                 GetType().Name, Context.ConnectionId, groupName);
         }
         catch (Exception ex)
@@ -261,9 +225,10 @@ public abstract class BaseHub : Hub
         }
     }
 
-    /// <summary>
-    /// Evento al conectarse - VERSIÓN CORREGIDA QUE NO ABORTA CONEXIONES
-    /// </summary>
+    #endregion
+
+    #region Eventos de conexión
+
     public override async Task OnConnectedAsync()
     {
         try
@@ -273,53 +238,28 @@ public abstract class BaseHub : Hub
             var isAuthenticated = IsAuthenticated();
 
             _logger.LogInformation(
-                "[{HubName}] New connection - ConnectionId: {ConnectionId}, PlayerId: {PlayerId}, UserName: {UserName}, Authenticated: {IsAuthenticated}",
+                "[{HubName}] Connection established - ConnectionId: {ConnectionId}, PlayerId: {PlayerId}, UserName: {UserName}, Authenticated: {IsAuthenticated}",
                 GetType().Name, Context.ConnectionId, playerId, userName, isAuthenticated);
 
-            // Solo logging, NUNCA abortar conexión
-            if (!isAuthenticated)
-            {
-                _logger.LogWarning("[{HubName}] Unauthenticated connection: {ConnectionId}",
-                    GetType().Name, Context.ConnectionId);
-                // REMOVIDO: await SendErrorAsync y Context.Abort()
-            }
-
-            if (playerId == null && isAuthenticated)
-            {
-                _logger.LogWarning("[{HubName}] Authenticated user but no valid PlayerId: {ConnectionId}",
-                    GetType().Name, Context.ConnectionId);
-                // REMOVIDO: await SendErrorAsync y Context.Abort()
-            }
-
-            // SIEMPRE permitir que la conexión continúe
             await base.OnConnectedAsync();
-
-            _logger.LogInformation("[{HubName}] Connection {ConnectionId} established successfully",
-                GetType().Name, Context.ConnectionId);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[{HubName}] Error in OnConnectedAsync: {Error}",
                 GetType().Name, ex.Message);
-
-            // Solo abortar en casos de error crítico de sistema, no por auth
             throw;
         }
     }
 
-    /// <summary>
-    /// Evento al desconectarse
-    /// </summary>
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         try
         {
             var playerId = GetCurrentPlayerId();
-            var userName = GetCurrentUserName();
 
             _logger.LogInformation(
-                "[{HubName}] Connection disconnected - ConnectionId: {ConnectionId}, PlayerId: {PlayerId}, UserName: {UserName}, Exception: {Exception}",
-                GetType().Name, Context.ConnectionId, playerId, userName, exception?.Message ?? "None");
+                "[{HubName}] Connection disconnected - ConnectionId: {ConnectionId}, PlayerId: {PlayerId}, Exception: {Exception}",
+                GetType().Name, Context.ConnectionId, playerId, exception?.Message ?? "None");
 
             await base.OnDisconnectedAsync(exception);
         }
@@ -329,4 +269,6 @@ public abstract class BaseHub : Hub
                 GetType().Name, ex.Message);
         }
     }
+
+    #endregion
 }

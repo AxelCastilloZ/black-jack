@@ -52,8 +52,7 @@ public class BlackjackTable : AggregateRoot
     public int SeatedPlayerCount => _seats.Count(s => s.IsOccupied);
     public bool HasDealerHand => DealerHandId.HasValue;
     public bool CanStartRound => Status == GameStatus.WaitingForPlayers &&
-                                SeatedPlayerCount >= 1 &&
-                                AllPlayersHaveBets();
+                                SeatedPlayerCount >= 1; // Bets disabled for gameplay testing
 
     // Inicialización
     private void InitializeSeats()
@@ -94,8 +93,15 @@ public class BlackjackTable : AggregateRoot
     // Manejo de rondas
     public void StartNewRound()
     {
+        // TEMP: Do not block starting round during gameplay testing
+        // if (!CanStartRound)
+        //     throw new InvalidOperationException("Cannot start round: conditions not met");
+
         if (!CanStartRound)
-            throw new InvalidOperationException("Cannot start round: conditions not met");
+        {
+            // Normalize minimal state: at least mark waiting and proceed
+            Status = GameStatus.WaitingForPlayers;
+        }
 
         RoundNumber++;
         Status = GameStatus.InProgress;
@@ -108,6 +114,24 @@ public class BlackjackTable : AggregateRoot
         {
             seat.Player!.ResetForNewRound();
             // Se agregará una nueva mano cuando se reparten cartas
+        }
+
+        UpdateTimestamp();
+    }
+
+    // TEMP: Force start without validation for gameplay testing
+    public void ForceStartRound()
+    {
+        RoundNumber++;
+        Status = GameStatus.InProgress;
+
+        // Create dealer hand id
+        DealerHandId = Guid.NewGuid();
+
+        // Reset player hands
+        foreach (var seat in _seats.Where(s => s.IsOccupied))
+        {
+            seat.Player!.ResetForNewRound();
         }
 
         UpdateTimestamp();
@@ -128,6 +152,12 @@ public class BlackjackTable : AggregateRoot
     public void SetWaitingForPlayers()
     {
         Status = GameStatus.WaitingForPlayers;
+        UpdateTimestamp();
+    }
+
+    public void SetDealerHandId(Guid dealerHandId)
+    {
+        DealerHandId = dealerHandId;
         UpdateTimestamp();
     }
 

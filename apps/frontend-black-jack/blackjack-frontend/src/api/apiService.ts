@@ -13,7 +13,7 @@ function joinUrl(base: string, path: string) {
   return `${b}/${p}`
 }
 
-const TOKEN_KEY = 'auth_token'
+const TOKEN_KEY = 'blackjack_token'
 
 export class ApiService {
   private api: AxiosInstance
@@ -121,6 +121,12 @@ export class ApiService {
 
   getInstance() {
     return this.api
+  }
+
+  // ---- Game API calls ----
+  
+  async playerAction(roomCode: string, action: 'Hit' | 'Stand'): Promise<{ success: boolean; message?: string }> {
+    return this.post(`/gameroom/${roomCode}/action`, { action })
   }
 }
 

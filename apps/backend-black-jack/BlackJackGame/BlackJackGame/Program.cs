@@ -8,7 +8,7 @@ var builder = WebApplication.CreateBuilder(args);
 Console.WriteLine($"[STARTUP-DEBUG] Starting BlackJack application...");
 Console.WriteLine($"[STARTUP-DEBUG] Environment: {builder.Environment.EnvironmentName}");
 
-// MVC + Swagger
+// MVC Swagger
 builder.Services.AddControllers();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddEndpointsApiExplorer();
@@ -28,7 +28,7 @@ builder.Services.AddSwaggerGen(o =>
     o.AddSecurityRequirement(new OpenApiSecurityRequirement { [jwt] = Array.Empty<string>() });
 });
 
-// Health + CORS
+// Health  CORS
 builder.Services.AddHealthChecks();
 
 Console.WriteLine($"[STARTUP-DEBUG] Adding application services (WITHOUT JWT)...");
@@ -47,10 +47,10 @@ else
 }
 
 Console.WriteLine($"[STARTUP-DEBUG] Adding SignalR authorization policies...");
-// PASO 3: Políticas de autorización después de JWT
+// PASO 3Políticas de autorización después de JWT
 builder.Services.AddSignalRAuthorization();
 
-// CORS
+// CORS CORREGIDO: Agregar puertos adicionales
 builder.Services.AddCors(opt =>
 {
     opt.AddPolicy("DevCors", p =>
@@ -63,7 +63,9 @@ builder.Services.AddCors(opt =>
             "http://localhost:3000",
             "https://localhost:5173",
             "https://localhost:5174",
-            "https://localhost:3000"));
+            "https://localhost:3000",
+            "http://localhost:8080",    // AGREGADO
+            "https://localhost:8080")); //  AGREGADO
 });
 
 var app = builder.Build();
@@ -107,7 +109,6 @@ Console.WriteLine($"[STARTUP-DEBUG] Configuring middleware pipeline...");
 app.UseHttpsRedirection();
 app.UseCors("DevCors");
 
-Console.WriteLine($"[STARTUP-DEBUG] Adding Authentication middleware...");
 // ORDEN CRÍTICO: Authentication antes que Authorization
 app.UseAuthentication();
 
@@ -118,17 +119,16 @@ Console.WriteLine($"[STARTUP-DEBUG] Mapping controllers...");
 app.MapControllers();
 app.MapHealthChecks("/api/health").AllowAnonymous();
 
-Console.WriteLine($"[STARTUP-DEBUG] Mapping SignalR hubs...");
-// HUB COORDINADOR PRINCIPAL (compatibilidad)
-app.MapHub<GameHub>("/hubs/game");                  // Hub coordinador principal
+Console.WriteLine($"[STARTUP-DEBUG] Mapping SignalR hubs (3 HUBS ACTIVOS)...");
+// ARQUITECTURA DE 3 HUBS DIVIDIDOS POR FUNCIONALIDAD  CORREGIDO ENDPOINTS
+app.MapHub<LobbyHub>("/hubs/lobby");
+app.MapHub<GameRoomHub>("/hubs/game-room");        // CORREGIDO: game-room en lugar de gameroom
+app.MapHub<GameControlHub>("/hubs/game-control");  // CORREGIDO: game-control en lugar de gamecontrol
 
-// HUBS ESPECIALIZADOS
-app.MapHub<ConnectionHub>("/hubs/connection");      // Manejo de conexiones y reconexión
-app.MapHub<RoomHub>("/hubs/room");                  // Manejo de salas
-app.MapHub<SpectatorHub>("/hubs/spectator");        // Manejo de espectadores
-app.MapHub<SeatHub>("/hubs/seat");                  // Manejo de asientos
-app.MapHub<GameControlHub>("/hubs/game-control");   // Control del juego
-app.MapHub<LobbyHub>("/hubs/lobby");                // Hub de lobby (existente)
+Console.WriteLine($"[STARTUP-DEBUG] 3 SignalR hubs mapped successfully:");
+Console.WriteLine($"[STARTUP-DEBUG] - LobbyHub: /hubs/lobby (navegación y lobby)");
+Console.WriteLine($"[STARTUP-DEBUG] - GameRoomHub: /hubs/game-room (funcionalidad básica)");
+Console.WriteLine($"[STARTUP-DEBUG] - GameControlHub: /hubs/game-control (funcionalidad avanzada)");
 
 Console.WriteLine($"[STARTUP-DEBUG] Adding utility endpoints...");
 // Endpoints de utilidad
@@ -262,31 +262,73 @@ if (app.Environment.IsDevelopment())
         return Results.Ok(result);
     }).RequireAuthorization();
 
-    // NUEVO: Endpoint para listar todos los hubs disponibles
+    // CORREGIDO: Endpoint para listar los 3 hubs disponibles
     app.MapGet("/api/debug/hubs", () =>
     {
         Console.WriteLine($"[DEBUG-HUBS] Hub endpoints requested");
         var hubs = new
         {
-            SpecializedHubs = new
+            ActiveHubs = new
             {
+                Lobby = "/hubs/lobby",
+                GameRoom = "/hubs/game-room",      //  CORREGIDO
+                GameControl = "/hubs/game-control" //  CORREGIDO
+            },
+            HubResponsibilities = new
+            {
+                LobbyHub = new[] { "navegación", "lista de salas", "quick join" },
+                GameRoomHub = new[] { "salas", "asientos", "espectadores", "conexión básica" },
+                GameControlHub = new[] { "iniciar/terminar juego", "auto-betting", "estadísticas avanzadas" }
+            },
+            DisabledLegacyHubs = new
+            {
+                Game = "/hubs/game",
                 Connection = "/hubs/connection",
                 Room = "/hubs/room",
                 Spectator = "/hubs/spectator",
-                Seat = "/hubs/seat",
-                GameControl = "/hubs/game-control"
+                Seat = "/hubs/seat"
             },
-            ExistingHubs = new
-            {
-                Lobby = "/hubs/lobby"
-            },
-            Description = "Specialized hubs for different BlackJack functionalities",
+            Architecture = "3-Hub Divided Architecture",
+            Description = "Arquitectura de 3 hubs divididos por funcionalidad según documentación",
             Timestamp = DateTime.UtcNow
         };
 
+        Console.WriteLine($"[DEBUG-HUBS] Returning 3 active hubs configuration");
         return Results.Ok(hubs);
+    }).AllowAnonymous();
+
+    // NUEVO: Endpoint específico para verificar configuración de hubs - CORREGIDO
+    app.MapGet("/api/debug/hub-config", (IServiceProvider services) =>
+    {
+        Console.WriteLine($"[DEBUG-HUB-CONFIG] Hub configuration check requested");
+
+        var hubConfig = new
+        {
+            RegisteredHubContexts = new
+            {
+                LobbyHubContext = services.GetService<Microsoft.AspNetCore.SignalR.IHubContext<LobbyHub>>() != null,
+                GameRoomHubContext = services.GetService<Microsoft.AspNetCore.SignalR.IHubContext<GameRoomHub>>() != null,
+                GameControlHubContext = services.GetService<Microsoft.AspNetCore.SignalR.IHubContext<GameControlHub>>() != null
+            },
+            SupportingServices = new
+            {
+                ConnectionManager = services.GetService<BlackJack.Realtime.Services.IConnectionManager>() != null,
+                NotificationService = services.GetService<BlackJack.Realtime.Services.ISignalRNotificationService>() != null,
+                GameRoomService = services.GetService<BlackJack.Services.Game.IGameRoomService>() != null
+            },
+            ExpectedEndpoints = new[]  //  CORREGIDO
+            {
+                "/hubs/lobby",
+                "/hubs/game-room",     //  CORREGIDO
+                "/hubs/game-control"   // CORREGIDO
+            },
+            Configuration = "3-Hub Architecture - LobbyHub + GameRoomHub + GameControlHub",
+            Timestamp = DateTime.UtcNow
+        };
+
+        Console.WriteLine($"[DEBUG-HUB-CONFIG] Hub contexts registered: Lobby={hubConfig.RegisteredHubContexts.LobbyHubContext}, GameRoom={hubConfig.RegisteredHubContexts.GameRoomHubContext}, GameControl={hubConfig.RegisteredHubContexts.GameControlHubContext}");
+        return Results.Ok(hubConfig);
     }).AllowAnonymous();
 }
 
-Console.WriteLine($"[STARTUP-DEBUG] Application configured with specialized hubs, starting...");
 app.Run();

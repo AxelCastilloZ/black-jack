@@ -1,4 +1,4 @@
-// src/services/signalr.ts - EXTENDIDO para auto-betting
+// src/services/signalr.ts - TOTALMENTE ALINEADO CON EL BACKEND
 import {
   HubConnection,
   HubConnectionBuilder,
@@ -112,19 +112,36 @@ export interface AutoBetRoundSummaryEvent {
   notifications: string[]
 }
 
+// Request types (según el backend)
+export interface CreateRoomRequest {
+  roomName: string
+  maxPlayers?: number
+}
+
+export interface JoinRoomRequest {
+  roomCode: string
+  playerName: string
+}
+
+export interface JoinSeatRequest {
+  roomCode: string
+  position: number
+}
+
+export interface LeaveSeatRequest {
+  roomCode: string
+}
+
 class SignalRService {
-  // HUBS ESPECIALIZADOS
-  private lobbyConnection?: HubConnection
-  private connectionHub?: HubConnection
-  private roomHub?: HubConnection
-  private spectatorHub?: HubConnection
-  private seatHub?: HubConnection
-  private gameControlHub?: HubConnection
+  // ARQUITECTURA DE 3 HUBS ESPECIALIZADOS - RUTAS EXACTAS DEL BACKEND
+  private lobbyConnection?: HubConnection         // /hubs/lobby
+  private gameRoomConnection?: HubConnection      // /hubs/game-room
+  private gameControlConnection?: HubConnection   // /hubs/game-control
   
   private isStarting = false
   private isDestroying = false
 
-  // Event callbacks para el UI - EXISTENTES
+  // Event callbacks para el UI - BÁSICOS
   public onPlayerJoined?: (player: any) => void
   public onPlayerLeft?: (player: any) => void
   public onRoomInfo?: (roomData: any) => void
@@ -136,7 +153,7 @@ class SignalRService {
   public onGameStateChanged?: (gameState: any) => void
   public onError?: (message: string) => void
 
-  // NUEVOS: Event callbacks para Auto-Betting
+  // Event callbacks para Auto-Betting - GRUPALES
   public onAutoBetProcessed?: (event: AutoBetProcessedEvent) => void
   public onAutoBetStatistics?: (event: AutoBetStatistics) => void
   public onAutoBetProcessingStarted?: (event: AutoBetProcessingStartedEvent) => void
@@ -147,11 +164,18 @@ class SignalRService {
   public onAutoBetFailed?: (event: any) => void
   public onMinBetPerRoundUpdated?: (event: any) => void
   
-  // NUEVOS: Event callbacks personales (solo al jugador afectado)
+  // Event callbacks personales - INDIVIDUALES
   public onYouWereRemovedFromSeat?: (event: PlayerRemovedFromSeatEvent) => void
   public onYourBalanceUpdated?: (event: PlayerBalanceUpdatedEvent) => void
   public onInsufficientFundsWarningPersonal?: (event: InsufficientFundsWarningEvent) => void
   public onAutoBetFailedPersonal?: (event: any) => void
+
+  // Lobby callbacks
+  public onActiveRoomsUpdated?: (rooms: any[]) => void
+  public onLobbyStats?: (stats: any) => void
+  public onQuickJoinRedirect?: (data: any) => void
+  public onQuickJoinTableRedirect?: (data: any) => void
+  public onDetailedRoomInfo?: (data: any) => void
 
   private buildConnection(hubPath: string): HubConnection {
     const fullUrl = `${API_BASE}${hubPath}`
@@ -167,7 +191,7 @@ class SignalRService {
           console.log('[DEBUG] Raw token from authService:', token)
           
           if (!token) {
-            console.error('[DEBUG] ❌ No token available!')
+            console.error('[DEBUG] No token available!')
             return ''
           }
           
@@ -181,31 +205,31 @@ class SignalRService {
           if (parts.length === 3) {
             try {
               const payload = JSON.parse(atob(parts[1]))
-              console.log('[DEBUG] ✅ Token payload decoded:', payload)
+              console.log('[DEBUG] Token payload decoded:', payload)
               console.log('[DEBUG] PlayerId in token:', payload.playerId || payload.sub || payload.nameid || 'NOT_FOUND')
               console.log('[DEBUG] Name in token:', payload.name || payload.unique_name || 'NOT_FOUND')
               console.log('[DEBUG] Token expires:', new Date((payload.exp || 0) * 1000))
               
               const now = Math.floor(Date.now() / 1000)
               if (payload.exp && payload.exp < now) {
-                console.error('[DEBUG] ❌ TOKEN EXPIRED!')
+                console.error('[DEBUG] TOKEN EXPIRED!')
                 console.error('[DEBUG] Token expired at:', new Date(payload.exp * 1000))
                 console.error('[DEBUG] Current time:', new Date())
                 return ''
               } else {
-                console.log('[DEBUG] ✅ Token is valid and not expired')
+                console.log('[DEBUG] Token is valid and not expired')
               }
               
             } catch (e) {
-              console.error('[DEBUG] ❌ Cannot decode token payload:', e)
+              console.error('[DEBUG] Cannot decode token payload:', e)
               return ''
             }
           } else {
-            console.error('[DEBUG] ❌ Invalid JWT format - should have 3 parts')
+            console.error('[DEBUG] Invalid JWT format - should have 3 parts')
             return ''
           }
           
-          console.log('[DEBUG] ✅ Returning clean token for SignalR')
+          console.log('[DEBUG] Returning clean token for SignalR')
           return cleanToken
         },
         
@@ -233,7 +257,7 @@ class SignalRService {
         console.log(`[SignalR] ${name} skip reconnected handler - service is destroying`)
         return
       }
-      console.log(`[SignalR] ✅ ${name} reconnected successfully with ID:`, connectionId)
+      console.log(`[SignalR] ${name} reconnected successfully with ID:`, connectionId)
     })
     
     connection.onclose(error => {
@@ -243,7 +267,7 @@ class SignalRService {
       }
       
       if (error) {
-        console.error(`[SignalR] ❌ ${name} connection closed with error:`, error)
+        console.error(`[SignalR] ${name} connection closed with error:`, error)
         console.error(`[SignalR] Error details:`, {
           message: error.message,
           stack: error.stack,
@@ -255,22 +279,22 @@ class SignalRService {
     })
 
     // Handlers comunes para todos los hubs
-    connection.on('Success', (successData: any) => {
+    connection.on('success', (successData: any) => {
       if (this.isDestroying) return
       const message = successData?.message || successData
-      console.log(`[SignalR] 📥 ✅ ${name} success:`, message)
+      console.log(`[SignalR] ${name} success:`, message)
     })
 
-    connection.on('Error', (errorData: any) => {
+    connection.on('error', (errorData: any) => {
       if (this.isDestroying) return
       const message = errorData?.message || errorData
-      console.error(`[SignalR] 📥 ❌ ${name} error:`, message)
+      console.error(`[SignalR] ${name} error:`, message)
       this.onError?.(message)
     })
 
-    connection.on('TestResponse', (data: any) => {
+    connection.on('testResponse', (data: any) => {
       if (this.isDestroying) return
-      console.log(`[SignalR] 📥 ${name} TestResponse:`, data)
+      console.log(`[SignalR] ${name} testResponse:`, data)
     })
 
     // Handlers específicos por hub
@@ -280,177 +304,240 @@ class SignalRService {
   private setupSpecificHandlers(connection: HubConnection, name: string) {
     switch (name) {
       case 'Lobby':
-        connection.on('ActiveRoomsUpdated', (response: any) => {
+        // Eventos específicos del LobbyHub
+        connection.on('activeRoomsUpdated', (response: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 ActiveRoomsUpdated event:', response)
+          console.log('[SignalR] activeRoomsUpdated event:', response)
+          this.onActiveRoomsUpdated?.(response)
+        })
+
+        connection.on('lobbyStats', (stats: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] lobbyStats event:', stats)
+          this.onLobbyStats?.(stats)
+        })
+
+        connection.on('quickJoinRedirect', (data: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] quickJoinRedirect event:', data)
+          this.onQuickJoinRedirect?.(data)
+        })
+
+        connection.on('quickJoinTableRedirect', (data: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] quickJoinTableRedirect event:', data)
+          this.onQuickJoinTableRedirect?.(data)
+        })
+
+        connection.on('detailedRoomInfo', (data: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] detailedRoomInfo event:', data)
+          this.onDetailedRoomInfo?.(data)
         })
         break
 
-      case 'Connection':
-        connection.on('AutoReconnectAttempt', (data: any) => {
+      case 'GameRoom':
+        // Eventos de sala y jugadores
+        connection.on('roomCreated', (response: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 AutoReconnectAttempt:', data)
-        })
-        break
-
-      case 'Room':
-        connection.on('RoomCreated', (response: any) => {
-          if (this.isDestroying) return
-          console.log('[SignalR] 📥 RoomCreated event:', response)
+          console.log('[SignalR] roomCreated event:', response)
           this.onRoomCreated?.(response?.data || response)
         })
 
-        connection.on('RoomJoined', (response: any) => {
+        connection.on('roomJoined', (response: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 RoomJoined event:', response)
+          console.log('[SignalR] roomJoined event:', response)
           this.onRoomJoined?.(response?.data || response)
         })
 
-        connection.on('RoomInfoUpdated', (roomData: any) => {
+        connection.on('roomInfoUpdated', (roomData: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 RoomInfoUpdated event:', roomData)
+          console.log('[SignalR] roomInfoUpdated event:', roomData)
           const data = roomData?.data || roomData
           this.onRoomInfoUpdated?.(data)
         })
 
-        connection.on('RoomInfo', (roomData: any) => {
+        connection.on('roomInfo', (roomData: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 RoomInfo event:', roomData)
+          console.log('[SignalR] roomInfo event:', roomData)
           this.onRoomInfo?.(roomData)
         })
 
-        connection.on('PlayerJoined', (data: any) => {
+        connection.on('roomLeft', (data: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 PlayerJoined event:', data)
+          console.log('[SignalR] roomLeft event:', data)
+        })
+
+        // Eventos de jugadores
+        connection.on('playerJoined', (data: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] playerJoined event:', data)
           this.onPlayerJoined?.(data)
         })
-        
-        connection.on('PlayerLeft', (data: any) => {
+
+        connection.on('playerLeft', (data: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 PlayerLeft event:', data)
+          console.log('[SignalR] playerLeft event:', data)
           this.onPlayerLeft?.(data)
         })
-        break
 
-      case 'Seat':
-        connection.on('SeatJoined', (response: any) => {
+        // Eventos de asientos
+        connection.on('seatJoined', (response: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 SeatJoined event:', response)
+          console.log('[SignalR] seatJoined event:', response)
           this.onSeatJoined?.(response?.data || response)
         })
 
-        connection.on('SeatLeft', (response: any) => {
+        connection.on('seatLeft', (response: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 SeatLeft event:', response)
+          console.log('[SignalR] seatLeft event:', response)
           this.onSeatLeft?.(response?.data || response)
+        })
+
+        // Eventos de espectadores
+        connection.on('spectatorJoined', (data: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] spectatorJoined event:', data)
+        })
+
+        connection.on('spectatorLeft', (data: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] spectatorLeft event:', data)
         })
         break
 
       case 'GameControl':
-        // Eventos de juego existentes
-        connection.on('GameStarted', (gameData: any) => {
+        // Eventos de juego básicos
+        connection.on('gameStarted', (gameData: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 GameStarted event:', gameData)
+          console.log('[SignalR] gameStarted event:', gameData)
           this.onGameStateChanged?.(gameData)
         })
 
-        connection.on('GameStateChanged', (gameState: any) => {
+        connection.on('gameEnded', (gameData: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 GameStateChanged event:', gameState)
+          console.log('[SignalR] gameEnded event:', gameData)
+          this.onGameStateChanged?.(gameData)
+        })
+
+        connection.on('gameStateUpdated', (gameState: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] gameStateUpdated event:', gameState)
           this.onGameStateChanged?.(gameState)
         })
 
-        // NUEVOS: Eventos de Auto-Betting - Grupales (para toda la sala)
-        connection.on('AutoBetProcessed', (event: AutoBetProcessedEvent) => {
+        connection.on('turnChanged', (data: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 🎰 AutoBetProcessed event:', event)
+          console.log('[SignalR] turnChanged event:', data)
+          this.onGameStateChanged?.(data)
+        })
+
+        // Eventos de cartas y acciones
+        connection.on('cardDealt', (data: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] cardDealt event:', data)
+          this.onGameStateChanged?.(data)
+        })
+
+        connection.on('playerActionPerformed', (data: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] playerActionPerformed event:', data)
+          this.onGameStateChanged?.(data)
+        })
+
+        connection.on('betPlaced', (data: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] betPlaced event:', data)
+          this.onGameStateChanged?.(data)
+        })
+
+        // EVENTOS DE AUTO-BETTING
+        connection.on('autoBetProcessed', (event: AutoBetProcessedEvent) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] autoBetProcessed event:', event)
           this.onAutoBetProcessed?.(event)
         })
 
-        connection.on('AutoBetStatistics', (event: AutoBetStatistics) => {
+        connection.on('autoBetStatistics', (event: AutoBetStatistics) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 📊 AutoBetStatistics event:', event)
+          console.log('[SignalR] autoBetStatistics event:', event)
           this.onAutoBetStatistics?.(event)
         })
 
-        connection.on('AutoBetProcessingStarted', (event: AutoBetProcessingStartedEvent) => {
+        connection.on('autoBetProcessingStarted', (event: AutoBetProcessingStartedEvent) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 🚀 AutoBetProcessingStarted event:', event)
+          console.log('[SignalR] autoBetProcessingStarted event:', event)
           this.onAutoBetProcessingStarted?.(event)
         })
 
-        connection.on('AutoBetRoundSummary', (event: AutoBetRoundSummaryEvent) => {
+        connection.on('autoBetRoundSummary', (event: AutoBetRoundSummaryEvent) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 📋 AutoBetRoundSummary event:', event)
+          console.log('[SignalR] autoBetRoundSummary event:', event)
           this.onAutoBetRoundSummary?.(event)
         })
 
-        connection.on('PlayerRemovedFromSeat', (event: PlayerRemovedFromSeatEvent) => {
+        connection.on('playerRemovedFromSeat', (event: PlayerRemovedFromSeatEvent) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 🚪 PlayerRemovedFromSeat event:', event)
+          console.log('[SignalR] playerRemovedFromSeat event:', event)
           this.onPlayerRemovedFromSeat?.(event)
         })
 
-        connection.on('PlayerBalanceUpdated', (event: PlayerBalanceUpdatedEvent) => {
+        connection.on('playerBalanceUpdated', (event: PlayerBalanceUpdatedEvent) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 💰 PlayerBalanceUpdated event:', event)
+          console.log('[SignalR] playerBalanceUpdated event:', event)
           this.onPlayerBalanceUpdated?.(event)
         })
 
-        connection.on('InsufficientFundsWarning', (event: InsufficientFundsWarningEvent) => {
+        connection.on('insufficientFundsWarning', (event: InsufficientFundsWarningEvent) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 ⚠️ InsufficientFundsWarning event:', event)
+          console.log('[SignalR] insufficientFundsWarning event:', event)
           this.onInsufficientFundsWarning?.(event)
         })
 
-        connection.on('AutoBetFailed', (event: any) => {
+        connection.on('autoBetFailed', (event: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 ❌ AutoBetFailed event:', event)
+          console.log('[SignalR] autoBetFailed event:', event)
           this.onAutoBetFailed?.(event)
         })
 
-        connection.on('MinBetPerRoundUpdated', (event: any) => {
+        connection.on('minBetPerRoundUpdated', (event: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 🎯 MinBetPerRoundUpdated event:', event)
+          console.log('[SignalR] minBetPerRoundUpdated event:', event)
           this.onMinBetPerRoundUpdated?.(event)
         })
 
-        // NUEVOS: Eventos personales (solo al jugador afectado)
-        connection.on('YouWereRemovedFromSeat', (event: PlayerRemovedFromSeatEvent) => {
+        // EVENTOS PERSONALES
+        connection.on('youWereRemovedFromSeat', (event: PlayerRemovedFromSeatEvent) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 🔴 YouWereRemovedFromSeat event:', event)
+          console.log('[SignalR] youWereRemovedFromSeat event:', event)
           this.onYouWereRemovedFromSeat?.(event)
         })
 
-        connection.on('YourBalanceUpdated', (event: PlayerBalanceUpdatedEvent) => {
+        connection.on('yourBalanceUpdated', (event: PlayerBalanceUpdatedEvent) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 💳 YourBalanceUpdated event:', event)
+          console.log('[SignalR] yourBalanceUpdated event:', event)
           this.onYourBalanceUpdated?.(event)
         })
 
-        connection.on('InsufficientFundsWarningPersonal', (event: InsufficientFundsWarningEvent) => {
+        connection.on('insufficientFundsWarningPersonal', (event: InsufficientFundsWarningEvent) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 🟠 InsufficientFundsWarningPersonal event:', event)
+          console.log('[SignalR] insufficientFundsWarningPersonal event:', event)
           this.onInsufficientFundsWarningPersonal?.(event)
         })
 
-        connection.on('AutoBetFailedPersonal', (event: any) => {
+        connection.on('autoBetFailedPersonal', (event: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 🔻 AutoBetFailedPersonal event:', event)
+          console.log('[SignalR] autoBetFailedPersonal event:', event)
           this.onAutoBetFailedPersonal?.(event)
         })
 
-        break
-
-      case 'Spectator':
-        // Eventos específicos para espectadores si los hay
         break
     }
   }
 
   async startConnections(): Promise<boolean> {
     if (this.isStarting) {
-      console.log('[SignalR] ⏳ Connection start already in progress, waiting...')
+      console.log('[SignalR] Connection start already in progress, waiting...')
       
       let attempts = 0
       while (this.isStarting && attempts < 50) {
@@ -462,26 +549,23 @@ class SignalRService {
     }
     
     if (!authService.isAuthenticated()) {
-      console.error('[SignalR] ❌ Cannot start connections - user not authenticated')
+      console.error('[SignalR] Cannot start connections - user not authenticated')
       return false
     }
 
-    console.log('[SignalR] ✅ User is authenticated, starting specialized hub connections...')
+    console.log('[SignalR] User is authenticated, starting 3 specialized hub connections...')
 
     this.isStarting = true
     this.isDestroying = false
 
     try {
-      console.log('[SignalR] 🚀 Starting specialized SignalR connections...')
+      console.log('[SignalR] Starting 3 specialized SignalR connections...')
 
-      // Crear conexiones a hubs especializados
+      // RUTAS EXACTAS DEL BACKEND
       const hubsToCreate = [
         { name: 'Lobby', path: '/hubs/lobby', prop: 'lobbyConnection' },
-        { name: 'Connection', path: '/hubs/connection', prop: 'connectionHub' },
-        { name: 'Room', path: '/hubs/room', prop: 'roomHub' },
-        { name: 'Spectator', path: '/hubs/spectator', prop: 'spectatorHub' },
-        { name: 'Seat', path: '/hubs/seat', prop: 'seatHub' },
-        { name: 'GameControl', path: '/hubs/game-control', prop: 'gameControlHub' }
+        { name: 'GameRoom', path: '/hubs/game-room', prop: 'gameRoomConnection' },
+        { name: 'GameControl', path: '/hubs/game-control', prop: 'gameControlConnection' }
       ]
 
       const tasks: Promise<void>[] = []
@@ -490,18 +574,18 @@ class SignalRService {
         const connection = (this as any)[hub.prop]
         
         if (!connection || connection.state === HubConnectionState.Disconnected) {
-          console.log(`[SignalR] 🏗️ Creating ${hub.name} connection...`)
+          console.log(`[SignalR] Creating ${hub.name} connection...`)
           ;(this as any)[hub.prop] = this.buildConnection(hub.path)
           this.setupConnectionHandlers((this as any)[hub.prop], hub.name)
         }
 
         if ((this as any)[hub.prop].state === HubConnectionState.Disconnected) {
-          console.log(`[SignalR] 🔌 Starting ${hub.name} connection...`)
+          console.log(`[SignalR] Starting ${hub.name} connection...`)
           tasks.push(
             (this as any)[hub.prop].start().then(() => {
-              console.log(`[SignalR] ✅ ${hub.name} connection started successfully`)
+              console.log(`[SignalR] ${hub.name} connection started successfully`)
             }).catch((error: any) => {
-              console.error(`[SignalR] ❌ ${hub.name} connection failed:`, error)
+              console.error(`[SignalR] ${hub.name} connection failed:`, error)
               throw error
             })
           )
@@ -511,32 +595,31 @@ class SignalRService {
       }
 
       if (tasks.length > 0) {
-        console.log('[SignalR] ⏳ Waiting for specialized hub connections to start...')
+        console.log('[SignalR] Waiting for 3 specialized hub connections to start...')
         await Promise.all(tasks)
-        console.log('[SignalR] ✅ All specialized hub connections started successfully')
+        console.log('[SignalR] All 3 specialized hub connections started successfully')
       } else {
-        console.log('[SignalR] ✅ All specialized hub connections already active')
+        console.log('[SignalR] All 3 specialized hub connections already active')
       }
 
-      // Unirse al lobby si está conectado
       if (!this.isDestroying && this.lobbyConnection?.state === HubConnectionState.Connected) {
         try {
-          console.log('[SignalR] 🏛️ Joining lobby group...')
+          console.log('[SignalR] Joining lobby group...')
           await this.lobbyConnection.invoke('JoinLobby')
-          console.log('[SignalR] ✅ Successfully joined lobby')
+          console.log('[SignalR] Successfully joined lobby')
         } catch (error) {
-          console.warn('[SignalR] ⚠️ Could not join lobby:', error)
+          console.warn('[SignalR] Could not join lobby:', error)
         }
       }
 
-      console.log('[SignalR] 🎉 All specialized hub connections ready and configured')
+      console.log('[SignalR] All 3 specialized hub connections ready and configured')
       return true
 
     } catch (error: any) {
-      console.error('[SignalR] ❌ Failed to start specialized hub connections:', error)
+      console.error('[SignalR] Failed to start 3 specialized hub connections:', error)
       
       if (error.message?.includes('401') || error.message?.includes('Unauthorized')) {
-        console.error('[SignalR] 🔐 AUTHENTICATION ERROR - JWT token issue')
+        console.error('[SignalR] AUTHENTICATION ERROR - JWT token issue')
         console.log('[SignalR] Current auth state:')
         authService.debugAuthState()
         
@@ -572,28 +655,23 @@ class SignalRService {
   }
 
   async stopConnections() {
-    console.log('[SignalR] 🛑 Stopping all specialized hub connections...')
+    console.log('[SignalR] Stopping all 3 specialized hub connections...')
     this.isDestroying = true
     
     const tasks: Promise<void>[] = []
 
-    // Salir del lobby si está conectado
     if (this.lobbyConnection?.state === HubConnectionState.Connected) {
       try {
         await this.lobbyConnection.invoke('LeaveLobby')
       } catch (error) {
-        console.warn('[SignalR] ⚠️ Error leaving lobby:', error)
+        console.warn('[SignalR] Error leaving lobby:', error)
       }
       tasks.push(this.lobbyConnection.stop())
     }
 
-    // Detener todas las conexiones especializadas
     const connections = [
-      this.connectionHub,
-      this.roomHub,
-      this.spectatorHub,
-      this.seatHub,
-      this.gameControlHub
+      this.gameRoomConnection,
+      this.gameControlConnection
     ]
 
     for (const connection of connections) {
@@ -606,15 +684,11 @@ class SignalRService {
       await Promise.all(tasks)
     }
 
-    // Limpiar referencias
     this.lobbyConnection = undefined
-    this.connectionHub = undefined
-    this.roomHub = undefined
-    this.spectatorHub = undefined
-    this.seatHub = undefined
-    this.gameControlHub = undefined
+    this.gameRoomConnection = undefined
+    this.gameControlConnection = undefined
     
-    // Limpiar callbacks existentes
+    // Limpiar todos los callbacks
     this.onPlayerJoined = undefined
     this.onPlayerLeft = undefined
     this.onRoomInfo = undefined
@@ -626,7 +700,6 @@ class SignalRService {
     this.onGameStateChanged = undefined
     this.onError = undefined
     
-    // NUEVOS: Limpiar callbacks de auto-betting
     this.onAutoBetProcessed = undefined
     this.onAutoBetStatistics = undefined
     this.onAutoBetProcessingStarted = undefined
@@ -636,328 +709,403 @@ class SignalRService {
     this.onInsufficientFundsWarning = undefined
     this.onAutoBetFailed = undefined
     this.onMinBetPerRoundUpdated = undefined
+    
     this.onYouWereRemovedFromSeat = undefined
     this.onYourBalanceUpdated = undefined
     this.onInsufficientFundsWarningPersonal = undefined
     this.onAutoBetFailedPersonal = undefined
     
-    console.log('[SignalR] ✅ All specialized hub connections stopped and cleaned')
+    this.onActiveRoomsUpdated = undefined
+    this.onLobbyStats = undefined
+    this.onQuickJoinRedirect = undefined
+    this.onQuickJoinTableRedirect = undefined
+    this.onDetailedRoomInfo = undefined
+    
+    console.log('[SignalR] All 3 specialized hub connections stopped and cleaned')
   }
 
   async verifyConnections(): Promise<boolean> {
     if (!this.areAllConnected) {
-      console.log('[SignalR] Specialized hub connections not ready, attempting to start...')
+      console.log('[SignalR] 3 specialized hub connections not ready, attempting to start...')
       return await this.startConnections()
     }
     return true
   }
 
-  // MÉTODOS QUE USAN ROOMHUB
-  async joinOrCreateRoomForTable(tableId: string, playerName?: string): Promise<void> {
-    if (!this.roomHub || this.roomHub.state !== HubConnectionState.Connected) {
+  // ==============================================
+  // MÉTODOS DEL LOBBYHUB - EXACTOS DEL BACKEND
+  // ==============================================
+
+  async joinLobby(): Promise<void> {
+    if (!this.lobbyConnection || this.lobbyConnection.state !== HubConnectionState.Connected) {
       if (!(await this.verifyConnections())) {
-        throw new Error('RoomHub no está disponible')
+        throw new Error('LobbyHub no está disponible')
       }
     }
 
-    const user = authService.getCurrentUser()
-    const finalPlayerName = playerName || user?.displayName || 'Jugador'
-
-    console.log(`[SignalR] 🎯 [RoomHub] Joining/creating room for table: ${tableId}, playerName: ${finalPlayerName}`)
-    
-    try {
-      await this.roomHub!.invoke('JoinOrCreateRoomForTable', tableId, finalPlayerName)
-      console.log(`[SignalR] ✅ Successfully invoked JoinOrCreateRoomForTable via RoomHub`)
-    } catch (error) {
-      console.error(`[SignalR] ❌ Error in JoinOrCreateRoomForTable:`, error)
-      throw error
-    }
+    console.log(`[SignalR] [LobbyHub] Joining lobby`)
+    await this.lobbyConnection!.invoke('JoinLobby')
   }
 
-  async joinRoom(roomCode: string): Promise<void> {
-    if (!this.roomHub || this.roomHub.state !== HubConnectionState.Connected) {
-      if (!(await this.verifyConnections())) {
-        throw new Error('RoomHub no está disponible')
-      }
+  async leaveLobby(): Promise<void> {
+    if (!this.lobbyConnection || this.lobbyConnection.state !== HubConnectionState.Connected) {
+      return
     }
 
-    const user = authService.getCurrentUser()
-    if (!user) {
-      throw new Error('Usuario no autenticado')
-    }
-
-    console.log(`[SignalR] 🚪 [RoomHub] Joining existing room: ${roomCode}`)
-
-    await this.roomHub!.invoke('JoinRoom', {
-      roomCode: roomCode,
-      playerName: user.displayName
-    })
+    console.log(`[SignalR] [LobbyHub] Leaving lobby`)
+    await this.lobbyConnection.invoke('LeaveLobby')
   }
 
-  async createRoom(roomName: string): Promise<void> {
-    if (!this.roomHub || this.roomHub.state !== HubConnectionState.Connected) {
+  async getActiveRooms(): Promise<void> {
+    if (!this.lobbyConnection || this.lobbyConnection.state !== HubConnectionState.Connected) {
       if (!(await this.verifyConnections())) {
-        throw new Error('RoomHub no está disponible')
+        throw new Error('LobbyHub no está disponible')
       }
     }
 
-    console.log(`[SignalR] 🏗️ [RoomHub] Creating room: ${roomName}`)
+    console.log(`[SignalR] [LobbyHub] Getting active rooms`)
+    await this.lobbyConnection!.invoke('GetActiveRooms')
+  }
 
-    await this.roomHub!.invoke('CreateRoom', {
-      roomName: roomName,
-      maxPlayers: 6
-    })
+  async refreshRooms(): Promise<void> {
+    if (!this.lobbyConnection || this.lobbyConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('LobbyHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [LobbyHub] Refreshing rooms`)
+    await this.lobbyConnection!.invoke('RefreshRooms')
+  }
+
+  async quickJoin(preferredRoomCode?: string): Promise<void> {
+    if (!this.lobbyConnection || this.lobbyConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('LobbyHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [LobbyHub] Quick join, preferred room: ${preferredRoomCode || 'none'}`)
+    await this.lobbyConnection!.invoke('QuickJoin', preferredRoomCode)
+  }
+
+  async quickJoinTable(tableId: string): Promise<void> {
+    if (!this.lobbyConnection || this.lobbyConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('LobbyHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [LobbyHub] Quick join table: ${tableId}`)
+    await this.lobbyConnection!.invoke('QuickJoinTable', tableId)
+  }
+
+  async getLobbyStats(): Promise<void> {
+    if (!this.lobbyConnection || this.lobbyConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('LobbyHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [LobbyHub] Getting lobby stats`)
+    await this.lobbyConnection!.invoke('GetLobbyStats')
+  }
+
+  async getRoomDetails(roomCode: string): Promise<void> {
+    if (!this.lobbyConnection || this.lobbyConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('LobbyHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [LobbyHub] Getting room details: ${roomCode}`)
+    await this.lobbyConnection!.invoke('GetRoomDetails', roomCode)
+  }
+
+  // ==============================================
+  // MÉTODOS DEL GAMEROOMHUB - EXACTOS DEL BACKEND
+  // ==============================================
+
+  async createRoom(request: CreateRoomRequest): Promise<void> {
+    if (!this.gameRoomConnection || this.gameRoomConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameRoomHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [GameRoomHub] Creating room:`, request)
+    await this.gameRoomConnection!.invoke('CreateRoom', request)
+  }
+
+  async joinRoom(request: JoinRoomRequest): Promise<void> {
+    if (!this.gameRoomConnection || this.gameRoomConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameRoomHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [GameRoomHub] Joining room:`, request)
+    await this.gameRoomConnection!.invoke('JoinRoom', request)
+  }
+
+  async joinOrCreateRoomForTable(tableId: string, playerName: string): Promise<void> {
+    if (!this.gameRoomConnection || this.gameRoomConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameRoomHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [GameRoomHub] Joining/creating room for table: ${tableId}, playerName: ${playerName}`)
+    await this.gameRoomConnection!.invoke('JoinOrCreateRoomForTable', tableId, playerName)
   }
 
   async leaveRoom(roomCode: string): Promise<void> {
-    if (!this.roomHub || this.roomHub.state !== HubConnectionState.Connected) {
+    if (!this.gameRoomConnection || this.gameRoomConnection.state !== HubConnectionState.Connected) {
       return
     }
 
     try {
-      console.log(`[SignalR] 🚪 [RoomHub] EXPLICIT LeaveRoom called for: ${roomCode}`)
-      await this.roomHub.invoke('LeaveRoom', roomCode)
+      console.log(`[SignalR] [GameRoomHub] Leaving room: ${roomCode}`)
+      await this.gameRoomConnection.invoke('LeaveRoom', roomCode)
     } catch (error) {
-      console.warn('[SignalR] ⚠️ Error leaving room:', error)
+      console.warn('[SignalR] Error leaving room:', error)
     }
   }
 
   async getRoomInfo(roomCode: string): Promise<void> {
-    if (!this.roomHub || this.roomHub.state !== HubConnectionState.Connected) {
+    if (!this.gameRoomConnection || this.gameRoomConnection.state !== HubConnectionState.Connected) {
       if (!(await this.verifyConnections())) {
-        throw new Error('RoomHub no está disponible')
+        throw new Error('GameRoomHub no está disponible')
       }
     }
 
-    console.log(`[SignalR] 📋 [RoomHub] Getting room info: ${roomCode}`)
-    await this.roomHub!.invoke('GetRoomInfo', roomCode)
+    console.log(`[SignalR] [GameRoomHub] Getting room info: ${roomCode}`)
+    await this.gameRoomConnection!.invoke('GetRoomInfo', roomCode)
   }
 
-  // MÉTODOS QUE USAN SEATHUB
-  async joinSeat(roomCode: string, position: number): Promise<void> {
-    if (!this.seatHub || this.seatHub.state !== HubConnectionState.Connected) {
+  async joinSeat(request: JoinSeatRequest): Promise<void> {
+    if (!this.gameRoomConnection || this.gameRoomConnection.state !== HubConnectionState.Connected) {
       if (!(await this.verifyConnections())) {
-        throw new Error('SeatHub no está disponible')
+        throw new Error('GameRoomHub no está disponible')
       }
     }
 
-    console.log(`[SignalR] 💺 [SeatHub] Joining seat ${position} in room: ${roomCode}`)
-
-    try {
-      await this.seatHub!.invoke('JoinSeat', {
-        RoomCode: roomCode,
-        Position: position
-      })
-      console.log(`[SignalR] ✅ Successfully invoked JoinSeat via SeatHub`)
-    } catch (error) {
-      console.error(`[SignalR] ❌ Error in JoinSeat:`, error)
-      throw error
-    }
+    console.log(`[SignalR] [GameRoomHub] Joining seat:`, request)
+    await this.gameRoomConnection!.invoke('JoinSeat', request)
   }
 
-  async leaveSeat(roomCode: string): Promise<void> {
-    if (!this.seatHub || this.seatHub.state !== HubConnectionState.Connected) {
+  async leaveSeat(request: LeaveSeatRequest): Promise<void> {
+    if (!this.gameRoomConnection || this.gameRoomConnection.state !== HubConnectionState.Connected) {
       if (!(await this.verifyConnections())) {
-        throw new Error('SeatHub no está disponible')
+        throw new Error('GameRoomHub no está disponible')
       }
     }
 
-    console.log(`[SignalR] 🚪 [SeatHub] Leaving seat in room: ${roomCode}`)
-
-    try {
-      await this.seatHub!.invoke('LeaveSeat', {
-        RoomCode: roomCode
-      })
-      console.log(`[SignalR] ✅ Successfully invoked LeaveSeat via SeatHub`)
-    } catch (error) {
-      console.error(`[SignalR] ❌ Error in LeaveSeat:`, error)
-      throw error
-    }
+    console.log(`[SignalR] [GameRoomHub] Leaving seat:`, request)
+    await this.gameRoomConnection!.invoke('LeaveSeat', request)
   }
 
-  // MÉTODOS QUE USAN SPECTATORHUB
-  async joinAsViewer(tableId: string, playerName: string): Promise<void> {
-    if (!this.spectatorHub || this.spectatorHub.state !== HubConnectionState.Connected) {
+  async joinAsViewer(request: JoinRoomRequest): Promise<void> {
+    if (!this.gameRoomConnection || this.gameRoomConnection.state !== HubConnectionState.Connected) {
       if (!(await this.verifyConnections())) {
-        throw new Error('SpectatorHub no está disponible')
+        throw new Error('GameRoomHub no está disponible')
       }
     }
 
+    console.log(`[SignalR] [GameRoomHub] Joining as viewer:`, request)
+    await this.gameRoomConnection!.invoke('JoinAsViewer', request)
+  }
+
+  // ==============================================
+  // MÉTODOS DEL GAMECONTROLHUB - EXACTOS DEL BACKEND
+  // ==============================================
+
+  async joinRoomForGameControl(roomCode: string): Promise<void> {
+    if (!this.gameControlConnection || this.gameControlConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameControlHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [GameControlHub] Joining room for game control: ${roomCode}`)
+    await this.gameControlConnection!.invoke('JoinRoomForGameControl', roomCode)
+  }
+
+  async startGame(roomCode: string): Promise<void> {
+    if (!this.gameControlConnection || this.gameControlConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameControlHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [GameControlHub] Starting game for room: ${roomCode}`)
+    await this.gameControlConnection!.invoke('StartGame', roomCode)
+  }
+
+  async endGame(roomCode: string): Promise<void> {
+    if (!this.gameControlConnection || this.gameControlConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameControlHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [GameControlHub] Ending game for room: ${roomCode}`)
+    await this.gameControlConnection!.invoke('EndGame', roomCode)
+  }
+
+  async hit(roomCode: string): Promise<void> {
+    if (!this.gameControlConnection || this.gameControlConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameControlHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [GameControlHub] Hit action for room: ${roomCode}`)
+    await this.gameControlConnection!.invoke('Hit', roomCode)
+  }
+
+  async stand(roomCode: string): Promise<void> {
+    if (!this.gameControlConnection || this.gameControlConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameControlHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [GameControlHub] Stand action for room: ${roomCode}`)
+    await this.gameControlConnection!.invoke('Stand', roomCode)
+  }
+
+  async getAutoBetStatistics(roomCode: string): Promise<void> {
+    if (!this.gameControlConnection || this.gameControlConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameControlHub no está disponible')
+      }
+    }
+
+    console.log(`[SignalR] [GameControlHub] Getting auto-bet statistics for room: ${roomCode}`)
+    await this.gameControlConnection!.invoke('GetAutoBetStatistics', roomCode)
+  }
+
+  // ==============================================
+  // MÉTODOS DE PRUEBA - EXACTOS DEL BACKEND
+  // ==============================================
+
+  async testConnection(): Promise<void> {
+    // Probar LobbyHub
+    if (this.lobbyConnection?.state === HubConnectionState.Connected) {
+      console.log('[SignalR] [LobbyHub] Testing connection...')
+      try {
+        await this.lobbyConnection.invoke('TestConnection')
+        console.log('[SignalR] Test connection successful via LobbyHub')
+        return
+      } catch (error) {
+        console.error('[SignalR] Test connection failed via LobbyHub:', error)
+      }
+    }
+
+    // Probar GameRoomHub
+    if (this.gameRoomConnection?.state === HubConnectionState.Connected) {
+      console.log('[SignalR] [GameRoomHub] Testing connection...')
+      try {
+        await this.gameRoomConnection.invoke('TestConnection')
+        console.log('[SignalR] Test connection successful via GameRoomHub')
+        return
+      } catch (error) {
+        console.error('[SignalR] Test connection failed via GameRoomHub:', error)
+      }
+    }
+
+    // Probar GameControlHub
+    if (this.gameControlConnection?.state === HubConnectionState.Connected) {
+      console.log('[SignalR] [GameControlHub] Testing connection...')
+      try {
+        await this.gameControlConnection.invoke('TestConnection')
+        console.log('[SignalR] Test connection successful via GameControlHub')
+        return
+      } catch (error) {
+        console.error('[SignalR] Test connection failed via GameControlHub:', error)
+      }
+    }
+
+    throw new Error('No hub connections available for testing')
+  }
+
+  // ==============================================
+  // MÉTODOS DE UTILIDAD Y COMPATIBILIDAD
+  // ==============================================
+
+  // Métodos de compatibilidad para mantener la API existente
+  async createRoomCompat(roomName: string): Promise<void> {
+    const request: CreateRoomRequest = {
+      roomName: roomName,
+      maxPlayers: 6
+    }
+    await this.createRoom(request)
+  }
+
+  async joinRoomCompat(roomCode: string): Promise<void> {
     const user = authService.getCurrentUser()
     if (!user) {
       throw new Error('Usuario no autenticado')
     }
 
-    console.log(`[SignalR] 👁️ [SpectatorHub] Joining as viewer: ${playerName} to table: ${tableId}`)
+    const request: JoinRoomRequest = {
+      roomCode: roomCode,
+      playerName: user.displayName
+    }
+    await this.joinRoom(request)
+  }
 
-    const roomCode = tableId
+  async joinSeatCompat(roomCode: string, position: number): Promise<void> {
+    const request: JoinSeatRequest = {
+      roomCode: roomCode,
+      position: position
+    }
+    await this.joinSeat(request)
+  }
 
-    await this.spectatorHub!.invoke('JoinAsViewer', {
+  async leaveSeatCompat(roomCode: string): Promise<void> {
+    const request: LeaveSeatRequest = {
+      roomCode: roomCode
+    }
+    await this.leaveSeat(request)
+  }
+
+  async joinAsViewerCompat(roomCode: string, playerName: string): Promise<void> {
+    const request: JoinRoomRequest = {
       roomCode: roomCode,
       playerName: playerName
-    })
+    }
+    await this.joinAsViewer(request)
   }
 
-  async joinOrCreateRoomForTableAsViewer(tableId: string, playerName?: string): Promise<void> {
-    if (!this.spectatorHub || this.spectatorHub.state !== HubConnectionState.Connected) {
-      if (!(await this.verifyConnections())) {
-        throw new Error('SpectatorHub no está disponible')
-      }
-    }
+  // ==============================================
+  // PROPIEDADES DE ESTADO
+  // ==============================================
 
-    const user = authService.getCurrentUser()
-    const finalPlayerName = playerName || user?.displayName || 'Viewer'
-
-    console.log(`[SignalR] 👁️ [SpectatorHub] Joining/creating room as viewer for table: ${tableId}, playerName: ${finalPlayerName}`)
-    
-    try {
-      await this.spectatorHub!.invoke('JoinOrCreateRoomForTableAsViewer', tableId, finalPlayerName)
-      console.log(`[SignalR] ✅ Successfully invoked JoinOrCreateRoomForTableAsViewer via SpectatorHub`)
-    } catch (error) {
-      console.error(`[SignalR] ❌ Error in JoinOrCreateRoomForTableAsViewer:`, error)
-      throw error
-    }
-  }
-
-  // MÉTODOS QUE USAN GAMECONTROLHUB
-  async startGame(roomCode: string): Promise<void> {
-    if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
-      if (!(await this.verifyConnections())) {
-        throw new Error('GameControlHub no está disponible')
-      }
-    }
-
-    console.log(`[SignalR] 🎮 [GameControlHub] Starting game for room: ${roomCode}`)
-    await this.gameControlHub!.invoke('StartGame', roomCode)
-  }
-
-  // NUEVOS: MÉTODOS DE AUTO-BETTING
-  async processRoundAutoBets(roomCode: string, removePlayersWithoutFunds: boolean = true): Promise<void> {
-    if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
-      if (!(await this.verifyConnections())) {
-        throw new Error('GameControlHub no está disponible')
-      }
-    }
-
-    console.log(`[SignalR] 🎰 [GameControlHub] Processing auto-bets for room: ${roomCode}, removeWithoutFunds: ${removePlayersWithoutFunds}`)
-    
-    try {
-      await this.gameControlHub!.invoke('ProcessRoundAutoBets', roomCode, removePlayersWithoutFunds)
-      console.log(`[SignalR] ✅ Successfully invoked ProcessRoundAutoBets via GameControlHub`)
-    } catch (error) {
-      console.error(`[SignalR] ❌ Error in ProcessRoundAutoBets:`, error)
-      throw error
-    }
-  }
-
-  async getAutoBetStatistics(roomCode: string): Promise<void> {
-    if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
-      if (!(await this.verifyConnections())) {
-        throw new Error('GameControlHub no está disponible')
-      }
-    }
-
-    console.log(`[SignalR] 📊 [GameControlHub] Getting auto-bet statistics for room: ${roomCode}`)
-    
-    try {
-      await this.gameControlHub!.invoke('GetAutoBetStatistics', roomCode)
-      console.log(`[SignalR] ✅ Successfully invoked GetAutoBetStatistics via GameControlHub`)
-    } catch (error) {
-      console.error(`[SignalR] ❌ Error in GetAutoBetStatistics:`, error)
-      throw error
-    }
-  }
-
-  // MÉTODOS DE TEST
-  async testConnection(): Promise<void> {
-    if (!this.connectionHub || this.connectionHub.state !== HubConnectionState.Connected) {
-      if (!(await this.verifyConnections())) {
-        throw new Error('ConnectionHub no está disponible')
-      }
-    }
-
-    console.log('[SignalR] 🧪 [ConnectionHub] Testing connection...')
-    
-    try {
-      await this.connectionHub!.invoke('TestConnection')
-      console.log('[SignalR] ✅ Test connection successful via ConnectionHub')
-    } catch (error) {
-      console.error('[SignalR] ❌ Test connection failed:', error)
-      throw error
-    }
-  }
-
-  // MÉTODOS DE JUEGO (pueden ir a GameControlHub en el futuro)
-  async placeBet(roomCode: string, amount: number): Promise<void> {
-    if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
-      if (!(await this.verifyConnections())) {
-        throw new Error('GameControlHub no está disponible')
-      }
-    }
-
-    console.log(`[SignalR] 💰 [GameControlHub] Placing bet: ${amount} for room: ${roomCode}`)
-    await this.gameControlHub!.invoke('PlaceBet', {
-      roomCode: roomCode,
-      amount: amount
-    })
-  }
-
-  async playerAction(roomCode: string, action: string): Promise<void> {
-    if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
-      if (!(await this.verifyConnections())) {
-        throw new Error('GameControlHub no está disponible')
-      }
-    }
-
-    console.log(`[SignalR] 🎯 [GameControlHub] Player action: ${action} for room: ${roomCode}`)
-    await this.gameControlHub!.invoke('PlayerAction', {
-      roomCode: roomCode,
-      action: action
-    })
-  }
-
-  // GETTERS DE ESTADO
   get isLobbyConnected(): boolean {
     return this.lobbyConnection?.state === HubConnectionState.Connected
   }
 
-  get isConnectionHubConnected(): boolean {
-    return this.connectionHub?.state === HubConnectionState.Connected
+  get isGameRoomConnected(): boolean {
+    return this.gameRoomConnection?.state === HubConnectionState.Connected
   }
 
-  get isRoomHubConnected(): boolean {
-    return this.roomHub?.state === HubConnectionState.Connected
-  }
-
-  get isSpectatorHubConnected(): boolean {
-    return this.spectatorHub?.state === HubConnectionState.Connected
-  }
-
-  get isSeatHubConnected(): boolean {
-    return this.seatHub?.state === HubConnectionState.Connected
-  }
-
-  get isGameControlHubConnected(): boolean {
-    return this.gameControlHub?.state === HubConnectionState.Connected
+  get isGameControlConnected(): boolean {
+    return this.gameControlConnection?.state === HubConnectionState.Connected
   }
 
   get areAllConnected(): boolean {
     return this.isLobbyConnected && 
-           this.isConnectionHubConnected && 
-           this.isRoomHubConnected && 
-           this.isSpectatorHubConnected && 
-           this.isSeatHubConnected && 
-           this.isGameControlHubConnected
+           this.isGameRoomConnected && 
+           this.isGameControlConnected
   }
 
   get connectionState(): ConnectionState {
     const connections = [
       this.lobbyConnection,
-      this.connectionHub,
-      this.roomHub,
-      this.spectatorHub,
-      this.seatHub,
-      this.gameControlHub
+      this.gameRoomConnection,
+      this.gameControlConnection
     ]
 
     const states = connections.map(conn => conn?.state).filter(Boolean)
@@ -972,6 +1120,41 @@ class SignalRService {
       return 'Reconnecting'
     }
     return 'Disconnected'
+  }
+
+  // ==============================================
+  // INFORMACIÓN DE DEBUGGING
+  // ==============================================
+
+  getConnectionInfo() {
+    return {
+      lobby: {
+        connected: this.isLobbyConnected,
+        state: this.lobbyConnection?.state || 'Not Created',
+        connectionId: this.lobbyConnection?.connectionId || null
+      },
+      gameRoom: {
+        connected: this.isGameRoomConnected,
+        state: this.gameRoomConnection?.state || 'Not Created',
+        connectionId: this.gameRoomConnection?.connectionId || null
+      },
+      gameControl: {
+        connected: this.isGameControlConnected,
+        state: this.gameControlConnection?.state || 'Not Created',
+        connectionId: this.gameControlConnection?.connectionId || null
+      },
+      overall: {
+        allConnected: this.areAllConnected,
+        connectionState: this.connectionState,
+        isStarting: this.isStarting,
+        isDestroying: this.isDestroying
+      }
+    }
+  }
+
+  logConnectionStatus() {
+    const info = this.getConnectionInfo()
+    console.log('[SignalR] Connection Status:', JSON.stringify(info, null, 2))
   }
 }
 

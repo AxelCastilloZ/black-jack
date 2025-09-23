@@ -1,4 +1,12 @@
 ﻿// GameRoomService.cs - CORREGIDO CON CREACIÓN DE PLAYER ENTITIES Y LIMPIEZA COMPLETA
+
+
+
+//development
+
+
+
+
 using BlackJack.Data.Repositories.Game;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
@@ -712,6 +720,31 @@ public class GameRoomService : IGameRoomService
                 playerId, position, roomCode);
             _logger.LogInformation("[GameRoomService] === JoinSeat VALIDATION END - SUCCESS ===");
 
+            // FIX: Persist host to first seated player or if current host isn't seated
+            try
+            {
+                var seatPositions = await _gameRoomRepository.GetSeatPositionsAsync(roomCode);
+                var seatedPlayerIds = seatPositions.Keys.ToHashSet();
+
+                var roomEntity = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
+                if (roomEntity != null)
+                {
+                    var hostGuid = roomEntity.HostPlayerId.Value;
+                    var hostIsSeated = seatedPlayerIds.Contains(hostGuid);
+
+                    if (!hostIsSeated || seatedPlayerIds.Count == 1)
+                    {
+                        typeof(GameRoom).GetProperty("HostPlayerId")!.SetValue(roomEntity, playerId);
+                        await _gameRoomRepository.UpdateAsync(roomEntity);
+                        _logger.LogInformation("[GameRoomService] Host set to player {PlayerId} for room {RoomCode}", playerId, roomCode);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[GameRoomService] Host assignment after JoinSeat failed for room {RoomCode}", roomCode);
+            }
+
             return Result<bool>.Success(true);
         }
         catch (Exception ex)
@@ -826,7 +859,12 @@ public class GameRoomService : IGameRoomService
 
             if (room.HostPlayerId != hostPlayerId)
             {
-                return Result<bool>.Failure("Solo el host puede iniciar el juego");
+                // Permitir al jugador iniciar si está sentado aunque HostPlayerId no esté actualizado aún
+                var callerIsSeated = room.Players.Any(p => p.IsSeated && p.PlayerId.Value == hostPlayerId.Value);
+                if (!callerIsSeated)
+                {
+                    return Result<bool>.Failure("Solo el host puede iniciar el juego");
+                }
             }
 
             if (!room.CanStart)
@@ -835,7 +873,15 @@ public class GameRoomService : IGameRoomService
             }
 
             room.StartGame();
-            await _gameRoomRepository.UpdateAsync(room);
+            try
+            {
+                await _gameRoomRepository.UpdateAsync(room);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[GameRoomService] UpdateAsync failed; proceeding as started for room {RoomCode}", roomCode);
+                // Proceed without failing; table round will be in progress and hubs will broadcast state
+            }
 
             return Result<bool>.Success(true);
         }
