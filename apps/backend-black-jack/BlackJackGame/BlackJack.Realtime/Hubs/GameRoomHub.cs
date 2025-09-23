@@ -60,6 +60,27 @@ public class GameRoomHub : BaseHub
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
+        try
+        {
+            // Intentar obtener PlayerId desde claims; si no, desde ConnectionManager
+            var playerId = GetCurrentPlayerId() ?? await _connectionManager.GetPlayerIdByConnectionAsync(Context.ConnectionId);
+
+            if (playerId != null)
+            {
+                // Si estaba en una sala, forzar Leave para eliminar RoomPlayer huérfano
+                try
+                {
+                    var currentRoomCodeResult = await _gameRoomService.GetPlayerCurrentRoomCodeAsync(playerId);
+                    if (currentRoomCodeResult.IsSuccess && !string.IsNullOrEmpty(currentRoomCodeResult.Value))
+                    {
+                        await _gameRoomService.LeaveRoomAsync(currentRoomCodeResult.Value!, playerId);
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+
         await _connectionManager.RemoveConnectionAsync(Context.ConnectionId);
         await base.OnDisconnectedAsync(exception);
     }
@@ -278,6 +299,14 @@ public class GameRoomHub : BaseHub
 
                 _logger.LogInformation("[GameRoomHub] Player {PlayerId} left room {RoomCode} successfully",
                     playerId, roomCode);
+
+                // NUEVO: Si la sala quedó vacía, actualizar RoomInfo para lobby
+                var updated = await _gameRoomService.GetRoomAsync(roomCode);
+                if (updated.IsSuccess && updated.Value!.PlayerCount == 0)
+                {
+                    var roomInfo = await MapToRoomInfoAsync(updated.Value!);
+                    await _notificationService.NotifyRoomInfoUpdatedAsync(roomCode, roomInfo);
+                }
             }
             else
             {

@@ -48,6 +48,7 @@ public interface IGameRoomService
 
 
     Task<Result<int>> ForceCleanupPlayerAsync(PlayerId playerId);
+    Task<Result> ForceCleanupRoomAsync(string roomCode);
     // NUEVOS: Métodos de Auto-Betting
     /// <summary>
     /// Procesa las apuestas automáticas para todos los jugadores sentados en una sala
