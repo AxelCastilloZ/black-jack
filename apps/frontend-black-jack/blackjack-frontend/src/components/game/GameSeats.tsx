@@ -1,4 +1,4 @@
-//GameSeats.tsx - ALINEADO CON BACKEND REFACTORIZADO
+//GameSeats.tsx - CARTAS PÚBLICAS REMOVIDAS
 
 import React, { useCallback } from 'react'
 
@@ -46,7 +46,7 @@ interface GameSeatsProps {
   // Props para auto-betting
   autoBettingActive?: boolean
   minBetPerRound?: number
-  // Props para cartas
+  // Props para cartas (mantenidas para compatibilidad pero no usadas para mostrar cartas públicas)
   playersWithHands?: PlayerWithHand[]
   // NUEVOS: Handlers exactos desde GamePage
   onJoinSeat?: (position: number) => Promise<void>
@@ -76,16 +76,8 @@ export default function GameSeats({
     return players?.find(p => p.position === position)
   }, [players])
 
-  const getPlayerWithHandAtPosition = useCallback((position: number) => {
-    const player = playersWithHands?.find(p => p.position === position)
-    return player
-  }, [playersWithHands])
-
   const currentPlayer = players?.find(p => p.playerId === currentUser?.id)
   const isPlayerSeated = !!currentPlayer
-
-  // REMOVIDO: handleJoinSeat y handleLeaveSeat locales
-  // Ahora usamos los handlers que vienen desde GamePage (onJoinSeat, onLeaveSeat)
 
   // Layout semicircular
   return (
@@ -100,13 +92,12 @@ export default function GameSeats({
             <PlayerPosition 
               position={0}
               player={getPlayerAtPosition(0)}
-              playerWithHand={getPlayerWithHandAtPosition(0)}
               currentUser={currentUser}
               isCurrentUserSeated={isPlayerSeated}
               gameStatus={gameStatus}
               currentPlayerTurn={currentPlayerTurn}
-              onJoinSeat={onJoinSeat} // USAR handler desde GamePage
-              onLeaveSeat={onLeaveSeat} // USAR handler desde GamePage
+              onJoinSeat={onJoinSeat}
+              onLeaveSeat={onLeaveSeat}
               seatClickLoading={seatClickLoading}
               isViewer={isViewer}
               seatHubConnected={seatHubConnected}
@@ -120,7 +111,6 @@ export default function GameSeats({
             <PlayerPosition 
               position={1}
               player={getPlayerAtPosition(1)}
-              playerWithHand={getPlayerWithHandAtPosition(1)}
               currentUser={currentUser}
               isCurrentUserSeated={isPlayerSeated}
               gameStatus={gameStatus}
@@ -143,7 +133,6 @@ export default function GameSeats({
             <PlayerPosition 
               position={5}
               player={getPlayerAtPosition(5)}
-              playerWithHand={getPlayerWithHandAtPosition(5)}
               currentUser={currentUser}
               isCurrentUserSeated={isPlayerSeated}
               gameStatus={gameStatus}
@@ -163,7 +152,6 @@ export default function GameSeats({
             <PlayerPosition 
               position={2}
               player={getPlayerAtPosition(2)}
-              playerWithHand={getPlayerWithHandAtPosition(2)}
               currentUser={currentUser}
               isCurrentUserSeated={isPlayerSeated}
               gameStatus={gameStatus}
@@ -186,7 +174,6 @@ export default function GameSeats({
             <PlayerPosition 
               position={4}
               player={getPlayerAtPosition(4)}
-              playerWithHand={getPlayerWithHandAtPosition(4)}
               currentUser={currentUser}
               isCurrentUserSeated={isPlayerSeated}
               gameStatus={gameStatus}
@@ -206,7 +193,6 @@ export default function GameSeats({
             <PlayerPosition 
               position={3}
               player={getPlayerAtPosition(3)}
-              playerWithHand={getPlayerWithHandAtPosition(3)}
               currentUser={currentUser}
               isCurrentUserSeated={isPlayerSeated}
               gameStatus={gameStatus}
@@ -227,17 +213,16 @@ export default function GameSeats({
   )
 }
 
-// PlayerPosition component - ACTUALIZADO para usar handlers desde GamePage
+// PlayerPosition component - CARTAS PÚBLICAS REMOVIDAS
 function PlayerPosition({ 
   position, 
   player, 
-  playerWithHand,
   currentUser, 
   isCurrentUserSeated,
   gameStatus,
   currentPlayerTurn,
-  onJoinSeat, // RECIBIR desde GamePage
-  onLeaveSeat, // RECIBIR desde GamePage
+  onJoinSeat,
+  onLeaveSeat,
   seatClickLoading,
   isViewer,
   seatHubConnected,
@@ -247,13 +232,12 @@ function PlayerPosition({
 }: {
   position: number
   player?: RoomPlayer
-  playerWithHand?: PlayerWithHand
   currentUser: any
   isCurrentUserSeated: boolean
   gameStatus?: string
   currentPlayerTurn?: string
-  onJoinSeat?: (position: number) => Promise<void> // OPCIONAL: puede venir de GamePage
-  onLeaveSeat?: () => Promise<void> // OPCIONAL: puede venir de GamePage
+  onJoinSeat?: (position: number) => Promise<void>
+  onLeaveSeat?: () => Promise<void>
   seatClickLoading: number | null
   isViewer: boolean
   seatHubConnected: boolean
@@ -324,7 +308,7 @@ function PlayerPosition({
     )
   }
 
-  // Jugador sentado
+  // Jugador sentado - SIN MOSTRAR CARTAS PÚBLICAS
   return (
     <div className="flex flex-col items-center">
       <div className="flex items-center mb-2">
@@ -421,26 +405,7 @@ function PlayerPosition({
         </div>
       </div>
 
-      {/* Player Hand Display */}
-      {playerWithHand?.hand && gameStatus === 'InProgress' && (
-        <div className="mt-2 mb-2">
-          <div className="flex items-center justify-center space-x-1 bg-black/60 backdrop-blur-sm p-2 rounded-lg border border-gray-600">
-            {playerWithHand.hand.cards.map((card, index) => (
-              <div key={index} className="w-8 h-12 bg-white border border-gray-300 rounded text-black text-xs flex flex-col items-center justify-center shadow-sm">
-                <div className="font-bold">{card.rank}</div>
-                <div className="text-xs">
-                  {card.suit === 'Hearts' ? '♥' : 
-                   card.suit === 'Diamonds' ? '♦' : 
-                   card.suit === 'Clubs' ? '♣' : '♠'}
-                </div>
-              </div>
-            ))}
-            <div className="ml-2 text-white text-sm font-bold bg-blue-600/80 px-2 py-1 rounded backdrop-blur-sm">
-              {playerWithHand.hand.value}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* REMOVIDO: Player Hand Display - Las cartas ya NO se muestran aquí públicamente */}
 
       {/* Estados y acciones */}
       <div className="flex flex-col items-center space-y-1">

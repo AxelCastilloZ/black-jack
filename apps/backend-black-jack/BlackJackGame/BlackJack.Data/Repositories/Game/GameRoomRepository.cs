@@ -1,4 +1,4 @@
-﻿// BlackJack.Data/Repositories/Game/GameRoomRepository.cs - SOLUCIÓN DEFINITIVA CON CONEXIÓN DIRECTA
+﻿// BlackJack.Data/Repositories/Game/GameRoomRepository.cs - CORREGIDO PARA TRACKING CONFLICTS
 using BlackJack.Data.Context;
 using BlackJack.Data.Repositories.Common;
 using BlackJack.Domain.Models.Game;
@@ -485,6 +485,7 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         await _context.SaveChangesAsync();
     }
 
+    // *** FIX CRÍTICO: MÉTODO UpdateAsync CORREGIDO PARA EVITAR TRACKING CONFLICTS ***
     public override async Task UpdateAsync(GameRoom entity)
     {
         var maxRetries = 3;
@@ -494,16 +495,27 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
         {
             try
             {
-                var existingEntry = _context.Entry(entity);
+                // PASO 1: Desconectar cualquier entidad con el mismo ID que esté siendo tracked
+                var trackedEntries = _context.ChangeTracker.Entries<GameRoom>()
+                    .Where(e => e.Entity.Id == entity.Id)
+                    .ToList();
 
-                if (existingEntry.State == EntityState.Detached)
+                foreach (var trackedEntry in trackedEntries)
                 {
-                    _dbSet.Attach(entity);
-                    existingEntry.State = EntityState.Modified;
+                    trackedEntry.State = EntityState.Detached;
+                    Console.WriteLine($"[GameRoomRepository] Detached existing tracked entity for room {entity.RoomCode}");
                 }
 
+                // PASO 2: Usar Update() en lugar de Attach() para evitar conflictos
+              
+                _context.Update(entity);
+
+                // PASO 3: Guardar cambios
                 await _context.SaveChangesAsync();
+
+                Console.WriteLine($"[GameRoomRepository] Successfully updated room {entity.RoomCode} to status {entity.Status}");
                 break;
+
             }
             catch (DbUpdateConcurrencyException ex)
             {
@@ -515,13 +527,55 @@ public class GameRoomRepository : Repository<GameRoom>, IGameRoomRepository
                     throw;
                 }
 
+                // Recargar la entidad desde la base de datos
                 var entry = _context.Entry(entity);
                 await entry.ReloadAsync();
-                await Task.Delay(100 * retryCount);
+                await Task.Delay(100 * retryCount); // Backoff exponencial
 
                 Console.WriteLine($"[GameRoomRepository] Concurrency conflict updating room {entity.RoomCode}, retry {retryCount}/{maxRetries}");
             }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("cannot be tracked"))
+            {
+                retryCount++;
+
+                if (retryCount >= maxRetries)
+                {
+                    Console.WriteLine($"[GameRoomRepository] Max retries ({maxRetries}) reached for tracking conflict in room {entity.RoomCode}");
+
+                    // FALLBACK RADICAL: Usar SQL directo
+                    Console.WriteLine($"[GameRoomRepository] Falling back to SQL direct update for room {entity.RoomCode}");
+                    await UpdateRoomStatusDirectAsync(entity.Id, entity.Status);
+                    break;
+                }
+
+                // Limpiar completamente el ChangeTracker y reintentar
+                _context.ChangeTracker.Clear();
+                await Task.Delay(200 * retryCount);
+
+                Console.WriteLine($"[GameRoomRepository] Tracking conflict for room {entity.RoomCode}, cleared ChangeTracker, retry {retryCount}/{maxRetries}");
+            }
         }
+    }
+
+    /// <summary>
+    /// FALLBACK: Actualización directa por SQL cuando EF falla completamente
+    /// </summary>
+    private async Task UpdateRoomStatusDirectAsync(Guid roomId, RoomStatus status)
+    {
+        var sql = @"
+            UPDATE GameRooms 
+            SET Status = @Status, UpdatedAt = @UpdatedAt 
+            WHERE Id = @RoomId";
+
+        var parameters = new[]
+        {
+            new SqlParameter("@Status", (int)status),
+            new SqlParameter("@UpdatedAt", DateTime.UtcNow),
+            new SqlParameter("@RoomId", roomId)
+        };
+
+        var affectedRows = await _context.Database.ExecuteSqlRawAsync(sql, parameters);
+        Console.WriteLine($"[GameRoomRepository] Direct SQL update affected {affectedRows} rows for room {roomId}");
     }
 
     public override async Task DeleteAsync(GameRoom entity)

@@ -209,6 +209,28 @@ public class PlayerRepository : Repository<Player>, IPlayerRepository
         }
     }
 
+
+
+
+
+    public async Task<Player?> GetByPlayerIdFreshAsync(PlayerId playerId)
+    {
+        return await _dbSet
+            .AsNoTracking()  //  Fuerza consulta fresca desde BD
+            .FirstOrDefaultAsync(p => p.PlayerId.Value == playerId.Value);
+    }
+
+    public async Task<Player?> GetByIdFreshAsync(Guid id)
+    {
+        return await _dbSet
+            .AsNoTracking()  //  Fuerza consulta fresca desde BD
+            .FirstOrDefaultAsync(p => p.Id == id);
+    }
+
+
+
+
+
     public async Task<List<Player>> GetPlayersWithInsufficientFundsAsync(List<PlayerId> playerIds, Money requiredAmount)
     {
         if (playerIds == null || !playerIds.Any())

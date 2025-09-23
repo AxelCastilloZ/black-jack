@@ -39,7 +39,7 @@ public class DealerService : IDealerService
         return dealerHand;
     }
 
-    // NUEVO MÉTODO: Usar RoomPlayers en lugar de Seats
+    // MÉTODO PRINCIPAL: Usar RoomPlayers en lugar de Seats
     public async Task DealInitialCardsAsync(BlackjackTable table, List<RoomPlayer> seatedPlayers)
     {
         _logger.LogInformation("[DealerService] Dealing initial cards for table {TableId} with {PlayerCount} seated players",
@@ -138,10 +138,10 @@ public class DealerService : IDealerService
         }
     }
 
-    // MÉTODO ORIGINAL - DEPRECATED pero mantenido por compatibilidad
+    // MÉTODO ORIGINAL - DEPRECATED pero CORREGIDO para compatibilidad
     public async Task DealInitialCardsAsync(BlackjackTable table)
     {
-        _logger.LogError("[DealerService] DealInitialCardsAsync(table) is DEPRECATED - use DealInitialCardsAsync(table, seatedPlayers) instead");
+        _logger.LogWarning("[DealerService] DealInitialCardsAsync(table) is DEPRECATED - use DealInitialCardsAsync(table, seatedPlayers) instead");
 
         // Buscar en Seats (arquitectura antigua) - probablemente vacío
         var occupiedSeats = table.Seats.Where(s => s.IsOccupied).ToList();
@@ -152,45 +152,56 @@ public class DealerService : IDealerService
             return;
         }
 
-        // Código original como fallback
-        _logger.LogInformation("[DealerService] [DEPRECATED] Dealing initial cards for table {TableId}", table.Id);
-
-        // Create dealer hand
-        var dealerHand = Hand.Create();
-        await _handRepository.AddAsync(dealerHand);
-        table.SetDealerHandId(dealerHand.Id);
-
-        // Deal 2 cards to each player
-        foreach (var seat in occupiedSeats)
+        try
         {
-            if (seat.Player != null)
+            // Código original como fallback
+            _logger.LogInformation("[DealerService] [DEPRECATED] Dealing initial cards for table {TableId}", table.Id);
+
+            // Create dealer hand
+            var dealerHand = Hand.Create();
+            await _handRepository.AddAsync(dealerHand);
+            table.SetDealerHandId(dealerHand.Id);
+
+            // Deal 2 cards to each player
+            foreach (var seat in occupiedSeats)
             {
-                // Create player hand
-                var playerHand = Hand.Create();
-                await _handRepository.AddAsync(playerHand);
-                seat.Player.AddHandId(playerHand.Id);
+                if (seat.Player != null)
+                {
+                    // Create player hand
+                    var playerHand = Hand.Create();
+                    await _handRepository.AddAsync(playerHand);
+                    seat.Player.AddHandId(playerHand.Id);
 
-                // Deal 2 cards to player
-                var card1 = table.DealCard();
-                var card2 = table.DealCard();
-                playerHand.AddCard(card1);
-                playerHand.AddCard(card2);
-                await _handRepository.UpdateAsync(playerHand);
+                    // ✅ FIX: Actualizar Player en BD después de AddHandId
+                    await _playerRepository.UpdateAsync(seat.Player);
 
-                _logger.LogInformation("[DealerService] [DEPRECATED] Dealt cards {Card1} and {Card2} to player {PlayerId}",
-                    card1.GetDisplayName(), card2.GetDisplayName(), seat.Player.PlayerId);
+                    // Deal 2 cards to player
+                    var card1 = table.DealCard();
+                    var card2 = table.DealCard();
+                    playerHand.AddCard(card1);
+                    playerHand.AddCard(card2);
+                    await _handRepository.UpdateAsync(playerHand);
+
+                    _logger.LogInformation("[DealerService] [DEPRECATED] Dealt cards {Card1} and {Card2} to player {PlayerId} (Hand: {HandId})",
+                        card1.GetDisplayName(), card2.GetDisplayName(), seat.Player.PlayerId, playerHand.Id);
+                }
             }
+
+            // Deal 2 cards to dealer
+            var dealerCard1 = table.DealCard();
+            var dealerCard2 = table.DealCard();
+            dealerHand.AddCard(dealerCard1);
+            dealerHand.AddCard(dealerCard2);
+            await _handRepository.UpdateAsync(dealerHand);
+
+            _logger.LogInformation("[DealerService] [DEPRECATED] Dealt cards {Card1} and {Card2} to dealer",
+                dealerCard1.GetDisplayName(), dealerCard2.GetDisplayName());
         }
-
-        // Deal 2 cards to dealer
-        var dealerCard1 = table.DealCard();
-        var dealerCard2 = table.DealCard();
-        dealerHand.AddCard(dealerCard1);
-        dealerHand.AddCard(dealerCard2);
-        await _handRepository.UpdateAsync(dealerHand);
-
-        _logger.LogInformation("[DealerService] [DEPRECATED] Dealt cards {Card1} and {Card2} to dealer",
-            dealerCard1.GetDisplayName(), dealerCard2.GetDisplayName());
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[DealerService] [DEPRECATED] Error dealing initial cards: {Message}", ex.Message);
+            throw;
+        }
     }
 
     // Legacy method for backward compatibility

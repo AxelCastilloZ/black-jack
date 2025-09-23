@@ -1,4 +1,4 @@
-// BlackJack.Realtime/Hubs/GameControlHub.cs - ARCHIVO COMPLETO REFACTORIZADO
+// BlackJack.Realtime/Hubs/GameControlHub.cs - ARCHIVO COMPLETO CORREGIDO
 using BlackJack.Data.Repositories.Game;
 using BlackJack.Domain.Enums;
 using BlackJack.Domain.Models.Game;
@@ -157,6 +157,11 @@ public class GameControlHub : BaseHub
 
                     // Actualizar la mesa con los cambios
                     await _tableRepository.UpdateAsync(table);
+
+                    // *** FIX CRÍTICO: TIMING PARA TRANSACCIONES ***
+                    // Permitir que las transacciones se completen antes de consultar HandIds
+                    await Task.Delay(150);
+                    _logger.LogInformation("[GameControlHub] Transaction delay completed, hands should be visible now");
 
                     _logger.LogInformation("[GameControlHub] Initial cards dealt successfully for {Count} players", seatedPlayers.Count);
                 }
@@ -476,24 +481,42 @@ public class GameControlHub : BaseHub
             _logger.LogInformation("[GameControlHub] Processing player {Name} at seat {Seat}",
                 roomPlayer.Name, roomPlayer.SeatPosition);
 
-            // Obtener el Player entity
+            // *** FIX CRÍTICO: OBTENER ENTIDAD PLAYER FRESCA CON AsNoTracking() ***
             Player? player = null;
+
+            // PRIMERA OPCIÓN: Intentar por PlayerEntityId (consulta fresca sin tracking)
             if (roomPlayer.PlayerEntityId != Guid.Empty)
             {
-                player = await _playerRepository.GetByIdAsync(roomPlayer.PlayerEntityId);
+                _logger.LogInformation("[GameControlHub] Attempting GetByIdFreshAsync for EntityId: {EntityId}", roomPlayer.PlayerEntityId);
+                player = await _playerRepository.GetByIdFreshAsync(roomPlayer.PlayerEntityId);
+            }
+
+            // SEGUNDA OPCIÓN: Intentar por PlayerId si la primera falló (consulta fresca sin tracking)
+            if (player == null)
+            {
+                _logger.LogInformation("[GameControlHub] Attempting GetByPlayerIdFreshAsync for PlayerId: {PlayerId}", roomPlayer.PlayerId.Value);
+                player = await _playerRepository.GetByPlayerIdFreshAsync(roomPlayer.PlayerId);
             }
 
             if (player == null)
             {
-                // Si no hay Player entity, intentar obtenerlo por PlayerId
-                player = await _playerRepository.GetByPlayerIdAsync(roomPlayer.PlayerId);
-            }
+                _logger.LogWarning("[GameControlHub] Player entity not found for {Name} (PlayerId: {PlayerId}, EntityId: {EntityId})",
+                    roomPlayer.Name, roomPlayer.PlayerId, roomPlayer.PlayerEntityId);
 
-            if (player == null)
-            {
-                _logger.LogWarning("[GameControlHub] Player entity not found for {Name}", roomPlayer.Name);
+                // AGREGAR PLAYER SIN MANO PARA DEBUGGING
+                playersPayload.Add(new
+                {
+                    playerId = roomPlayer.PlayerId.Value,
+                    name = roomPlayer.Name,
+                    seat = roomPlayer.SeatPosition!.Value,
+                    hand = (object?)null,
+                    debug = "player_entity_not_found"
+                });
                 continue;
             }
+
+            _logger.LogInformation("[GameControlHub] Player {Name} has {HandCount} hands (HandIds: {HandIds})",
+                player.Name, player.HandIds.Count, string.Join(", ", player.HandIds));
 
             // Construir hand payload
             object? handPayload = null;
@@ -503,6 +526,9 @@ public class GameControlHub : BaseHub
                 var hand = await _handRepository.GetByIdAsync(firstHandId);
                 if (hand != null)
                 {
+                    _logger.LogInformation("[GameControlHub] Player {Name} hand found: {CardCount} cards, value {Value}",
+                        player.Name, hand.Cards.Count, hand.Value);
+
                     handPayload = new
                     {
                         handId = hand.Id,
@@ -514,6 +540,14 @@ public class GameControlHub : BaseHub
                         status = hand.Status.ToString()
                     };
                 }
+                else
+                {
+                    _logger.LogWarning("[GameControlHub] Hand {HandId} not found for player {Name}", firstHandId, player.Name);
+                }
+            }
+            else
+            {
+                _logger.LogWarning("[GameControlHub] Player {Name} has no HandIds", player.Name);
             }
 
             playersPayload.Add(new
