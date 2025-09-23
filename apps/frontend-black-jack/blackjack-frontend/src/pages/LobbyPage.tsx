@@ -90,8 +90,17 @@ export default function LobbyPage() {
 
     loadLobby()
     
+    // NUEVO: Escuchar cambios de usuario (balance)
+    const onUserUpdated = () => {
+      if (!isMounted) return
+      // Forzar re-render leyendo de authService
+      setAllTables(t => [...t])
+    }
+    window.addEventListener('auth:userUpdated', onUserUpdated)
+
     return () => {
       isMounted = false
+      window.removeEventListener('auth:userUpdated', onUserUpdated)
     }
   }, [])
 
@@ -517,6 +526,13 @@ export default function LobbyPage() {
               <div className="mt-6 pt-4 border-t border-slate-700">
                 <h4 className="font-semibold mb-3">Estadísticas</h4>
                 <div className="text-sm space-y-2 text-slate-300">
+                  {/* NUEVO: Saldo del jugador */}
+                  <div className="flex justify-between">
+                    <span>Tu saldo:</span>
+                    <span className="text-emerald-400 font-semibold">
+                      {formatMoney(currentUser?.balance || 0)}
+                    </span>
+                  </div>
                   <div className="flex justify-between">
                     <span>Mesas Activas:</span>
                     <span className="text-emerald-400 font-semibold">
@@ -553,6 +569,15 @@ export default function LobbyPage() {
                       <span>💵 Mesa Más Barata:</span>
                       <span className="text-blue-400 font-semibold">
                         {formatMoney(autoBettingStats.cheapestMinBet)}
+                      </span>
+                    </div>
+                  )}
+                  {/* NUEVO: Rondas que puedes costear en la mesa más barata */}
+                  {autoBettingStats.cheapestMinBet > 0 && (
+                    <div className="flex justify-between">
+                      <span>🕒 Rondas Posibles:</span>
+                      <span className="text-yellow-400 font-semibold">
+                        {Math.floor((currentUser?.balance || 0) / (autoBettingStats.cheapestMinBet || 1))}
                       </span>
                     </div>
                   )}
