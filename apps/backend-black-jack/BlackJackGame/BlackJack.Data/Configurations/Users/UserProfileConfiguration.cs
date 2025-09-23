@@ -10,14 +10,14 @@ public class UserProfileConfiguration : IEntityTypeConfiguration<UserProfile>
     {
         builder.HasKey(u => u.Id);
 
-        // PlayerId como VO (owned en la misma tabla)
+        
         builder.OwnsOne(u => u.PlayerId, pid =>
         {
             pid.Property(p => p.Value)
                .HasColumnName("PlayerId")
                .IsRequired();
 
-            // ❌ Elimina cualquier HasIndex aquí; algunas versiones no lo soportan en owned
+          
         });
 
         builder.Property(u => u.DisplayName)

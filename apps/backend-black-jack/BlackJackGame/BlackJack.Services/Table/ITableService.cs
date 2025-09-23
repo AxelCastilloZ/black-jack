@@ -1,4 +1,4 @@
-﻿// BlackJack.Services.Table/ITableService.cs - CORREGIDO CON GUID + COORDINACIÓN
+﻿
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Services.Common;

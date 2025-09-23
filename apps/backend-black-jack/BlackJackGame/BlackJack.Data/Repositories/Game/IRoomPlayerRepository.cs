@@ -1,4 +1,4 @@
-﻿// BlackJack.Data.Repositories.Game/IRoomPlayerRepository.cs - EXTENDIDO PARA APUESTAS
+﻿
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Data.Repositories.Common;
@@ -13,15 +13,10 @@ public interface IRoomPlayerRepository : IRepository<RoomPlayer>
     Task<RoomPlayer?> GetPlayerInRoomAsync(Guid roomId, PlayerId playerId);
     Task<bool> IsPlayerInAnyRoomAsync(PlayerId playerId);
 
-    // NUEVOS: Métodos para apuestas automáticas
-    /// <summary>
-    /// Obtiene solo los jugadores sentados (con SeatPosition) de una sala por código
-    /// </summary>
+   
     Task<List<RoomPlayer>> GetSeatedPlayersByRoomCodeAsync(string roomCode);
 
-    /// <summary>
-    /// Obtiene solo los jugadores sentados (con SeatPosition) de una sala por ID
-    /// </summary>
+  
     Task<List<RoomPlayer>> GetSeatedPlayersByRoomAsync(Guid roomId);
 
     /// <summary>

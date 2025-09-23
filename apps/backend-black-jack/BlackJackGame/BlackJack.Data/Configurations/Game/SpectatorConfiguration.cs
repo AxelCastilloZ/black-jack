@@ -11,12 +11,11 @@ public class SpectatorConfiguration : IEntityTypeConfiguration<Spectator>
     {
         builder.HasKey(s => s.Id);
 
-        // FIX CRÍTICO: Usar HasConversion en lugar de OwnsOne para consistencia
-        // Esto debe coincidir exactamente con RoomPlayerConfiguration
+  
         builder.Property(s => s.PlayerId)
             .HasConversion(
-                playerId => playerId.Value,       // Convertir PlayerId a Guid para DB
-                value => PlayerId.From(value)     // Convertir Guid a PlayerId desde DB
+                playerId => playerId.Value,       
+                value => PlayerId.From(value)     
             )
             .HasColumnName("PlayerId")
             .HasColumnType("uniqueidentifier")

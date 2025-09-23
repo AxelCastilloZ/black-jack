@@ -1,4 +1,4 @@
-﻿// BlackJack.Data/Configurations/Game/RoomPlayerConfiguration.cs - CORREGIDO CON PlayerEntityId FK
+﻿
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using BlackJack.Domain.Models.Game;

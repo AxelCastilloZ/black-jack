@@ -1,4 +1,4 @@
-﻿// BlackJack.Realtime/Models/SignalRModels.cs - Modelos consolidados
+﻿
 namespace BlackJack.Realtime.Models;
 
 #region Response Wrappers

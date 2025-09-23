@@ -219,7 +219,7 @@ namespace BlackJack.Services.Game
                     return Result.Success();
                 }
 
-                // NUEVO: Resetear turnos de jugadores para nueva ronda
+                // ✅ FIX CRÍTICO: Resetear turnos usando solo jugadores sentados
                 var room = await _gameRoomRepository.GetByTableIdAsync(tableId);
                 if (room != null)
                 {
@@ -227,12 +227,12 @@ namespace BlackJack.Services.Game
                     {
                         player.ResetTurn();
                     }
-                    // Establecer turno del primer jugador
-                    if (room.SeatedPlayers.Any())
-                    {
-                        room.SetCurrentPlayer(room.SeatedPlayers.First().PlayerId);
-                    }
+                    // ✅ CAMBIO CRÍTICO: Establecer el primer jugador SENTADO como actual
+                    room.SetFirstSeatedPlayerAsCurrent();
                     await _gameRoomRepository.UpdateAsync(room);
+
+                    _logger.LogInformation("[GameService] Round initialized with first seated player: {PlayerName}",
+                        room.CurrentPlayer?.Name ?? "None");
                 }
 
                 // Iniciar la ronda
@@ -276,7 +276,7 @@ namespace BlackJack.Services.Game
                     return Result.Failure("La ronda no está en progreso");
                 }
 
-                // ✅ OBTENER LA SALA PARA VALIDACIÓN DE TURNOS
+                // ✅ FIX CRÍTICO: Obtener la sala para validación de turnos con jugadores sentados
                 var room = await _gameRoomRepository.GetByTableIdAsync(tableId);
                 if (room == null)
                 {
@@ -285,7 +285,7 @@ namespace BlackJack.Services.Game
                     return Result.Failure("Sala no encontrada");
                 }
 
-                // ✅ VALIDACIÓN DE TURNO CRÍTICA
+                // ✅ VALIDACIÓN CRÍTICA: Verificar turno usando el GameRoom corregido
                 if (!room.IsPlayerTurn(playerId))
                 {
                     var currentPlayer = room.CurrentPlayer;
@@ -293,6 +293,14 @@ namespace BlackJack.Services.Game
                         playerId, currentPlayer?.Name ?? "unknown");
                     await transaction.RollbackAsync();
                     return Result.Failure($"No es tu turno. Es el turno de {currentPlayer?.Name ?? "otro jugador"}");
+                }
+
+                // ✅ NUEVA VALIDACIÓN: Verificar que el jugador esté sentado
+                if (!room.IsPlayerSeated(playerId))
+                {
+                    _logger.LogWarning("[GameService] Player {PlayerId} is not seated", playerId);
+                    await transaction.RollbackAsync();
+                    return Result.Failure("Debes estar sentado para jugar");
                 }
 
                 // Obtener el jugador directamente
@@ -373,10 +381,10 @@ namespace BlackJack.Services.Game
                 await _players.UpdateAsync(player);
                 await _tables.UpdateAsync(table);
 
-                // ✅ AVANZAR TURNO SI ES NECESARIO
+                // ✅ FIX CRÍTICO: Avanzar turno usando solo jugadores sentados
                 if (shouldAdvanceTurn)
                 {
-                    var advanceResult = await AdvanceToNextTurn(room, table);
+                    var advanceResult = await AdvanceToNextTurnSeated(room, table);
                     if (!advanceResult.IsSuccess)
                     {
                         // Log pero no fallar - el juego puede continuar
@@ -644,23 +652,23 @@ namespace BlackJack.Services.Game
             return await _handRepository.GetByIdAsync(handId);
         }
 
-        // ✅ NUEVO: Avanzar turno y verificar si todos han jugado
-        private async Task<Result> AdvanceToNextTurn(GameRoom room, BlackjackTable table)
+        // ✅ NUEVO MÉTODO: Avanzar turno solo entre jugadores SENTADOS
+        private async Task<Result> AdvanceToNextTurnSeated(GameRoom room, BlackjackTable table)
         {
             try
             {
                 var seatedPlayers = room.SeatedPlayers.ToList();
                 var currentPlayerIndex = room.CurrentPlayerIndex;
 
-                _logger.LogInformation("[GameService] Advancing turn from player {CurrentIndex}/{Total}",
+                _logger.LogInformation("[GameService] Advancing turn from seated player {CurrentIndex}/{Total}",
                     currentPlayerIndex, seatedPlayers.Count);
 
-                // Verificar si todos los jugadores han jugado
-                var allPlayersPlayed = seatedPlayers.All(p => p.HasPlayedTurn);
+                // Verificar si todos los jugadores SENTADOS han jugado
+                var allSeatedPlayersPlayed = seatedPlayers.All(p => p.HasPlayedTurn);
 
-                if (allPlayersPlayed)
+                if (allSeatedPlayersPlayed)
                 {
-                    _logger.LogInformation("[GameService] All players have played their turn, ending round");
+                    _logger.LogInformation("[GameService] All seated players have played their turn, ending round");
 
                     // Todos han jugado, terminar ronda automáticamente
                     await EndRoundAsync(table.Id);
@@ -672,7 +680,7 @@ namespace BlackJack.Services.Game
                         {
                             player.ResetTurn();
                         }
-                        room.SetCurrentPlayer(seatedPlayers.First().PlayerId);
+                        room.SetFirstSeatedPlayerAsCurrent();
                         _logger.LogInformation("[GameService] Turns reset for next round");
                     }
                     else
@@ -682,9 +690,9 @@ namespace BlackJack.Services.Game
                 }
                 else
                 {
-                    // Avanzar al siguiente jugador
+                    // ✅ USAR EL MÉTODO CORREGIDO DE GameRoom que solo maneja jugadores sentados
                     room.NextTurn();
-                    _logger.LogInformation("[GameService] Turn advanced to player {NewIndex} ({PlayerName})",
+                    _logger.LogInformation("[GameService] Turn advanced to seated player {NewIndex} ({PlayerName})",
                         room.CurrentPlayerIndex, room.CurrentPlayer?.Name ?? "unknown");
                 }
 

@@ -1,9 +1,9 @@
-﻿// BlackJack.Services.Table/TableService.cs - CORREGIDO CON GUID + COORDINACIÓN GAMEROOM
+﻿
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Domain.Models.Betting;
 using BlackJack.Services.Common;
-using BlackJack.Services.Game; // NUEVO: Para IGameRoomService
+using BlackJack.Services.Game; 
 using BlackJack.Data.Repositories.Game;
 using Microsoft.Extensions.Logging;
 
@@ -12,17 +12,17 @@ namespace BlackJack.Services.Table;
 public class TableService : ITableService
 {
     private readonly ITableRepository _tableRepository;
-    private readonly IGameRoomService _gameRoomService; // NUEVO: Coordinación con GameRoom
+    private readonly IGameRoomService _gameRoomService; 
     private readonly ILogger<TableService> _logger;
 
-    // CONSTRUCTOR ACTUALIZADO: Inyección de IGameRoomService
+    
     public TableService(
         ITableRepository tableRepository,
-        IGameRoomService gameRoomService, // NUEVA dependencia
+        IGameRoomService gameRoomService, 
         ILogger<TableService> logger)
     {
         _tableRepository = tableRepository;
-        _gameRoomService = gameRoomService; // NUEVA asignación
+        _gameRoomService = gameRoomService; 
         _logger = logger;
     }
 

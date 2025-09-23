@@ -1,4 +1,4 @@
-﻿// IDomainEventDispatcher.cs - En Services/Common/
+﻿
 using BlackJack.Domain.Common;
 
 namespace BlackJack.Services.Common;

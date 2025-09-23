@@ -1,4 +1,4 @@
-﻿// GameRoomEventHandlers.cs - En BlackJack.Realtime/EventHandlers/
+﻿
 using Microsoft.Extensions.Logging;
 using BlackJack.Domain.Common;
 using BlackJack.Services.Common;

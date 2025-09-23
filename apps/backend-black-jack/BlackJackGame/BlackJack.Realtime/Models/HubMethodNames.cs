@@ -1,4 +1,4 @@
-﻿// BlackJack.Realtime/Models/HubMethodNames.cs - CORREGIDO: camelCase para eventos
+﻿
 using BlackJack.Realtime.Hubs;
 
 namespace BlackJack.Realtime.Models;

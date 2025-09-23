@@ -1,4 +1,4 @@
-﻿// BlackJack.Data.Repositories.Game/PlayerRepository.cs - CORREGIDO PARA VALUE OBJECTS
+﻿
 using Microsoft.EntityFrameworkCore;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
@@ -14,17 +14,17 @@ public class PlayerRepository : Repository<Player>, IPlayerRepository
     {
     }
 
-    // CORREGIDO: Métodos existentes con comparaciones de value objects
+   
     public async Task<Player?> GetByPlayerIdAsync(PlayerId playerId)
     {
-        // Compare by underlying GUID to avoid EF Core owned-type member access issues
+        
         return await _dbSet
             .FirstOrDefaultAsync(p => p.PlayerId.Value == playerId.Value);
     }
 
     public async Task<List<Player>> GetPlayersByTableAsync(Guid tableId)
     {
-        // Como Seat no tiene BlackjackTableId directo, necesitamos hacer el query desde BlackjackTable
+      
         var table = await _context.Set<BlackjackTable>()
             .Include(t => t.Seats)
             .ThenInclude(s => s.Player)

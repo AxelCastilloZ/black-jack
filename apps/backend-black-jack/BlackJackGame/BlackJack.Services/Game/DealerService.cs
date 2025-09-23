@@ -1,4 +1,4 @@
-﻿// BlackJack.Services.Game/DealerService.cs - REFACTORIZADO para usar RoomPlayers
+﻿
 using BlackJack.Data.Repositories.Game;
 using BlackJack.Domain.Models.Cards;
 using BlackJack.Domain.Models.Game;

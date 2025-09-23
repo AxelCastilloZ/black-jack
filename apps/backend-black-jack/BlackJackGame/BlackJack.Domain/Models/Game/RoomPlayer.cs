@@ -1,4 +1,4 @@
-﻿// BlackJack.Domain/Models/Game/RoomPlayer.cs - CORREGIDO CON PlayerEntityId para EF
+﻿
 using BlackJack.Domain.Models.Users;
 using BlackJack.Domain.Models.Betting;
 

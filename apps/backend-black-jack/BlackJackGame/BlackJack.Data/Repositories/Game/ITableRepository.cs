@@ -1,4 +1,4 @@
-﻿// BlackJack.Data.Repositories.Game/ITableRepository.cs - CORREGIDO CON GUID
+﻿
 using Microsoft.EntityFrameworkCore.Storage;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;

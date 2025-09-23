@@ -1,4 +1,4 @@
-// BlackJack.Realtime/Hubs/GameControlHub.cs - CON INFORMACIÓN DE TURNOS COMPLETA
+// BlackJack.Realtime/Hubs/GameControlHub.cs - CON LOGS DE DEBUG PARA TURNOS
 using BlackJack.Data.Repositories.Game;
 using BlackJack.Domain.Enums;
 using BlackJack.Domain.Models.Game;
@@ -452,7 +452,7 @@ public class GameControlHub : BaseHub
         }
     }
 
-    // ✅ MÉTODO CRÍTICO ACTUALIZADO: BuildGameStatePayload CON INFORMACIÓN DE TURNOS
+    // ✅ MÉTODO CRÍTICO CON DEBUG: BuildGameStatePayload CON INFORMACIÓN DE TURNOS
     private async Task<object> BuildGameStatePayload(string roomCode, BlackjackTable table)
     {
         _logger.LogInformation("[GameControlHub] Building game state payload for room {RoomCode}", roomCode);
@@ -466,6 +466,23 @@ public class GameControlHub : BaseHub
         }
 
         var room = roomResult.Value;
+
+        // ✅ AGREGAR DEBUG LOGS TEMPORALES PARA TROUBLESHOOTING:
+        _logger.LogInformation("[GameControlHub] === DEBUG TURN INFO ===");
+        _logger.LogInformation("[GameControlHub] Room CurrentPlayerIndex: {Index}", room.CurrentPlayerIndex);
+        _logger.LogInformation("[GameControlHub] Room CurrentPlayer: {CurrentPlayer}",
+            room.CurrentPlayer?.Name ?? "NULL");
+        _logger.LogInformation("[GameControlHub] Room CurrentPlayer PlayerId: {PlayerId}",
+            room.CurrentPlayer?.PlayerId.Value);
+
+        var seatedPlayersDebug = room.Players.Where(p => p.IsSeated).OrderBy(p => p.SeatPosition).ToList();
+        _logger.LogInformation("[GameControlHub] Seated players ({Count}):", seatedPlayersDebug.Count);
+        for (int i = 0; i < seatedPlayersDebug.Count; i++)
+        {
+            _logger.LogInformation("[GameControlHub] Seated[{Index}]: {Name} (PlayerId: {PlayerId}, Seat: {Seat})",
+                i, seatedPlayersDebug[i].Name, seatedPlayersDebug[i].PlayerId.Value, seatedPlayersDebug[i].SeatPosition);
+        }
+        _logger.LogInformation("[GameControlHub] === END DEBUG ===");
 
         // Construir dealer payload
         object? dealerPayload = null;

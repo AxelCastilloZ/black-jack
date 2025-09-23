@@ -1,4 +1,4 @@
-﻿// RoomPlayerRepository.cs - EXTENDIDO PARA APUESTAS AUTOMÁTICAS
+﻿
 using Microsoft.EntityFrameworkCore;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;

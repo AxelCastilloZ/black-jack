@@ -1,4 +1,4 @@
-﻿// BlackJack.Data/Repositories/Game/IGameRoomRepository.cs - COMPLETA CON TODOS LOS MÉTODOS
+﻿
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -15,10 +15,10 @@ public interface IGameRoomRepository
     Task UpdateAsync(GameRoom gameRoom);
     Task DeleteAsync(GameRoom entity);
 
-    // ✅ MÉTODO CRÍTICO: Para obtener sala por TableId (requerido por GameService)
+   
     Task<GameRoom?> GetByTableIdAsync(Guid tableId);
 
-    // ✅ MÉTODOS FALTANTES: Usados por GameRoomService
+ 
     Task<GameRoom?> GetRoomByTableIdAsync(Guid tableId); // Alias de GetByTableIdAsync
     Task<GameRoom?> GetRoomWithPlayersAsync(string roomCode);
     Task<GameRoom?> GetRoomWithPlayersAsync(Guid roomId);
@@ -28,7 +28,7 @@ public interface IGameRoomRepository
     Task<GameRoom?> RefreshRoomAsync(GameRoom room);
     Task FlushChangesAsync();
 
-    // Métodos de búsqueda y filtrado
+
     Task<List<GameRoom>> GetAvailableRoomsAsync();
     Task<List<GameRoom>> GetRoomsByHostAsync(PlayerId hostPlayerId);
     Task<List<GameRoom>> GetRoomsInProgressAsync();
@@ -39,7 +39,7 @@ public interface IGameRoomRepository
     Task<bool> IsPlayerInAnyRoomAsync(PlayerId playerId);
     Task<GameRoom?> GetPlayerCurrentRoomAsync(PlayerId playerId);
 
-    // ✅ MÉTODOS FALTANTES: RoomPlayer operations
+ 
     Task<RoomPlayer?> GetRoomPlayerAsync(string roomCode, PlayerId playerId);
     Task UpdateRoomPlayerAsync(RoomPlayer roomPlayer);
     Task<bool> IsPlayerInRoomAsync(PlayerId playerId, string roomCode);
@@ -49,7 +49,7 @@ public interface IGameRoomRepository
     Task<bool> FreeSeatAsync(string roomCode, PlayerId playerId);
     Task<bool> IsPlayerSeatedAsync(string roomCode, PlayerId playerId);
 
-    // ✅ MÉTODOS FALTANTES: Data cleanup operations
+ 
     Task<bool> RemoveRoomPlayerAsync(string roomCode, PlayerId playerId);
     Task<int> ForceCleanupPlayerFromAllRoomsAsync(PlayerId playerId);
     Task<List<string>> GetPlayerOrphanRoomsAsync(PlayerId playerId);

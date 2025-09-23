@@ -1,4 +1,4 @@
-﻿// IHandRepository.cs
+﻿
 using BlackJack.Domain.Models.Game;
 using BlackJack.Data.Repositories.Common;
 

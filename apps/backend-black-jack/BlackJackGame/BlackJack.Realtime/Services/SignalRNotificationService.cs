@@ -1,4 +1,4 @@
-﻿// BlackJack.Realtime/Services/SignalRNotificationService.cs - Envío de mensajes
+﻿
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using BlackJack.Domain.Models.Users;

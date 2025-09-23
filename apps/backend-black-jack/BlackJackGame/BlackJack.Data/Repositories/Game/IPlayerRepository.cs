@@ -1,4 +1,4 @@
-﻿// BlackJack.Data.Repositories.Game/IPlayerRepository.cs - COMPLETO
+﻿
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Domain.Models.Betting;

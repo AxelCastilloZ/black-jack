@@ -7,10 +7,7 @@ namespace BlackJack.Domain.Models.Game;
 
 public class GameRoom : AggregateRoot
 {
-    // SOLUCIÓN DEFINITIVA: Collections que EF puede manejar directamente
-    // Esto resuelve el "Collection is read-only" error
 
-    // EF Core constructor
     protected GameRoom() : base()
     {
         RoomCode = string.Empty;
@@ -66,13 +63,24 @@ public class GameRoom : AggregateRoot
     public bool IsFull => PlayerCount >= MaxPlayers;
     public bool CanStart => true; // Force-enabled for gameplay testing
     public bool IsGameInProgress => Status == RoomStatus.InProgress;
-    public RoomPlayer? CurrentPlayer => Players.Count > 0 && CurrentPlayerIndex < Players.Count
-        ? Players.ElementAt(CurrentPlayerIndex) : null;
+
+    // ✅ FIX CRÍTICO: CurrentPlayer ahora solo considera jugadores SENTADOS
+    public RoomPlayer? CurrentPlayer
+    {
+        get
+        {
+            var seatedPlayers = Players.Where(p => p.IsSeated).OrderBy(p => p.SeatPosition).ToList();
+            if (seatedPlayers.Count == 0 || CurrentPlayerIndex < 0 || CurrentPlayerIndex >= seatedPlayers.Count)
+                return null;
+
+            return seatedPlayers[CurrentPlayerIndex];
+        }
+    }
 
     // NUEVO: Propiedades calculadas para apuestas
     public int SeatedPlayersCount => Players.Count(p => p.IsSeated);
     public Money TotalBetPerRound => new Money(MinBetPerRound.Amount * SeatedPlayersCount);
-    public IReadOnlyList<RoomPlayer> SeatedPlayers => Players.Where(p => p.IsSeated).ToList().AsReadOnly();
+    public IReadOnlyList<RoomPlayer> SeatedPlayers => Players.Where(p => p.IsSeated).OrderBy(p => p.SeatPosition).ToList().AsReadOnly();
 
     // Factory method
     public static GameRoom Create(string name, PlayerId hostPlayerId, string? roomCode = null, decimal minBetPerRound = 10m)
@@ -162,6 +170,7 @@ public class GameRoom : AggregateRoot
         if (player == null) return;
 
         var playerName = player.Name;
+        var wasSeated = player.IsSeated;
         Players.Remove(player);
 
         // Reordenar posiciones
@@ -171,10 +180,14 @@ public class GameRoom : AggregateRoot
             playersList[i].UpdatePosition(i);
         }
 
-        // Ajustar índice del turno actual
-        if (CurrentPlayerIndex >= Players.Count && Players.Count > 0)
+        // ✅ FIX CRÍTICO: Ajustar índice del turno actual considerando solo jugadores SENTADOS
+        if (wasSeated)
         {
-            CurrentPlayerIndex = 0;
+            var seatedPlayers = Players.Where(p => p.IsSeated).OrderBy(p => p.SeatPosition).ToList();
+            if (CurrentPlayerIndex >= seatedPlayers.Count && seatedPlayers.Count > 0)
+            {
+                CurrentPlayerIndex = 0;
+            }
         }
 
         // Si era el host, transferir a otro jugador
@@ -254,18 +267,21 @@ public class GameRoom : AggregateRoot
         }
     }
 
-    // Sistema de turnos - CORREGIDO: Dos sobrecargas para StartGame
+    // ✅ FIX CRÍTICO: Sistema de turnos - CORREGIDO para usar solo jugadores sentados
     public void StartGame()
     {
         if (!CanStart)
             throw new InvalidOperationException("Cannot start game - conditions not met");
 
         Status = RoomStatus.InProgress;
-        CurrentPlayerIndex = 0;
+
+        // ✅ CAMBIO CRÍTICO: Empezar con el primer jugador SENTADO
+        var seatedPlayers = Players.Where(p => p.IsSeated).OrderBy(p => p.SeatPosition).ToList();
+        CurrentPlayerIndex = seatedPlayers.Count > 0 ? 0 : -1;
 
         // Disparar evento
         var playerNames = GetPlayerNames();
-        var firstPlayer = Players.Count > 0 ? Players.First().PlayerId : PlayerId.New();
+        var firstPlayer = CurrentPlayer?.PlayerId ?? PlayerId.New();
         AddDomainEvent(new GameStartedEvent(RoomCode, BlackjackTableId ?? Guid.NewGuid(), playerNames, firstPlayer));
 
         UpdateTimestamp();
@@ -278,26 +294,31 @@ public class GameRoom : AggregateRoot
 
         BlackjackTableId = blackjackTableId;
         Status = RoomStatus.InProgress;
-        CurrentPlayerIndex = 0;
+
+        // ✅ CAMBIO CRÍTICO: Empezar con el primer jugador SENTADO
+        var seatedPlayers = Players.Where(p => p.IsSeated).OrderBy(p => p.SeatPosition).ToList();
+        CurrentPlayerIndex = seatedPlayers.Count > 0 ? 0 : -1;
 
         // Disparar evento
         var playerNames = GetPlayerNames();
-        var firstPlayer = Players.Count > 0 ? Players.First().PlayerId : PlayerId.New();
+        var firstPlayer = CurrentPlayer?.PlayerId ?? PlayerId.New();
         AddDomainEvent(new GameStartedEvent(RoomCode, blackjackTableId, playerNames, firstPlayer));
 
         UpdateTimestamp();
     }
 
+    // ✅ FIX CRÍTICO: NextTurn() ahora avanza solo entre jugadores SENTADOS
     public void NextTurn()
     {
         if (Status != RoomStatus.InProgress)
             throw new InvalidOperationException("Game is not in progress");
 
-        if (Players.Count == 0)
-            throw new InvalidOperationException("No players in the room");
+        var seatedPlayers = Players.Where(p => p.IsSeated).OrderBy(p => p.SeatPosition).ToList();
+        if (seatedPlayers.Count == 0)
+            throw new InvalidOperationException("No seated players in the room");
 
         var previousPlayer = CurrentPlayer;
-        CurrentPlayerIndex = (CurrentPlayerIndex + 1) % Players.Count;
+        CurrentPlayerIndex = (CurrentPlayerIndex + 1) % seatedPlayers.Count;
         var currentPlayer = CurrentPlayer;
 
         // Disparar evento
@@ -314,12 +335,14 @@ public class GameRoom : AggregateRoot
         UpdateTimestamp();
     }
 
+    // ✅ FIX CRÍTICO: SetCurrentPlayer() ahora valida que el jugador esté sentado
     public void SetCurrentPlayer(PlayerId playerId)
     {
-        var playersList = Players.ToList();
-        var playerIndex = playersList.FindIndex(p => p.PlayerId.Value == playerId.Value);
+        var seatedPlayers = Players.Where(p => p.IsSeated).OrderBy(p => p.SeatPosition).ToList();
+        var playerIndex = seatedPlayers.FindIndex(p => p.PlayerId.Value == playerId.Value);
+
         if (playerIndex == -1)
-            throw new InvalidOperationException("Player not found in room");
+            throw new InvalidOperationException("Player not found in seated players or player is not seated");
 
         CurrentPlayerIndex = playerIndex;
         UpdateTimestamp();
@@ -387,6 +410,7 @@ public class GameRoom : AggregateRoot
         return HostPlayerId.Value == playerId.Value;
     }
 
+    // ✅ FIX CRÍTICO: IsPlayerTurn() ahora funciona correctamente con el nuevo CurrentPlayer
     public bool IsPlayerTurn(PlayerId playerId)
     {
         return CurrentPlayer?.PlayerId.Value == playerId.Value;
@@ -397,6 +421,47 @@ public class GameRoom : AggregateRoot
         return Players.FirstOrDefault(p => p.PlayerId.Value == playerId.Value);
     }
 
+    // ✅ MÉTODO CORREGIDO: Establecer el primer jugador sentado como actual
+    public void SetFirstSeatedPlayerAsCurrent()
+    {
+        var seatedPlayers = Players.Where(p => p.IsSeated).OrderBy(p => p.SeatPosition).ToList();
+        if (seatedPlayers.Count > 0)
+        {
+            CurrentPlayerIndex = 0; // Siempre el primer jugador sentado (índice 0 en lista de sentados)
+            UpdateTimestamp();
+        }
+    }
+
+    // ✅ NUEVO: Verificar si un jugador está sentado
+    public bool IsPlayerSeated(PlayerId playerId)
+    {
+        var player = GetPlayer(playerId);
+        return player?.IsSeated ?? false;
+    }
+
+    // ✅ NUEVO: Obtener jugador sentado por posición de asiento
+    public RoomPlayer? GetPlayerBySeat(int seatPosition)
+    {
+        return Players.FirstOrDefault(p => p.SeatPosition == seatPosition);
+    }
+
+    // ✅ NUEVO: Obtener nombres de jugadores sentados solamente
+    public List<string> GetSeatedPlayerNames()
+    {
+        return Players.Where(p => p.IsSeated)
+                     .OrderBy(p => p.SeatPosition)
+                     .Select(p => p.Name)
+                     .ToList();
+    }
+
+    // ✅ NUEVO: Debug info para troubleshooting
+    public string GetTurnInfo()
+    {
+        var seatedPlayers = Players.Where(p => p.IsSeated).OrderBy(p => p.SeatPosition).ToList();
+        var currentPlayerName = CurrentPlayer?.Name ?? "None";
+        return $"Current turn: {currentPlayerName} (Index: {CurrentPlayerIndex}/{seatedPlayers.Count - 1})";
+    }
+
     // Métodos de información
     public List<string> GetPlayerNames()
     {
@@ -405,7 +470,7 @@ public class GameRoom : AggregateRoot
 
     public string GetRoomInfo()
     {
-        return $"Room {RoomCode}: {Name} ({PlayerCount}/{MaxPlayers} players) - {Status} - {GetBettingInfo()}";
+        return $"Room {RoomCode}: {Name} ({PlayerCount}/{MaxPlayers} players, {SeatedPlayersCount} seated) - {Status} - {GetBettingInfo()}";
     }
 }
 
