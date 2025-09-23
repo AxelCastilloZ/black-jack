@@ -1,4 +1,4 @@
-﻿// Services/Game/GameService.cs - CON USERSERVICE SYNC - SIN ERRORES
+﻿// Services/Game/GameService.cs - CON USERSERVICE INYECTADO CORRECTAMENTE
 using System;
 using System.Linq;
 using System.Threading.Tasks;
@@ -26,10 +26,11 @@ namespace BlackJack.Services.Game
         private readonly IHandEvaluationService _handEvaluationService;
         private readonly ILogger<GameService> _logger;
 
-        public GameService(ITableRepository tables, IPlayerRepository players, IDealerService dealerService, IHandRepository handRepository, IHandEvaluationService handEvaluationService, ILogger<GameService> logger)
+        public GameService(ITableRepository tables, IPlayerRepository players, IUserService userService, IDealerService dealerService, IHandRepository handRepository, IHandEvaluationService handEvaluationService, ILogger<GameService> logger)
         {
             _tables = tables;
             _players = players;
+            _userService = userService;
             _dealerService = dealerService;
             _handRepository = handRepository;
             _handEvaluationService = handEvaluationService;
@@ -483,7 +484,7 @@ namespace BlackJack.Services.Game
 
                 var table = await _tables.GetTableWithPlayersForUpdateAsync(tableId);
                 _logger.LogInformation($"[GameService] Table retrieved: {(table != null ? "Found" : "Not found")}");
-                
+
                 if (table is null)
                 {
                     _logger.LogError($"[GameService] Table {tableId} not found");
@@ -492,7 +493,7 @@ namespace BlackJack.Services.Game
                 }
 
                 _logger.LogInformation($"[GameService] Table status: {table.Status}");
-                
+
                 if (table.Status != GameStatus.InProgress)
                 {
                     _logger.LogError($"[GameService] Table {tableId} is not in progress. Status: {table.Status}");
@@ -501,7 +502,7 @@ namespace BlackJack.Services.Game
                 }
 
                 _logger.LogInformation($"[GameService] Looking for player {playerId} in {table.Seats.Count} seats");
-                
+
                 var seat = table.Seats.FirstOrDefault(s =>
                     s.IsOccupied && s.Player != null && s.Player.PlayerId == playerId);
 
@@ -520,7 +521,7 @@ namespace BlackJack.Services.Game
                 {
                     case PlayerAction.Hit:
                         _logger.LogInformation($"[GameService] Player {playerId} hits");
-                        
+
                         // Get player's current hand
                         if (!player.HandIds.Any())
                         {
@@ -528,10 +529,10 @@ namespace BlackJack.Services.Game
                             await transaction.RollbackAsync();
                             return Result.Failure("Player has no active hand");
                         }
-                        
+
                         var handId = player.HandIds.First();
                         _logger.LogInformation($"[GameService] Player {playerId} hand ID: {handId}");
-                        
+
                         var playerHand = await _handRepository.GetByIdAsync(handId);
                         if (playerHand == null)
                         {
@@ -539,9 +540,9 @@ namespace BlackJack.Services.Game
                             await transaction.RollbackAsync();
                             return Result.Failure("Player hand not found");
                         }
-                        
+
                         _logger.LogInformation($"[GameService] Player {playerId} hand status: {playerHand.Status}, isComplete: {playerHand.IsComplete}");
-                        
+
                         // Check if hand is already complete (bust, stand, etc.)
                         if (playerHand.IsComplete)
                         {
@@ -549,7 +550,7 @@ namespace BlackJack.Services.Game
                             await transaction.RollbackAsync();
                             return Result.Failure("Cannot hit on a completed hand");
                         }
-                        
+
                         // Check if deck is empty
                         if (table.Deck.IsEmpty)
                         {
@@ -557,17 +558,17 @@ namespace BlackJack.Services.Game
                             await transaction.RollbackAsync();
                             return Result.Failure("Cannot deal from empty deck");
                         }
-                        
+
                         // Deal one card
                         _logger.LogInformation($"[GameService] Dealing card to player {playerId}");
                         var card = table.DealCard();
                         _logger.LogInformation($"[GameService] Card dealt: {card.GetDisplayName()}");
-                        
+
                         playerHand.AddCard(card);
                         await _handRepository.UpdateAsync(playerHand);
-                        
+
                         _logger.LogInformation($"[GameService] Player {playerId} received card {card.GetDisplayName()}, hand value: {playerHand.Value}");
-                        
+
                         // Check if bust
                         if (playerHand.IsBust)
                         {
@@ -577,14 +578,14 @@ namespace BlackJack.Services.Game
 
                     case PlayerAction.Stand:
                         _logger.LogInformation($"[GameService] Player {playerId} stands");
-                        
+
                         // Get player's current hand
                         if (!player.HandIds.Any())
                         {
                             await transaction.RollbackAsync();
                             return Result.Failure("Player has no active hand");
                         }
-                        
+
                         var standHandId = player.HandIds.First();
                         var standHand = await _handRepository.GetByIdAsync(standHandId);
                         if (standHand == null)
@@ -592,11 +593,11 @@ namespace BlackJack.Services.Game
                             await transaction.RollbackAsync();
                             return Result.Failure("Player hand not found");
                         }
-                        
+
                         // Mark hand as stand
                         standHand.Stand();
                         await _handRepository.UpdateAsync(standHand);
-                        
+
                         _logger.LogInformation($"[GameService] Player {playerId} stands with hand value: {standHand.Value}");
                         break;
 
@@ -872,19 +873,19 @@ namespace BlackJack.Services.Game
         private async Task<bool> AreAllPlayersDoneAsync(BlackjackTable table)
         {
             var occupiedSeats = table.Seats.Where(s => s.IsOccupied && s.Player != null).ToList();
-            
+
             foreach (var seat in occupiedSeats)
             {
                 if (!seat.Player!.HandIds.Any())
                     return false;
-                
+
                 var handId = seat.Player.HandIds.First();
                 var hand = await _handRepository.GetByIdAsync(handId);
-                
+
                 if (hand == null || !hand.IsComplete)
                     return false;
             }
-            
+
             return true;
         }
 
@@ -905,23 +906,23 @@ namespace BlackJack.Services.Game
                     return Result.Failure("Dealer hand not found");
                 }
 
-                _logger.LogInformation("[GameService] Starting dealer play for table {TableId}, current value: {Value}", 
+                _logger.LogInformation("[GameService] Starting dealer play for table {TableId}, current value: {Value}",
                     table.Id, dealerHand.Value);
 
                 // Use existing DealerService logic
                 var finalDealerHand = _dealerService.PlayDealerHand(dealerHand, table.Deck);
-                
+
                 // Update dealer hand in database
                 await _handRepository.UpdateAsync(finalDealerHand);
 
-                _logger.LogInformation("[GameService] Dealer finished playing for table {TableId}, final value: {Value}", 
+                _logger.LogInformation("[GameService] Dealer finished playing for table {TableId}, final value: {Value}",
                     table.Id, finalDealerHand.Value);
 
                 return Result.Success();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[GameService] Error playing dealer hand for table {TableId}: {Error}", 
+                _logger.LogError(ex, "[GameService] Error playing dealer hand for table {TableId}: {Error}",
                     table.Id, ex.Message);
                 return Result.Failure($"Error playing dealer hand: {ex.Message}");
             }
@@ -951,11 +952,11 @@ namespace BlackJack.Services.Game
 
                 // Process each player
                 var occupiedSeats = table.Seats.Where(s => s.IsOccupied && s.Player != null).ToList();
-                
+
                 foreach (var seat in occupiedSeats)
                 {
                     var player = seat.Player!;
-                    
+
                     if (!player.HandIds.Any())
                     {
                         _logger.LogWarning("[GameService] Player {PlayerId} has no hands, skipping", player.PlayerId);
@@ -964,7 +965,7 @@ namespace BlackJack.Services.Game
 
                     var playerHandId = player.HandIds.First();
                     var playerHand = await _handRepository.GetByIdAsync(playerHandId);
-                    
+
                     if (playerHand == null)
                     {
                         _logger.LogWarning("[GameService] Player {PlayerId} hand not found, skipping", player.PlayerId);
@@ -973,8 +974,8 @@ namespace BlackJack.Services.Game
 
                     // Determine winner using HandEvaluationService
                     var result = _handEvaluationService.CompareHands(playerHand, dealerHand);
-                    
-                    _logger.LogInformation("[GameService] Player {PlayerId} vs Dealer: {Result} (Player: {PlayerValue}, Dealer: {DealerValue})", 
+
+                    _logger.LogInformation("[GameService] Player {PlayerId} vs Dealer: {Result} (Player: {PlayerValue}, Dealer: {DealerValue})",
                         player.PlayerId, result, playerHand.Value, dealerHand.Value);
 
                     // Simple payout logic (your coworker handles complex betting)
@@ -1005,7 +1006,7 @@ namespace BlackJack.Services.Game
 
                     // Clear the bet
                     player.ClearBet();
-                    
+
                     // Update player in database
                     await _players.UpdateAsync(player);
                 }
@@ -1019,7 +1020,7 @@ namespace BlackJack.Services.Game
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[GameService] Error completing round for table {TableId}: {Error}", 
+                _logger.LogError(ex, "[GameService] Error completing round for table {TableId}: {Error}",
                     table.Id, ex.Message);
                 return Result.Failure($"Error completing round: {ex.Message}");
             }
