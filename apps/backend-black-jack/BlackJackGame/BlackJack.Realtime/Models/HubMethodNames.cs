@@ -1,4 +1,4 @@
-﻿// BlackJack.Realtime/Models/HubMethodNames.cs - ARCHIVO COMPLETO
+﻿// BlackJack.Realtime/Models/HubMethodNames.cs - ARCHIVO COMPLETO CON AUTO-BETTING
 namespace BlackJack.Realtime.Models;
 
 public static class HubMethodNames
@@ -35,6 +35,25 @@ public static class HubMethodNames
         public const string PlayerActionPerformed = "PlayerActionPerformed";
         public const string BetPlaced = "BetPlaced";
 
+        // Auto-Betting Events - Eventos grupales (para toda la sala)
+        public const string AutoBetProcessed = "AutoBetProcessed";
+        public const string AutoBetProcessingStarted = "AutoBetProcessingStarted";
+        public const string AutoBetStatistics = "AutoBetStatistics";
+        public const string AutoBetFailed = "AutoBetFailed";
+        public const string AutoBetRoundSummary = "AutoBetRoundSummary";
+        public const string MinBetPerRoundUpdated = "MinBetPerRoundUpdated";
+
+        // Auto-Betting Events - Eventos de jugadores específicos (para toda la sala)
+        public const string PlayerRemovedFromSeat = "PlayerRemovedFromSeat";
+        public const string PlayerBalanceUpdated = "PlayerBalanceUpdated";
+        public const string InsufficientFundsWarning = "InsufficientFundsWarning";
+
+        // Auto-Betting Events - Notificaciones personales (solo al jugador afectado)
+        public const string YouWereRemovedFromSeat = "YouWereRemovedFromSeat";
+        public const string YourBalanceUpdated = "YourBalanceUpdated";
+        public const string InsufficientFundsWarningPersonal = "InsufficientFundsWarningPersonal";
+        public const string AutoBetFailedPersonal = "AutoBetFailedPersonal";
+
         // Chat
         public const string MessageReceived = "MessageReceived";
 
@@ -51,6 +70,7 @@ public static class HubMethodNames
         public const string LobbyGroup = "Lobby";
 
         public static string GetRoomGroup(string roomCode) => $"Room_{roomCode}";
+
         public static string GetTableGroup(string tableId) => $"Table_{tableId}";
     }
 }

@@ -1,60 +1,49 @@
-﻿using BlackJack.Domain.Common;
-using BlackJack.Domain.Models.Users;
+﻿using BlackJack.Domain.Models.Users;
 
-namespace BlackJack.Domain.Models.Users;
+namespace BlackJack.Domain.Models.Game;
 
-public class Spectator : BaseEntity
+public class Spectator
 {
-    // Constructor sin parámetros para EF Core
-    protected Spectator() : base()
+    // EF Core constructor
+    protected Spectator()
     {
-        PlayerId = PlayerId.New();
+        Id = Guid.NewGuid();
         Name = string.Empty;
+        PlayerId = PlayerId.New();
+        GameRoomId = Guid.Empty;
         JoinedAt = DateTime.UtcNow;
+        CreatedAt = DateTime.UtcNow;
+        UpdatedAt = DateTime.UtcNow;
     }
 
     // Constructor principal
-    public Spectator(PlayerId playerId, string name) : base()
+    private Spectator(PlayerId playerId, string name, Guid gameRoomId)
     {
+        Id = Guid.NewGuid();
         PlayerId = playerId ?? throw new ArgumentNullException(nameof(playerId));
         Name = name ?? throw new ArgumentNullException(nameof(name));
+        GameRoomId = gameRoomId;
         JoinedAt = DateTime.UtcNow;
-    }
-
-    // Constructor con ID específico (para casos especiales)
-    public Spectator(PlayerId playerId, string name, Guid id) : base(id)
-    {
-        PlayerId = playerId ?? throw new ArgumentNullException(nameof(playerId));
-        Name = name ?? throw new ArgumentNullException(nameof(name));
-        JoinedAt = DateTime.UtcNow;
+        CreatedAt = DateTime.UtcNow;
+        UpdatedAt = DateTime.UtcNow;
     }
 
     // Propiedades principales
-    public PlayerId PlayerId { get; private set; } = default!;
-    public string Name { get; private set; } = default!;
+    public Guid Id { get; private set; }
+    public PlayerId PlayerId { get; private set; } = null!;
+    public string Name { get; private set; } = string.Empty;
+
+    // LIMPIADO: Solo relación con GameRoom, TableId removido completamente
+    public Guid GameRoomId { get; private set; }
+
     public DateTime JoinedAt { get; private set; }
+    public DateTime CreatedAt { get; private set; }
+    public DateTime UpdatedAt { get; private set; }
 
-    // Propiedades calculadas
-    public TimeSpan TimeWatching => DateTime.UtcNow - JoinedAt;
-    public bool IsLongTimeSpectator => TimeWatching.TotalMinutes > 30;
+    // LIMPIADO: Navigation property solo para GameRoom
+    public GameRoom GameRoom { get; set; } = null!;
 
-    // Métodos de negocio
-    public void UpdateName(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            throw new ArgumentException("Name cannot be null or empty", nameof(name));
-
-        Name = name;
-        UpdateTimestamp();
-    }
-
-    public void RefreshJoinTime()
-    {
-        JoinedAt = DateTime.UtcNow;
-        UpdateTimestamp();
-    }
-
-    // Factory methods
+    // Factory method
     public static Spectator Create(PlayerId playerId, string name)
     {
         if (playerId == null)
@@ -63,42 +52,59 @@ public class Spectator : BaseEntity
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("Name cannot be null or empty", nameof(name));
 
-        return new Spectator(playerId, name);
+        // GameRoomId se establecerá cuando se agregue a una room específica
+        return new Spectator(playerId, name, Guid.Empty);
     }
 
-    public static Spectator Create(string name)
+    // NUEVO: Factory method con GameRoomId específico
+    public static Spectator Create(PlayerId playerId, string name, Guid gameRoomId)
     {
-        return Create(PlayerId.New(), name);
+        if (playerId == null)
+            throw new ArgumentNullException(nameof(playerId));
+
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("Name cannot be null or empty", nameof(name));
+
+        if (gameRoomId == Guid.Empty)
+            throw new ArgumentException("GameRoomId cannot be empty", nameof(gameRoomId));
+
+        return new Spectator(playerId, name, gameRoomId);
     }
 
-    // Métodos de información
+    // Métodos de actualización
+    public void SetGameRoom(Guid gameRoomId)
+    {
+        if (gameRoomId == Guid.Empty)
+            throw new ArgumentException("GameRoomId cannot be empty", nameof(gameRoomId));
+
+        GameRoomId = gameRoomId;
+        UpdatedAt = DateTime.UtcNow;
+    }
+
+    public void UpdateName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("Name cannot be null or empty", nameof(name));
+
+        Name = name;
+        UpdatedAt = DateTime.UtcNow;
+    }
+
+    // Método de utilidad para verificar si pertenece a una room específica
+    public bool BelongsToRoom(Guid gameRoomId)
+    {
+        return GameRoomId == gameRoomId;
+    }
+
+    // Método para obtener información básica
     public string GetDisplayInfo()
     {
-        var timeWatching = TimeWatching;
-        var timeText = timeWatching.TotalMinutes < 1
-            ? "just joined"
-            : $"watching for {timeWatching.TotalMinutes:F0}m";
-
-        return $"{Name} ({timeText})";
+        return $"Spectator: {Name} (joined at {JoinedAt:HH:mm})";
     }
 
-    public override string ToString()
+    // Método para comparación
+    public bool IsSamePlayer(PlayerId playerId)
     {
-        return GetDisplayInfo();
-    }
-
-    // Métodos de comparación
-    public override bool Equals(object? obj)
-    {
-        if (obj is Spectator other)
-        {
-            return PlayerId == other.PlayerId;
-        }
-        return false;
-    }
-
-    public override int GetHashCode()
-    {
-        return PlayerId.GetHashCode();
+        return PlayerId.Value == playerId.Value;
     }
 }

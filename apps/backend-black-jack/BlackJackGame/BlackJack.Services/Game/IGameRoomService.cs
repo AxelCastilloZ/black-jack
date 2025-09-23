@@ -1,4 +1,4 @@
-﻿// BlackJack.Services/Game/IGameRoomService.cs - INTERFAZ FINAL CORREGIDA
+﻿// BlackJack.Services/Game/IGameRoomService.cs - INTERFAZ ACTUALIZADA CON AUTO-BETTING
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Services.Common;
@@ -45,4 +45,37 @@ public interface IGameRoomService
     Task<Result<List<GameRoom>>> GetRoomsByStatusAsync(RoomStatus status);
     Task<Result<bool>> GetAvailablePositionsAsync(string roomCode);
     Task<Result<GameRoomStats>> GetRoomStatsAsync(string roomCode);
+
+
+    Task<Result<int>> ForceCleanupPlayerAsync(PlayerId playerId);
+    // NUEVOS: Métodos de Auto-Betting
+    /// <summary>
+    /// Procesa las apuestas automáticas para todos los jugadores sentados en una sala
+    /// </summary>
+    /// <param name="roomCode">Código de la sala</param>
+    /// <param name="removePlayersWithoutFunds">Si true, remueve del asiento a jugadores sin fondos</param>
+    /// <returns>Resultado detallado del procesamiento de apuestas</returns>
+    Task<Result<AutoBetResult>> ProcessRoundAutoBetsAsync(string roomCode, bool removePlayersWithoutFunds = true);
+
+    /// <summary>
+    /// Valida si una sala puede procesar apuestas automáticas
+    /// </summary>
+    /// <param name="roomCode">Código de la sala</param>
+    /// <returns>Resultado de validación con detalles de errores si los hay</returns>
+    Task<Result<AutoBetValidation>> ValidateRoomForAutoBettingAsync(string roomCode);
+
+    /// <summary>
+    /// Calcula estadísticas de apuestas automáticas para una sala
+    /// </summary>
+    /// <param name="roomCode">Código de la sala</param>
+    /// <returns>Estadísticas detalladas de la sala para auto-betting</returns>
+    Task<Result<AutoBetStatistics>> CalculateAutoBetStatisticsAsync(string roomCode);
+
+    /// <summary>
+    /// Verifica si un jugador puede costear la apuesta automática de una sala
+    /// </summary>
+    /// <param name="roomCode">Código de la sala</param>
+    /// <param name="playerId">ID del jugador</param>
+    /// <returns>True si el jugador puede costear la apuesta</returns>
+    Task<Result<bool>> CanPlayerAffordAutoBetAsync(string roomCode, PlayerId playerId);
 }

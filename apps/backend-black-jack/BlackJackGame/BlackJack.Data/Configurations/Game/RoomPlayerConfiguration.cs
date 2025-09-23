@@ -1,4 +1,4 @@
-﻿// BlackJack.Data/Configurations/Game/RoomPlayerConfiguration.cs - COMPLETO
+﻿// BlackJack.Data/Configurations/Game/RoomPlayerConfiguration.cs - CORREGIDO CON PlayerEntityId FK
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using BlackJack.Domain.Models.Game;
@@ -12,13 +12,19 @@ public class RoomPlayerConfiguration : IEntityTypeConfiguration<RoomPlayer>
     {
         builder.HasKey(rp => rp.Id);
 
-        // Configuración de PlayerId con conversión
+        // Configuración de PlayerId con conversión (DOMINIO - Value Object)
         builder.Property(rp => rp.PlayerId)
             .HasConversion(
                 playerId => playerId.Value,       // Convertir PlayerId a Guid para DB
                 value => PlayerId.From(value)     // Convertir Guid a PlayerId desde DB
             )
             .HasColumnName("PlayerId")
+            .HasColumnType("uniqueidentifier")
+            .IsRequired();
+
+        // NUEVO: Configuración de PlayerEntityId (ENTITY FRAMEWORK - Foreign Key)
+        builder.Property(rp => rp.PlayerEntityId)
+            .HasColumnName("PlayerEntityId")
             .HasColumnType("uniqueidentifier")
             .IsRequired();
 
@@ -30,7 +36,7 @@ public class RoomPlayerConfiguration : IEntityTypeConfiguration<RoomPlayer>
         builder.Property(rp => rp.Position)
             .IsRequired();
 
-        // NUEVO: Configuración para SeatPosition
+        // Configuración para SeatPosition
         builder.Property(rp => rp.SeatPosition)
             .IsRequired(false)  // Nullable - null significa no sentado
             .HasColumnName("SeatPosition");
@@ -64,11 +70,15 @@ public class RoomPlayerConfiguration : IEntityTypeConfiguration<RoomPlayer>
         builder.HasIndex(rp => rp.PlayerId)
             .HasDatabaseName("IX_RoomPlayers_PlayerId");
 
-        // NUEVO: Índice para SeatPosition
+        // NUEVO: Índice para PlayerEntityId (FK performance)
+        builder.HasIndex(rp => rp.PlayerEntityId)
+            .HasDatabaseName("IX_RoomPlayers_PlayerEntityId");
+
+        // Índice para SeatPosition
         builder.HasIndex(rp => rp.SeatPosition)
             .HasDatabaseName("IX_RoomPlayers_SeatPosition");
 
-        // NUEVO: Índice compuesto para GameRoomId + SeatPosition
+        // Índice compuesto para GameRoomId + SeatPosition
         builder.HasIndex(rp => new { rp.GameRoomId, rp.SeatPosition })
             .HasDatabaseName("IX_RoomPlayers_GameRoomId_SeatPosition")
             .IsUnique(false); // No único porque SeatPosition puede ser null
@@ -78,5 +88,12 @@ public class RoomPlayerConfiguration : IEntityTypeConfiguration<RoomPlayer>
             .WithMany(gr => gr.Players)
             .HasForeignKey(rp => rp.GameRoomId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        // CORREGIDO: Navigation Property usando PlayerEntityId como FK
+        builder.HasOne(rp => rp.Player)
+            .WithMany() // Un Player puede tener múltiples RoomPlayers en diferentes salas
+            .HasForeignKey(rp => rp.PlayerEntityId) // ← CORREGIDO: Usar PlayerEntityId
+            .HasPrincipalKey(p => p.Id) // ← EXPLÍCITO: Relacionar con Player.Id
+            .OnDelete(DeleteBehavior.Restrict); // No borrar Player si se borra RoomPlayer
     }
 }

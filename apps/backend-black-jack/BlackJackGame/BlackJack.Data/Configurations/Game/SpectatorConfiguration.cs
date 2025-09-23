@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using BlackJack.Domain.Models.Users;
+using BlackJack.Domain.Models.Game;
 
 namespace BlackJack.Data.Configurations.Users;
 
@@ -10,14 +11,16 @@ public class SpectatorConfiguration : IEntityTypeConfiguration<Spectator>
     {
         builder.HasKey(s => s.Id);
 
-        // CORREGIDO: PlayerId como owned type
-        builder.OwnsOne(s => s.PlayerId, playerId =>
-        {
-            playerId.Property(pid => pid.Value)
-                .HasColumnName("PlayerId")
-                .HasColumnType("uniqueidentifier")
-                .IsRequired();
-        });
+        // FIX CRÍTICO: Usar HasConversion en lugar de OwnsOne para consistencia
+        // Esto debe coincidir exactamente con RoomPlayerConfiguration
+        builder.Property(s => s.PlayerId)
+            .HasConversion(
+                playerId => playerId.Value,       // Convertir PlayerId a Guid para DB
+                value => PlayerId.From(value)     // Convertir Guid a PlayerId desde DB
+            )
+            .HasColumnName("PlayerId")
+            .HasColumnType("uniqueidentifier")
+            .IsRequired();
 
         builder.Property(s => s.Name)
             .IsRequired()
@@ -26,8 +29,37 @@ public class SpectatorConfiguration : IEntityTypeConfiguration<Spectator>
         builder.Property(s => s.JoinedAt)
             .IsRequired();
 
-        // Índices simples
-        builder.HasIndex(s => s.Name);
-        builder.HasIndex(s => s.JoinedAt);
+        builder.Property(s => s.CreatedAt)
+            .IsRequired();
+
+        builder.Property(s => s.UpdatedAt)
+            .IsRequired();
+
+        // LIMPIADO: GameRoomId (requerido) - removido TableId completamente
+        builder.Property(s => s.GameRoomId)
+            .IsRequired()
+            .HasColumnName("GameRoomId")
+            .HasColumnType("uniqueidentifier");
+
+        // Índices para optimización
+        builder.HasIndex(s => s.PlayerId)
+            .HasDatabaseName("IX_Spectators_PlayerId");
+
+        builder.HasIndex(s => s.Name)
+            .HasDatabaseName("IX_Spectators_Name");
+
+        builder.HasIndex(s => s.JoinedAt)
+            .HasDatabaseName("IX_Spectators_JoinedAt");
+
+        // Índice para GameRoomId (performance crítico)
+        builder.HasIndex(s => s.GameRoomId)
+            .HasDatabaseName("IX_Spectators_GameRoomId");
+
+        // LIMPIADO: Configuración de relación SOLO con GameRoom
+        builder.HasOne(s => s.GameRoom)
+            .WithMany(gr => gr.Spectators)
+            .HasForeignKey(s => s.GameRoomId)
+            .OnDelete(DeleteBehavior.Cascade)
+            .HasConstraintName("FK_Spectators_GameRooms_GameRoomId");
     }
 }

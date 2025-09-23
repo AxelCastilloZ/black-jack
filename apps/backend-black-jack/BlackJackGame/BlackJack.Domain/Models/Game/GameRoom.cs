@@ -1,13 +1,14 @@
 ﻿using BlackJack.Domain.Common;
 using BlackJack.Domain.Enums;
 using BlackJack.Domain.Models.Users;
+using BlackJack.Domain.Models.Betting;
 
 namespace BlackJack.Domain.Models.Game;
 
 public class GameRoom : AggregateRoot
 {
-    private readonly List<RoomPlayer> _players = new();
-    private readonly List<Spectator> _spectators = new();
+    // SOLUCIÓN DEFINITIVA: Collections que EF puede manejar directamente
+    // Esto resuelve el "Collection is read-only" error
 
     // EF Core constructor
     protected GameRoom() : base()
@@ -18,10 +19,13 @@ public class GameRoom : AggregateRoot
         Status = RoomStatus.WaitingForPlayers;
         MaxPlayers = 6;
         CurrentPlayerIndex = 0;
+        MinBetPerRound = new Money(10m);
+        Players = new List<RoomPlayer>();
+        Spectators = new List<Spectator>();
     }
 
     // Constructor principal
-    public GameRoom(string name, PlayerId hostPlayerId, string? roomCode = null, Guid? id = null)
+    public GameRoom(string name, PlayerId hostPlayerId, string? roomCode = null, decimal minBetPerRound = 10m, Guid? id = null)
         : base(id ?? Guid.NewGuid())
     {
         Name = name ?? throw new ArgumentNullException(nameof(name));
@@ -31,6 +35,9 @@ public class GameRoom : AggregateRoot
         MaxPlayers = 6;
         CurrentPlayerIndex = 0;
         BlackjackTableId = null;
+        MinBetPerRound = new Money(minBetPerRound);
+        Players = new List<RoomPlayer>();
+        Spectators = new List<Spectator>();
     }
 
     // Propiedades principales
@@ -42,25 +49,41 @@ public class GameRoom : AggregateRoot
     public int CurrentPlayerIndex { get; private set; }
     public Guid? BlackjackTableId { get; set; }
 
-    // Navegación
-    public IReadOnlyList<RoomPlayer> Players => _players.AsReadOnly();
-    public IReadOnlyList<Spectator> Spectators => _spectators.AsReadOnly();
+    // NUEVO: Sistema de apuestas automáticas
+    public Money MinBetPerRound { get; private set; } = default!;
+
+    // FIX DEFINITIVO: Collections que Entity Framework puede manejar correctamente
+    // Setter privado para encapsulación, pero EF puede inicializar y populate
+    public virtual ICollection<RoomPlayer> Players { get; private set; } = new List<RoomPlayer>();
+    public virtual ICollection<Spectator> Spectators { get; private set; } = new List<Spectator>();
+
+    // Métodos de acceso read-only para el dominio - MANTENIDOS para compatibilidad
+    public IReadOnlyList<RoomPlayer> GetPlayers() => Players.ToList().AsReadOnly();
+    public IReadOnlyList<Spectator> GetSpectators() => Spectators.ToList().AsReadOnly();
 
     // Propiedades calculadas
-    public int PlayerCount => _players.Count;
+    public int PlayerCount => Players.Count;
     public bool IsFull => PlayerCount >= MaxPlayers;
     public bool CanStart => true; // Force-enabled for gameplay testing
     public bool IsGameInProgress => Status == RoomStatus.InProgress;
-    public RoomPlayer? CurrentPlayer => _players.Count > 0 && CurrentPlayerIndex < _players.Count
-        ? _players[CurrentPlayerIndex] : null;
+    public RoomPlayer? CurrentPlayer => Players.Count > 0 && CurrentPlayerIndex < Players.Count
+        ? Players.ElementAt(CurrentPlayerIndex) : null;
+
+    // NUEVO: Propiedades calculadas para apuestas
+    public int SeatedPlayersCount => Players.Count(p => p.IsSeated);
+    public Money TotalBetPerRound => new Money(MinBetPerRound.Amount * SeatedPlayersCount);
+    public IReadOnlyList<RoomPlayer> SeatedPlayers => Players.Where(p => p.IsSeated).ToList().AsReadOnly();
 
     // Factory method
-    public static GameRoom Create(string name, PlayerId hostPlayerId, string? roomCode = null)
+    public static GameRoom Create(string name, PlayerId hostPlayerId, string? roomCode = null, decimal minBetPerRound = 10m)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("Room name cannot be null or empty", nameof(name));
 
-        return new GameRoom(name, hostPlayerId, roomCode);
+        if (minBetPerRound <= 0)
+            throw new ArgumentException("Minimum bet per round must be greater than zero", nameof(minBetPerRound));
+
+        return new GameRoom(name, hostPlayerId, roomCode, minBetPerRound);
     }
 
     // Generación de código de sala
@@ -70,6 +93,40 @@ public class GameRoom : AggregateRoot
         const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         return new string(Enumerable.Repeat(chars, 6)
             .Select(s => s[random.Next(s.Length)]).ToArray());
+    }
+
+    // NUEVO: Configuración de apuestas
+    public void SetMinBetPerRound(Money minBet)
+    {
+        if (minBet == null)
+            throw new ArgumentNullException(nameof(minBet));
+
+        if (minBet.Amount <= 0)
+            throw new ArgumentException("Minimum bet must be greater than zero", nameof(minBet));
+
+        if (Status == RoomStatus.InProgress)
+            throw new InvalidOperationException("Cannot change bet amount during game");
+
+        MinBetPerRound = minBet;
+        UpdateTimestamp();
+    }
+
+    public void SetMinBetPerRound(decimal amount)
+    {
+        SetMinBetPerRound(new Money(amount));
+    }
+
+    // NUEVO: Validación de fondos para apuestas automáticas
+    public bool CanPlayerAffordAutoBet(PlayerId playerId, Money playerBalance)
+    {
+        if (playerBalance == null) return false;
+        return playerBalance.Amount >= MinBetPerRound.Amount;
+    }
+
+    // NUEVO: Obtener información de apuesta para mostrar en lobby
+    public string GetBettingInfo()
+    {
+        return $"Apuesta automática por ronda: {MinBetPerRound}";
     }
 
     // Manejo de jugadores
@@ -90,43 +147,44 @@ public class GameRoom : AggregateRoot
         if (Status != RoomStatus.WaitingForPlayers)
             throw new InvalidOperationException("Cannot add players - game is in progress");
 
-        var roomPlayer = new RoomPlayer(playerId, playerName, _players.Count, isViewer);
-        _players.Add(roomPlayer);
+        var roomPlayer = new RoomPlayer(playerId, playerName, Players.Count, isViewer);
+        Players.Add(roomPlayer);
 
         // Disparar evento
-        AddDomainEvent(new PlayerJoinedRoomEvent(RoomCode, playerId, playerName, roomPlayer.Position, _players.Count));
+        AddDomainEvent(new PlayerJoinedRoomEvent(RoomCode, playerId, playerName, roomPlayer.Position, Players.Count));
 
         UpdateTimestamp();
     }
 
     public void RemovePlayer(PlayerId playerId)
     {
-        var player = _players.FirstOrDefault(p => p.PlayerId.Value == playerId.Value);
+        var player = Players.FirstOrDefault(p => p.PlayerId.Value == playerId.Value);
         if (player == null) return;
 
         var playerName = player.Name;
-        _players.Remove(player);
+        Players.Remove(player);
 
         // Reordenar posiciones
-        for (int i = 0; i < _players.Count; i++)
+        var playersList = Players.ToList();
+        for (int i = 0; i < playersList.Count; i++)
         {
-            _players[i].UpdatePosition(i);
+            playersList[i].UpdatePosition(i);
         }
 
         // Ajustar índice del turno actual
-        if (CurrentPlayerIndex >= _players.Count && _players.Count > 0)
+        if (CurrentPlayerIndex >= Players.Count && Players.Count > 0)
         {
             CurrentPlayerIndex = 0;
         }
 
         // Si era el host, transferir a otro jugador
-        if (player.PlayerId.Value == HostPlayerId.Value && _players.Count > 0)
+        if (player.PlayerId.Value == HostPlayerId.Value && Players.Count > 0)
         {
-            HostPlayerId = _players[0].PlayerId;
+            HostPlayerId = Players.First().PlayerId;
         }
 
         // Disparar evento
-        AddDomainEvent(new PlayerLeftRoomEvent(RoomCode, playerId, playerName, _players.Count));
+        AddDomainEvent(new PlayerLeftRoomEvent(RoomCode, playerId, playerName, Players.Count));
 
         UpdateTimestamp();
     }
@@ -137,11 +195,11 @@ public class GameRoom : AggregateRoot
         if (IsPlayerInRoom(playerId))
             throw new InvalidOperationException("Player is already playing in this room");
 
-        if (_spectators.Any(s => s.PlayerId.Value == playerId.Value))
+        if (Spectators.Any(s => s.PlayerId.Value == playerId.Value))
             return; // Ya es espectador
 
         var spectator = Spectator.Create(playerId, spectatorName);
-        _spectators.Add(spectator);
+        Spectators.Add(spectator);
 
         // Disparar evento
         AddDomainEvent(new SpectatorJoinedEvent(RoomCode, playerId, spectatorName));
@@ -158,10 +216,10 @@ public class GameRoom : AggregateRoot
         if (IsPlayerInRoom(spectator.PlayerId))
             throw new InvalidOperationException("Player is already playing in this room");
 
-        if (_spectators.Any(s => s.PlayerId.Value == spectator.PlayerId.Value))
+        if (Spectators.Any(s => s.PlayerId.Value == spectator.PlayerId.Value))
             return; // Ya es espectador
 
-        _spectators.Add(spectator);
+        Spectators.Add(spectator);
 
         // Disparar evento
         AddDomainEvent(new SpectatorJoinedEvent(RoomCode, spectator.PlayerId, spectator.Name));
@@ -171,11 +229,11 @@ public class GameRoom : AggregateRoot
 
     public void RemoveSpectator(PlayerId playerId)
     {
-        var spectator = _spectators.FirstOrDefault(s => s.PlayerId.Value == playerId.Value);
+        var spectator = Spectators.FirstOrDefault(s => s.PlayerId.Value == playerId.Value);
         if (spectator != null)
         {
             var spectatorName = spectator.Name;
-            _spectators.Remove(spectator);
+            Spectators.Remove(spectator);
 
             // Disparar evento
             AddDomainEvent(new SpectatorLeftEvent(RoomCode, playerId, spectatorName));
@@ -187,7 +245,7 @@ public class GameRoom : AggregateRoot
     // NUEVO: Sobrecarga que acepta objeto Spectator
     public void RemoveSpectator(Spectator spectator)
     {
-        if (spectator != null && _spectators.Remove(spectator))
+        if (spectator != null && Spectators.Remove(spectator))
         {
             // Disparar evento
             AddDomainEvent(new SpectatorLeftEvent(RoomCode, spectator.PlayerId, spectator.Name));
@@ -207,7 +265,7 @@ public class GameRoom : AggregateRoot
 
         // Disparar evento
         var playerNames = GetPlayerNames();
-        var firstPlayer = _players.Count > 0 ? _players[0].PlayerId : PlayerId.New();
+        var firstPlayer = Players.Count > 0 ? Players.First().PlayerId : PlayerId.New();
         AddDomainEvent(new GameStartedEvent(RoomCode, BlackjackTableId ?? Guid.NewGuid(), playerNames, firstPlayer));
 
         UpdateTimestamp();
@@ -224,7 +282,7 @@ public class GameRoom : AggregateRoot
 
         // Disparar evento
         var playerNames = GetPlayerNames();
-        var firstPlayer = _players.Count > 0 ? _players[0].PlayerId : PlayerId.New();
+        var firstPlayer = Players.Count > 0 ? Players.First().PlayerId : PlayerId.New();
         AddDomainEvent(new GameStartedEvent(RoomCode, blackjackTableId, playerNames, firstPlayer));
 
         UpdateTimestamp();
@@ -235,11 +293,11 @@ public class GameRoom : AggregateRoot
         if (Status != RoomStatus.InProgress)
             throw new InvalidOperationException("Game is not in progress");
 
-        if (_players.Count == 0)
+        if (Players.Count == 0)
             throw new InvalidOperationException("No players in the room");
 
         var previousPlayer = CurrentPlayer;
-        CurrentPlayerIndex = (CurrentPlayerIndex + 1) % _players.Count;
+        CurrentPlayerIndex = (CurrentPlayerIndex + 1) % Players.Count;
         var currentPlayer = CurrentPlayer;
 
         // Disparar evento
@@ -258,7 +316,8 @@ public class GameRoom : AggregateRoot
 
     public void SetCurrentPlayer(PlayerId playerId)
     {
-        var playerIndex = _players.FindIndex(p => p.PlayerId.Value == playerId.Value);
+        var playersList = Players.ToList();
+        var playerIndex = playersList.FindIndex(p => p.PlayerId.Value == playerId.Value);
         if (playerIndex == -1)
             throw new InvalidOperationException("Player not found in room");
 
@@ -287,7 +346,7 @@ public class GameRoom : AggregateRoot
         BlackjackTableId = null;
 
         // Resetear estado de jugadores
-        foreach (var player in _players)
+        foreach (var player in Players)
         {
             player.ResetForNewGame();
         }
@@ -320,7 +379,7 @@ public class GameRoom : AggregateRoot
     // CORREGIDO: Métodos de validación que comparan por Value en lugar de por referencia
     public bool IsPlayerInRoom(PlayerId playerId)
     {
-        return _players.Any(p => p.PlayerId.Value == playerId.Value);
+        return Players.Any(p => p.PlayerId.Value == playerId.Value);
     }
 
     public bool IsHost(PlayerId playerId)
@@ -335,18 +394,18 @@ public class GameRoom : AggregateRoot
 
     public RoomPlayer? GetPlayer(PlayerId playerId)
     {
-        return _players.FirstOrDefault(p => p.PlayerId.Value == playerId.Value);
+        return Players.FirstOrDefault(p => p.PlayerId.Value == playerId.Value);
     }
 
     // Métodos de información
     public List<string> GetPlayerNames()
     {
-        return _players.Select(p => p.Name).ToList();
+        return Players.Select(p => p.Name).ToList();
     }
 
     public string GetRoomInfo()
     {
-        return $"Room {RoomCode}: {Name} ({PlayerCount}/{MaxPlayers} players) - {Status}";
+        return $"Room {RoomCode}: {Name} ({PlayerCount}/{MaxPlayers} players) - {Status} - {GetBettingInfo()}";
     }
 }
 

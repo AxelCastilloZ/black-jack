@@ -1,4 +1,4 @@
-﻿// BlackJack.Realtime/Hubs/GameControlHub.cs - FUSIONADO: Development + Cartas
+// BlackJack.Realtime/Hubs/GameControlHub.cs - FUSIONADO: Development + Cartas
 //development
 
 using BlackJack.Domain.Models.Game;
@@ -46,6 +46,15 @@ public class GameControlHub : BaseHub
     {
         try
         {
+            _logger.LogInformation("[GameControlHub] ===== StartGame STARTED =====");
+            _logger.LogInformation("[GameControlHub] RoomCode: {RoomCode}", roomCode);
+
+            if (!IsAuthenticated())
+            {
+                await SendErrorAsync("Debes estar autenticado");
+                return;
+            }
+
             _logger.LogInformation("[GameControlHub] ===== StartGame STARTED =====");
             _logger.LogInformation("[GameControlHub] RoomCode: {RoomCode}", roomCode);
 
@@ -145,7 +154,10 @@ public class GameControlHub : BaseHub
             if (result.IsSuccess)
             {
                 _logger.LogInformation("[GameControlHub] StartGame SUCCESS - Getting updated room info...");
+                _logger.LogInformation("[GameControlHub] StartGame SUCCESS - Getting updated room info...");
 
+                var updatedRoomResult = await _gameRoomService.GetRoomAsync(roomCode);
+                if (updatedRoomResult.IsSuccess)
                 var updatedRoomResult = await _gameRoomService.GetRoomAsync(roomCode);
                 if (updatedRoomResult.IsSuccess)
                 {
@@ -242,13 +254,19 @@ public class GameControlHub : BaseHub
             {
                 _logger.LogWarning("[GameControlHub] StartGame FAILED for player {PlayerId}: {Error}",
                     playerId, result.Error);
+                _logger.LogWarning("[GameControlHub] StartGame FAILED for player {PlayerId}: {Error}",
+                    playerId, result.Error);
                 await SendErrorAsync(result.Error);
             }
+
+            _logger.LogInformation("[GameControlHub] ===== StartGame COMPLETED =====");
 
             _logger.LogInformation("[GameControlHub] ===== StartGame COMPLETED =====");
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "[GameControlHub] CRITICAL EXCEPTION in StartGame for player {PlayerId}",
+                GetCurrentPlayerId());
             _logger.LogError(ex, "[GameControlHub] CRITICAL EXCEPTION in StartGame for player {PlayerId}",
                 GetCurrentPlayerId());
             await HandleExceptionAsync(ex, "StartGame");

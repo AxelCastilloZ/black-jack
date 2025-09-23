@@ -9,7 +9,6 @@ namespace BlackJack.Domain.Models.Game;
 public class BlackjackTable : AggregateRoot
 {
     private readonly List<Seat> _seats = new();
-    private readonly List<Spectator> _spectators = new();
 
     // EF Core constructor
     protected BlackjackTable() : base()
@@ -46,9 +45,8 @@ public class BlackjackTable : AggregateRoot
     public Guid? DealerHandId { get; private set; }
     public int RoundNumber { get; private set; }
 
-    // Navegación para EF Core
+    // LIMPIADO: Solo navegación para Seats (Spectators removidos completamente)
     public IReadOnlyList<Seat> Seats => _seats.AsReadOnly();
-    public IReadOnlyList<Spectator> Spectators => _spectators.AsReadOnly();
 
     // Propiedades calculadas
     public int SeatedPlayerCount => _seats.Count(s => s.IsOccupied);
@@ -180,7 +178,7 @@ public class BlackjackTable : AggregateRoot
         UpdateTimestamp();
     }
 
-    // Manejo de jugadores
+    // Manejo de jugadores (solo Players activos, no Spectators)
     public void SeatPlayer(Player player, int position)
     {
         if (player == null)
@@ -226,31 +224,9 @@ public class BlackjackTable : AggregateRoot
         return GetPlayerSeat(playerId) != null;
     }
 
-    // Manejo de espectadores
-    public void AddSpectator(Spectator spectator)
-    {
-        if (spectator == null)
-            throw new ArgumentNullException(nameof(spectator));
-
-        if (_spectators.Any(s => s.PlayerId == spectator.PlayerId))
-            return; // Ya existe
-
-        _spectators.Add(spectator);
-        UpdateTimestamp();
-    }
-
-    public void RemoveSpectator(PlayerId playerId)
-    {
-        if (playerId == null)
-            throw new ArgumentNullException(nameof(playerId));
-
-        var spectator = _spectators.FirstOrDefault(s => s.PlayerId == playerId);
-        if (spectator != null)
-        {
-            _spectators.Remove(spectator);
-            UpdateTimestamp();
-        }
-    }
+    // REMOVIDO: Toda la lógica de Spectators
+    // Los Spectators ahora son manejados completamente por GameRoom
+    // Esto elimina el conflicto de ownership que causaba problemas en EF
 
     // Validaciones privadas
     private bool AllPlayersHaveBets()
@@ -272,8 +248,7 @@ public class BlackjackTable : AggregateRoot
             }
         }
 
-        // Limpiar espectadores
-        _spectators.Clear();
+        // LIMPIADO: No más _spectators.Clear() porque no existen
 
         // Resetear estado
         Status = GameStatus.WaitingForPlayers;

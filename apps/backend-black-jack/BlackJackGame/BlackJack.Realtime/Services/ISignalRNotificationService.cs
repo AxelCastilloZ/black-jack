@@ -1,4 +1,4 @@
-﻿// ISignalRNotificationService.cs - En BlackJack.Realtime/Services/
+﻿// ISignalRNotificationService.cs - En BlackJack.Realtime/Services/ - COMPLETO CON AUTO-BETTING
 using BlackJack.Domain.Models.Users;
 using BlackJack.Realtime.Models;
 
@@ -61,6 +61,55 @@ public interface ISignalRNotificationService
     // Estados de juego
     Task NotifyGameStateUpdatedAsync(string roomCode, GameStateModel gameState);
     Task NotifyRoomInfoUpdatedAsync(string roomCode, RoomInfoModel roomInfo);
+
+    #endregion
+
+    #region Auto-Betting Events
+
+    /// <summary>
+    /// Notifica el resultado completo del procesamiento de apuestas automáticas
+    /// </summary>
+    Task NotifyAutoBetProcessedAsync(string roomCode, AutoBetProcessedEventModel eventData);
+
+    /// <summary>
+    /// Notifica cuando un jugador es removido de su asiento por fondos insuficientes
+    /// </summary>
+    Task NotifyPlayerRemovedFromSeatAsync(string roomCode, PlayerRemovedFromSeatEventModel eventData);
+
+    /// <summary>
+    /// Notifica actualizaciones de balance de jugadores después de apuestas automáticas
+    /// </summary>
+    Task NotifyPlayerBalanceUpdatedAsync(string roomCode, PlayerBalanceUpdatedEventModel eventData);
+
+    /// <summary>
+    /// Notifica advertencias de fondos insuficientes antes de remover jugadores
+    /// </summary>
+    Task NotifyInsufficientFundsWarningAsync(string roomCode, InsufficientFundsWarningEventModel eventData);
+
+    /// <summary>
+    /// Notifica estadísticas de auto-betting de una sala
+    /// </summary>
+    Task NotifyAutoBetStatisticsAsync(string roomCode, AutoBetStatisticsEventModel eventData);
+
+    /// <summary>
+    /// Notifica el inicio del procesamiento de apuestas automáticas
+    /// </summary>
+    Task NotifyAutoBetProcessingStartedAsync(string roomCode, AutoBetProcessingStartedEventModel eventData);
+
+    /// <summary>
+    /// Notifica fallos en el procesamiento de auto-betting
+    /// </summary>
+    Task NotifyAutoBetFailedAsync(string roomCode, AutoBetFailedEventModel eventData);
+
+    /// <summary>
+    /// Notifica cambios en la apuesta mínima por ronda
+    /// </summary>
+    Task NotifyMinBetPerRoundUpdatedAsync(string roomCode, MinBetPerRoundUpdatedEventModel eventData);
+
+    /// <summary>
+    /// Notifica el resumen de una ronda de apuestas automáticas
+    /// </summary>
+    Task NotifyAutoBetRoundSummaryAsync(string roomCode, AutoBetRoundSummaryEventModel eventData);
 
     #endregion
 

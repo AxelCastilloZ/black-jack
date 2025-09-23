@@ -1,7 +1,8 @@
-﻿// GameRoomService.cs - CORREGIDO FINAL para eliminar errores de compilación
+﻿// GameRoomService.cs - CORREGIDO CON CREACIÓN DE PLAYER ENTITIES Y LIMPIEZA COMPLETA
 using BlackJack.Data.Repositories.Game;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
+using BlackJack.Domain.Models.Betting;
 using BlackJack.Services.Common;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
@@ -16,6 +17,7 @@ public class GameRoomService : IGameRoomService
     private readonly IGameRoomRepository _gameRoomRepository;
     private readonly IRoomPlayerRepository _roomPlayerRepository;
     private readonly ITableRepository _tableRepository;
+    private readonly IPlayerRepository _playerRepository; // NUEVO: Para auto-betting
     private readonly IDomainEventDispatcher _eventDispatcher;
     private readonly ILogger<GameRoomService> _logger;
 
@@ -26,19 +28,21 @@ public class GameRoomService : IGameRoomService
         IGameRoomRepository gameRoomRepository,
         IRoomPlayerRepository roomPlayerRepository,
         ITableRepository tableRepository,
+        IPlayerRepository playerRepository, // NUEVO: Inyección de dependencia
         IDomainEventDispatcher eventDispatcher,
         ILogger<GameRoomService> logger)
     {
         _gameRoomRepository = gameRoomRepository;
         _roomPlayerRepository = roomPlayerRepository;
         _tableRepository = tableRepository;
+        _playerRepository = playerRepository; // NUEVO
         _eventDispatcher = eventDispatcher;
         _logger = logger;
     }
 
     #region Gestión de Salas
 
-    // CORREGIDO: Método CreateRoomAsync ahora acepta BlackjackTableId opcional
+    // CORREGIDO: CreateRoomAsync ahora crea Player entity antes de AddPlayer
     public async Task<Result<GameRoom>> CreateRoomAsync(string roomName, PlayerId hostPlayerId, Guid? blackjackTableId = null)
     {
         try
@@ -59,6 +63,14 @@ public class GameRoomService : IGameRoomService
             }
             while (await _gameRoomRepository.RoomCodeExistsAsync(roomCode));
 
+            // PASO 1: Crear/obtener Player entity ANTES de crear GameRoom
+            var player = await EnsurePlayerExistsAsync(hostPlayerId, $"Host-{hostPlayerId.Value.ToString()[..8]}");
+            if (player == null)
+            {
+                return Result<GameRoom>.Failure("Error creando jugador");
+            }
+
+            // PASO 2: Crear GameRoom (SIN AddPlayer todavía)
             var gameRoom = GameRoom.Create(roomName, hostPlayerId, roomCode);
 
             if (blackjackTableId.HasValue)
@@ -68,9 +80,18 @@ public class GameRoomService : IGameRoomService
                     blackjackTableId.Value, roomCode);
             }
 
-            gameRoom.AddPlayer(hostPlayerId, $"Host-{hostPlayerId.Value.ToString()[..8]}", false);
+            // PASO 3: Agregar player con PlayerEntityId correcto
+            await AddPlayerToRoomAsync(gameRoom, hostPlayerId, player.Id, $"Host-{hostPlayerId.Value.ToString()[..8]}", false);
+
+            // PASO 4: Guardar en base de datos
+            // PASO 4: Guardar en base de datos
             await _gameRoomRepository.AddAsync(gameRoom);
-            await _eventDispatcher.DispatchEventsAsync(gameRoom);
+
+            // TEMPORAL: Comentar para diagnosticar
+            // await _eventDispatcher.DispatchEventsAsync(gameRoom);
+
+            _logger.LogInformation("[GameRoomService] Room created successfully: {RoomCode}", roomCode);
+            // await _eventDispatcher.DispatchEventsAsync(gameRoom);
 
             _logger.LogInformation("[GameRoomService] Room created successfully: {RoomCode}", roomCode);
             return Result<GameRoom>.Success(gameRoom);
@@ -90,7 +111,7 @@ public class GameRoomService : IGameRoomService
                 return Result<GameRoom>.Failure("El ID de la mesa es requerido");
 
             if (!Guid.TryParse(tableId, out var tableGuid))
-return Result<GameRoom>.Failure("ID de mesa inválido");
+                return Result<GameRoom>.Failure("ID de mesa inválido");
 
             var existingRoomResult = await GetRoomByTableIdAsync(tableId);
             if (existingRoomResult.IsSuccess && existingRoomResult.Value != null)
@@ -129,7 +150,7 @@ return Result<GameRoom>.Failure("ID de mesa inválido");
             var currentRoomResult = await GetPlayerCurrentRoomCodeAsync(hostPlayerId);
             if (currentRoomResult.IsSuccess && !string.IsNullOrEmpty(currentRoomResult.Value))
             {
-                _logger.LogInformation("[GameRoomService] Viewer {PlayerId} leaving current room {CurrentRoom} to create new room for table {TableId}", 
+                _logger.LogInformation("[GameRoomService] Viewer {PlayerId} leaving current room {CurrentRoom} to create new room for table {TableId}",
                     hostPlayerId, currentRoomResult.Value, tableId);
                 await LeaveRoomAsync(currentRoomResult.Value, hostPlayerId);
             }
@@ -231,7 +252,7 @@ return Result<GameRoom>.Failure("ID de mesa inválido");
                 var currentRoomResult = await GetPlayerCurrentRoomCodeAsync(playerId);
                 if (currentRoomResult.IsSuccess && !string.IsNullOrEmpty(currentRoomResult.Value))
                 {
-                    _logger.LogInformation("[GameRoomService] Viewer {PlayerId} leaving current room {CurrentRoom} to join {NewRoom}", 
+                    _logger.LogInformation("[GameRoomService] Viewer {PlayerId} leaving current room {CurrentRoom} to join {NewRoom}",
                         playerId, currentRoomResult.Value, existingRoom.RoomCode);
                     await LeaveRoomAsync(currentRoomResult.Value, playerId);
                 }
@@ -336,6 +357,7 @@ return Result<GameRoom>.Failure("ID de mesa inválido");
 
     #region Gestión de Jugadores
 
+    // CORREGIDO: JoinRoomAsync ahora crea Player entity antes de AddPlayer
     public async Task<r> JoinRoomAsync(string roomCode, PlayerId playerId, string playerName, bool isViewer = false)
     {
         try
@@ -360,7 +382,16 @@ return Result<GameRoom>.Failure("ID de mesa inválido");
                 return Result.Success();
             }
 
-            room.AddPlayer(playerId, playerName, isViewer);
+            // NUEVO: Crear/obtener Player entity antes de AddPlayer
+            var player = await EnsurePlayerExistsAsync(playerId, playerName);
+            if (player == null)
+            {
+                return Result.Failure("Error creando jugador");
+            }
+
+            // NUEVO: Usar AddPlayerToRoomAsync en lugar de room.AddPlayer() directamente
+            await AddPlayerToRoomAsync(room, playerId, player.Id, playerName, isViewer);
+
             await _gameRoomRepository.UpdateAsync(room);
             await _eventDispatcher.DispatchEventsAsync(room);
 
@@ -374,39 +405,92 @@ return Result<GameRoom>.Failure("ID de mesa inválido");
         }
     }
 
+    // SOLUCIÓN CRÍTICA: LeaveRoomAsync completamente corregido para eliminar datos fantasma
     public async Task<r> LeaveRoomAsync(string roomCode, PlayerId playerId)
     {
         try
         {
-            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
-            if (room == null)
-            {
-                return Result.Success();
-            }
+            _logger.LogInformation("[GameRoomService] === LEAVE ROOM START ===");
+            _logger.LogInformation("[GameRoomService] Player {PlayerId} leaving room {RoomCode}", playerId, roomCode);
 
-            if (!room.IsPlayerInRoom(playerId))
-            {
-                return Result.Success();
-            }
+            // PASO 1: CRÍTICO - Eliminar RoomPlayer de la base de datos PRIMERO
+            _logger.LogInformation("[GameRoomService] Step 1: Removing RoomPlayer from database...");
+            var roomPlayerRemoved = await _gameRoomRepository.RemoveRoomPlayerAsync(roomCode, playerId);
 
-            room.RemovePlayer(playerId);
-            await _gameRoomRepository.FreeSeatAsync(roomCode, playerId);
-
-            if (room.PlayerCount == 0)
+            if (roomPlayerRemoved)
             {
-                await _gameRoomRepository.DeleteAsync(room);
+                _logger.LogInformation("[GameRoomService] ✅ RoomPlayer removed from database successfully");
             }
             else
             {
-                await _gameRoomRepository.UpdateAsync(room);
-                await _eventDispatcher.DispatchEventsAsync(room);
+                _logger.LogWarning("[GameRoomService] ⚠️ RoomPlayer was not found in database or already removed");
             }
 
+            // PASO 2: Liberar asiento si estaba sentado
+            _logger.LogInformation("[GameRoomService] Step 2: Freeing seat if occupied...");
+            var seatFreed = await _gameRoomRepository.FreeSeatAsync(roomCode, playerId);
+            if (seatFreed)
+            {
+                _logger.LogInformation("[GameRoomService] ✅ Seat freed successfully");
+            }
+
+            // PASO 3: Obtener sala y verificar si existe
+            _logger.LogInformation("[GameRoomService] Step 3: Loading room for domain operations...");
+            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
+            if (room == null)
+            {
+                _logger.LogInformation("[GameRoomService] Room {RoomCode} no longer exists, cleanup complete", roomCode);
+                return Result.Success();
+            }
+
+            // PASO 4: Operación de dominio (ahora segura porque ya eliminamos de BD)
+            _logger.LogInformation("[GameRoomService] Step 4: Calling domain RemovePlayer...");
+            var wasPlayerInRoom = room.IsPlayerInRoom(playerId);
+            if (wasPlayerInRoom)
+            {
+                room.RemovePlayer(playerId);
+                _logger.LogInformation("[GameRoomService] ✅ Player removed from domain room object");
+            }
+            else
+            {
+                _logger.LogInformation("[GameRoomService] Player was not in room domain object");
+            }
+
+            // PASO 5: Gestionar sala vacía o actualizar
+            if (room.PlayerCount == 0)
+            {
+                _logger.LogInformation("[GameRoomService] Step 5: Room is now empty, deleting...");
+                await _gameRoomRepository.DeleteAsync(room);
+                _logger.LogInformation("[GameRoomService] ✅ Empty room deleted");
+            }
+            else
+            {
+                _logger.LogInformation("[GameRoomService] Step 5: Room still has {PlayerCount} players, updating...", room.PlayerCount);
+                await _gameRoomRepository.UpdateAsync(room);
+                await _eventDispatcher.DispatchEventsAsync(room);
+                _logger.LogInformation("[GameRoomService] ✅ Room updated successfully");
+            }
+
+            _logger.LogInformation("[GameRoomService] === LEAVE ROOM COMPLETED SUCCESSFULLY ===");
             return Result.Success();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[GameRoomService] Error leaving room: {Error}", ex.Message);
+            _logger.LogError(ex, "[GameRoomService] CRITICAL ERROR in LeaveRoomAsync - Player: {PlayerId}, Room: {RoomCode}",
+                playerId, roomCode);
+
+            // FALLBACK: En caso de error, intentar limpieza forzada
+            try
+            {
+                _logger.LogWarning("[GameRoomService] Attempting forced cleanup for player {PlayerId}", playerId);
+                await _gameRoomRepository.ForceCleanupPlayerFromAllRoomsAsync(playerId);
+                _logger.LogInformation("[GameRoomService] ✅ Forced cleanup completed");
+            }
+            catch (Exception cleanupEx)
+            {
+                _logger.LogError(cleanupEx, "[GameRoomService] Even forced cleanup failed for player {PlayerId}", playerId);
+            }
+
             return Result.Failure($"Error leaving room: {ex.Message}");
         }
     }
@@ -431,7 +515,7 @@ return Result<GameRoom>.Failure("ID de mesa inválido");
                 return Result<bool>.Failure("Ya eres espectador de esta sala");
             }
 
-            var spectator = new Spectator(playerId, spectatorName, room.BlackjackTableId ?? Guid.Empty);
+            var spectator = Spectator.Create(playerId, spectatorName, room.Id);
             room.AddSpectator(spectator);
             await _gameRoomRepository.UpdateAsync(room);
 
@@ -468,6 +552,79 @@ return Result<GameRoom>.Failure("ID de mesa inválido");
         {
             _logger.LogError(ex, "[GameRoomService] Error removing spectator: {Error}", ex.Message);
             return Result<bool>.Failure("Error removiendo espectador");
+        }
+    }
+
+    #endregion
+
+    #region NUEVOS: Métodos auxiliares para manejo de Player entities
+
+    /// <summary>
+    /// Crea o obtiene un Player entity existente para un PlayerId dado
+    /// </summary>
+    private async Task<Player?> EnsurePlayerExistsAsync(PlayerId playerId, string playerName, decimal initialBalance = 1000m)
+    {
+        try
+        {
+            _logger.LogInformation("[GameRoomService] Ensuring Player entity exists for PlayerId: {PlayerId}", playerId);
+
+            // 1. Intentar obtener Player existente
+            var existingPlayer = await _playerRepository.GetByPlayerIdAsync(playerId);
+            if (existingPlayer != null)
+            {
+                _logger.LogInformation("[GameRoomService] Found existing Player entity with Id: {PlayerId}", existingPlayer.Id);
+                return existingPlayer;
+            }
+
+            // 2. Crear nuevo Player si no existe
+            _logger.LogInformation("[GameRoomService] Creating new Player entity for PlayerId: {PlayerId}", playerId);
+            var newPlayer = Player.Create(playerId, playerName, initialBalance);
+            await _playerRepository.AddAsync(newPlayer);
+
+            _logger.LogInformation("[GameRoomService] Created new Player entity with Id: {PlayerId}", newPlayer.Id);
+            return newPlayer;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error ensuring Player entity exists for PlayerId: {PlayerId}", playerId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Agrega un jugador a una sala con PlayerEntityId correcto
+    /// </summary>
+    private async Task AddPlayerToRoomAsync(GameRoom gameRoom, PlayerId playerId, Guid playerEntityId, string playerName, bool isViewer = false)
+    {
+        try
+        {
+            _logger.LogInformation("[GameRoomService] Adding player to room - PlayerId: {PlayerId}, PlayerEntityId: {PlayerEntityId}",
+                playerId, playerEntityId);
+
+            // 1. Llamar al método de dominio para agregar el jugador (esto crea RoomPlayer con PlayerEntityId = Guid.Empty)
+            gameRoom.AddPlayer(playerId, playerName, isViewer);
+
+            // 2. Obtener el RoomPlayer recién creado y asignar el PlayerEntityId correcto
+            var roomPlayer = gameRoom.GetPlayer(playerId);
+            if (roomPlayer != null)
+            {
+                // Asignar PlayerEntityId correcto directamente
+                roomPlayer.PlayerEntityId = playerEntityId;
+                roomPlayer.UpdatedAt = DateTime.UtcNow; // CORREGIDO: Usar UpdatedAt directamente
+
+                _logger.LogInformation("[GameRoomService] Assigned PlayerEntityId {PlayerEntityId} to RoomPlayer for PlayerId: {PlayerId}",
+                    playerEntityId, playerId);
+            }
+            else
+            {
+                _logger.LogError("[GameRoomService] Failed to find RoomPlayer after adding to GameRoom for PlayerId: {PlayerId}", playerId);
+                throw new InvalidOperationException("Failed to add player to room");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error adding player to room - PlayerId: {PlayerId}", playerId);
+            throw;
         }
     }
 
@@ -561,7 +718,9 @@ return Result<GameRoom>.Failure("ID de mesa inválido");
         {
             _logger.LogError(ex, "[GameRoomService] CRITICAL ERROR in JoinSeatAsync for player {PlayerId} in room {RoomCode}",
                 playerId, roomCode);
-            return Result<bool>.Failure("Error interno del servidor");
+
+            // TEMPORAL: Mostrar error específico en lugar de genérico
+            return Result<bool>.Failure($"Error: {ex.Message} - {ex.InnerException?.Message}");
         }
     }
 
@@ -569,17 +728,21 @@ return Result<GameRoom>.Failure("ID de mesa inválido");
     {
         try
         {
-            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
-            if (room == null)
+            // SOLUCIÓN: Verificación directa de sala existencia sin cargar Players
+            var roomExists = await _gameRoomRepository.RoomCodeExistsAsync(roomCode);
+            if (!roomExists)
             {
                 return Result<bool>.Failure("Sala no encontrada");
             }
 
-            if (!room.IsPlayerInRoom(playerId))
+            // SOLUCIÓN: Verificación de membership sin cargar GameRoom completo
+            var isPlayerInRoom = await _gameRoomRepository.IsPlayerInRoomAsync(playerId, roomCode);
+            if (!isPlayerInRoom)
             {
                 return Result<bool>.Failure("No estás en esta sala");
             }
 
+            // OPERACIÓN PRINCIPAL: Liberar asiento (usa SQL directo - ya funciona)
             var seatFreed = await _gameRoomRepository.FreeSeatAsync(roomCode, playerId);
             if (!seatFreed)
             {
@@ -870,6 +1033,413 @@ return Result<GameRoom>.Failure("ID de mesa inválido");
 
     #endregion
 
+    #region Auto-Betting
+
+    /// <summary>
+    /// Procesa las apuestas automáticas para todos los jugadores sentados en una sala
+    /// </summary>
+    public async Task<Result<AutoBetResult>> ProcessRoundAutoBetsAsync(string roomCode, bool removePlayersWithoutFunds = true)
+    {
+        try
+        {
+            _logger.LogInformation("[AutoBetting] === PROCESANDO APUESTAS AUTOMÁTICAS ===");
+            _logger.LogInformation("[AutoBetting] Room: {RoomCode}, RemoveWithoutFunds: {RemoveFlag}",
+                roomCode, removePlayersWithoutFunds);
+
+            // 1. Validar sala
+            var validationResult = await ValidateRoomForAutoBettingAsync(roomCode);
+            if (!validationResult.IsSuccess)
+            {
+                return Result<AutoBetResult>.Failure(validationResult.Error);
+            }
+
+            var validation = validationResult.Value!;
+            if (!validation.IsValid)
+            {
+                var errorMessages = string.Join(", ", validation.ErrorMessages);
+                return Result<AutoBetResult>.Failure($"Validación fallida: {errorMessages}");
+            }
+
+            // 2. Obtener sala y jugadores sentados
+            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
+            var seatedPlayers = await _roomPlayerRepository.GetSeatedPlayersByRoomCodeAsync(roomCode);
+            var seatedPlayerIds = seatedPlayers.Select(rp => rp.PlayerId).ToList();
+
+            if (!seatedPlayerIds.Any())
+            {
+                _logger.LogInformation("[AutoBetting] No hay jugadores sentados en la sala {RoomCode}", roomCode);
+                return Result<AutoBetResult>.Success(new AutoBetResult
+                {
+                    RoomCode = roomCode,
+                    TotalPlayersProcessed = 0,
+                    SuccessfulBets = 0,
+                    FailedBets = 0,
+                    PlayersRemovedFromSeats = 0,
+                    TotalAmountProcessed = Money.Zero,
+                    PlayerResults = new List<PlayerBetResult>(),
+                    ProcessedAt = DateTime.UtcNow
+                });
+            }
+
+            // 3. Obtener jugadores reales con sus balances
+            var players = await _playerRepository.GetPlayersByIdsAsync(seatedPlayerIds);
+            var playerDict = players.ToDictionary(p => p.PlayerId.Value, p => p);
+
+            // 4. Procesar apuestas automáticas
+            var playerResults = new List<PlayerBetResult>();
+            var playersToRemove = new List<PlayerId>();
+            var totalAmountProcessed = Money.Zero;
+            int successfulBets = 0;
+            int failedBets = 0;
+
+            foreach (var seatedPlayer in seatedPlayers)
+            {
+                var playerId = seatedPlayer.PlayerId;
+
+                if (!playerDict.TryGetValue(playerId.Value, out var player))
+                {
+                    _logger.LogWarning("[AutoBetting] Jugador {PlayerId} sentado pero no encontrado en Player table", playerId);
+                    playerResults.Add(new PlayerBetResult
+                    {
+                        PlayerId = playerId,
+                        PlayerName = seatedPlayer.Name,
+                        SeatPosition = seatedPlayer.GetSeatPosition(),
+                        Status = BetStatus.Failed,
+                        OriginalBalance = Money.Zero,
+                        NewBalance = Money.Zero,
+                        BetAmount = Money.Zero,
+                        ErrorMessage = "Jugador no encontrado"
+                    });
+                    continue;
+                }
+
+                var betAmount = room!.MinBetPerRound;
+                var originalBalance = player.Balance;
+
+                // Verificar fondos suficientes
+                if (!player.CanAffordBet(betAmount))
+                {
+                    _logger.LogWarning("[AutoBetting] Jugador {PlayerId} sin fondos suficientes. Balance: {Balance}, Requerido: {Required}",
+                        playerId, originalBalance, betAmount);
+
+                    var result = new PlayerBetResult
+                    {
+                        PlayerId = playerId,
+                        PlayerName = seatedPlayer.Name,
+                        SeatPosition = seatedPlayer.GetSeatPosition(),
+                        Status = BetStatus.InsufficientFunds,
+                        OriginalBalance = originalBalance,
+                        NewBalance = originalBalance,
+                        BetAmount = betAmount,
+                        ErrorMessage = "Fondos insuficientes"
+                    };
+
+                    if (removePlayersWithoutFunds)
+                    {
+                        result.Status = BetStatus.RemovedFromSeat;
+                        playersToRemove.Add(playerId);
+                    }
+
+                    playerResults.Add(result);
+                    failedBets++;
+                    continue;
+                }
+
+                // Intentar colocar apuesta
+                var bet = Bet.Create(betAmount);
+                var betPlaced = await _playerRepository.PlaceBetAsync(playerId, bet);
+
+                if (betPlaced)
+                {
+                    var newBalance = originalBalance.Subtract(betAmount);
+                    totalAmountProcessed = totalAmountProcessed.Add(betAmount);
+
+                    playerResults.Add(new PlayerBetResult
+                    {
+                        PlayerId = playerId,
+                        PlayerName = seatedPlayer.Name,
+                        SeatPosition = seatedPlayer.GetSeatPosition(),
+                        Status = BetStatus.BetDeducted,
+                        OriginalBalance = originalBalance,
+                        NewBalance = newBalance,
+                        BetAmount = betAmount,
+                        ErrorMessage = null
+                    });
+
+                    successfulBets++;
+                    _logger.LogInformation("[AutoBetting] ✅ Apuesta colocada para {PlayerId}: {Amount}",
+                        playerId, betAmount);
+                }
+                else
+                {
+                    playerResults.Add(new PlayerBetResult
+                    {
+                        PlayerId = playerId,
+                        PlayerName = seatedPlayer.Name,
+                        SeatPosition = seatedPlayer.GetSeatPosition(),
+                        Status = BetStatus.Failed,
+                        OriginalBalance = originalBalance,
+                        NewBalance = originalBalance,
+                        BetAmount = betAmount,
+                        ErrorMessage = "Error al procesar apuesta"
+                    });
+
+                    failedBets++;
+                    _logger.LogError("[AutoBetting] ❌ Error al colocar apuesta para {PlayerId}", playerId);
+                }
+            }
+
+            // 5. Remover jugadores sin fondos de sus asientos
+            int playersRemoved = 0;
+            if (removePlayersWithoutFunds && playersToRemove.Any())
+            {
+                foreach (var playerId in playersToRemove)
+                {
+                    var removeResult = await LeaveSeatAsync(roomCode, playerId);
+                    if (removeResult.IsSuccess)
+                    {
+                        playersRemoved++;
+                        _logger.LogInformation("[AutoBetting] Jugador {PlayerId} removido del asiento por fondos insuficientes", playerId);
+                    }
+                }
+            }
+
+            // 6. Crear resultado final
+            var autoBetResult = new AutoBetResult
+            {
+                RoomCode = roomCode,
+                TotalPlayersProcessed = seatedPlayers.Count,
+                SuccessfulBets = successfulBets,
+                FailedBets = failedBets,
+                PlayersRemovedFromSeats = playersRemoved,
+                TotalAmountProcessed = totalAmountProcessed,
+                PlayerResults = playerResults,
+                ProcessedAt = DateTime.UtcNow
+            };
+
+            _logger.LogInformation("[AutoBetting] === PROCESAMIENTO COMPLETADO ===");
+            _logger.LogInformation("[AutoBetting] Exitosas: {Success}, Fallidas: {Failed}, Removidos: {Removed}, Total: {Total}",
+                successfulBets, failedBets, playersRemoved, totalAmountProcessed);
+
+            return Result<AutoBetResult>.Success(autoBetResult);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[AutoBetting] Error crítico procesando apuestas automáticas en sala {RoomCode}", roomCode);
+            return Result<AutoBetResult>.Failure($"Error procesando apuestas automáticas: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Valida si una sala puede procesar apuestas automáticas
+    /// </summary>
+    public async Task<Result<AutoBetValidation>> ValidateRoomForAutoBettingAsync(string roomCode)
+    {
+        try
+        {
+            var validation = new AutoBetValidation
+            {
+                RoomCode = roomCode,
+                IsValid = true,
+                ErrorMessages = new List<string>()
+            };
+
+            // 1. Verificar que la sala existe
+            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
+            if (room == null)
+            {
+                validation.IsValid = false;
+                validation.ErrorMessages.Add("Sala no encontrada");
+                return Result<AutoBetValidation>.Success(validation);
+            }
+
+            // 2. Verificar MinBetPerRound configurado
+            if (room.MinBetPerRound == null || room.MinBetPerRound.Amount <= 0)
+            {
+                validation.IsValid = false;
+                validation.ErrorMessages.Add("Apuesta mínima por ronda no configurada");
+            }
+
+            // 3. Verificar que hay jugadores sentados
+            var seatedPlayersCount = await _roomPlayerRepository.GetSeatedPlayersCountAsync(roomCode);
+            if (seatedPlayersCount == 0)
+            {
+                validation.IsValid = false;
+                validation.ErrorMessages.Add("No hay jugadores sentados en la sala");
+            }
+
+            // 4. Verificar estado de la sala (opcional - puede procesarse en cualquier estado)
+            validation.RoomStatus = room.Status;
+            validation.SeatedPlayersCount = seatedPlayersCount;
+            validation.MinBetPerRound = room.MinBetPerRound;
+
+            return Result<AutoBetValidation>.Success(validation);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[AutoBetting] Error validando sala {RoomCode} para auto-betting", roomCode);
+            return Result<AutoBetValidation>.Failure($"Error en validación: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Calcula estadísticas de apuestas automáticas para una sala
+    /// </summary>
+    public async Task<Result<AutoBetStatistics>> CalculateAutoBetStatisticsAsync(string roomCode)
+    {
+        try
+        {
+            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
+            if (room == null)
+            {
+                return Result<AutoBetStatistics>.Failure("Sala no encontrada");
+            }
+
+            var seatedPlayers = await _roomPlayerRepository.GetSeatedPlayersByRoomCodeAsync(roomCode);
+            var seatedPlayerIds = seatedPlayers.Select(rp => rp.PlayerId).ToList();
+
+            var statistics = new AutoBetStatistics
+            {
+                RoomCode = roomCode,
+                MinBetPerRound = room.MinBetPerRound,
+                SeatedPlayersCount = seatedPlayers.Count,
+                TotalBetPerRound = new Money(room.MinBetPerRound.Amount * seatedPlayers.Count),
+                CalculatedAt = DateTime.UtcNow
+            };
+
+            if (seatedPlayerIds.Any())
+            {
+                var players = await _playerRepository.GetPlayersByIdsAsync(seatedPlayerIds);
+                var playersWithSufficientFunds = players.Where(p => p.CanAffordBet(room.MinBetPerRound)).ToList();
+                var playersWithInsufficientFunds = players.Where(p => !p.CanAffordBet(room.MinBetPerRound)).ToList();
+
+                statistics.PlayersWithSufficientFunds = playersWithSufficientFunds.Count;
+                statistics.PlayersWithInsufficientFunds = playersWithInsufficientFunds.Count;
+                statistics.TotalAvailableFunds = new Money(players.Sum(p => p.Balance.Amount));
+                statistics.ExpectedSuccessfulBets = playersWithSufficientFunds.Count;
+                statistics.ExpectedTotalDeduction = new Money(room.MinBetPerRound.Amount * playersWithSufficientFunds.Count);
+
+                // Detalles por jugador
+                statistics.PlayerDetails = players.Select(p => new PlayerAutoBetDetail
+                {
+                    PlayerId = p.PlayerId,
+                    PlayerName = p.Name,
+                    CurrentBalance = p.Balance,
+                    CanAffordBet = p.CanAffordBet(room.MinBetPerRound),
+                    BalanceAfterBet = p.CanAffordBet(room.MinBetPerRound)
+                        ? p.Balance.Subtract(room.MinBetPerRound)
+                        : p.Balance
+                }).ToList();
+            }
+
+            return Result<AutoBetStatistics>.Success(statistics);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[AutoBetting] Error calculando estadísticas para sala {RoomCode}", roomCode);
+            return Result<AutoBetStatistics>.Failure($"Error calculando estadísticas: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Verifica si un jugador puede costear la apuesta automática de una sala
+    /// </summary>
+    public async Task<Result<bool>> CanPlayerAffordAutoBetAsync(string roomCode, PlayerId playerId)
+    {
+        try
+        {
+            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
+            if (room == null)
+            {
+                return Result<bool>.Failure("Sala no encontrada");
+            }
+
+            var player = await _playerRepository.GetByPlayerIdAsync(playerId);
+            if (player == null)
+            {
+                return Result<bool>.Failure("Jugador no encontrado");
+            }
+
+            var canAfford = player.CanAffordBet(room.MinBetPerRound);
+            return Result<bool>.Success(canAfford);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[AutoBetting] Error verificando fondos del jugador {PlayerId} en sala {RoomCode}",
+                playerId, roomCode);
+            return Result<bool>.Failure($"Error verificando fondos: {ex.Message}");
+        }
+    }
+
+    #endregion
+
+    #region NUEVO: Métodos de Diagnóstico y Limpieza
+
+    /// <summary>
+    /// MÉTODO DE DIAGNÓSTICO: Obtiene información sobre registros huérfanos de un jugador
+    /// </summary>
+    public async Task<Result<List<string>>> DiagnosePlayerOrphanRoomsAsync(PlayerId playerId)
+    {
+        try
+        {
+            var orphanRooms = await _gameRoomRepository.GetPlayerOrphanRoomsAsync(playerId);
+            _logger.LogInformation("[GameRoomService] Player {PlayerId} has orphan records in {Count} rooms: {Rooms}",
+                playerId, orphanRooms.Count, string.Join(", ", orphanRooms));
+
+            return Result<List<string>>.Success(orphanRooms);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error diagnosing orphan rooms for player {PlayerId}", playerId);
+            return Result<List<string>>.Failure($"Error en diagnóstico: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// MÉTODO DE EMERGENCIA: Limpia completamente un jugador de TODAS las salas
+    /// </summary>
+    public async Task<Result<int>> ForceCleanupPlayerAsync(PlayerId playerId)
+    {
+        try
+        {
+            _logger.LogWarning("[GameRoomService] === FORCE CLEANUP INITIATED ===");
+            _logger.LogWarning("[GameRoomService] Forcing cleanup for player {PlayerId}", playerId);
+
+            var affectedRows = await _gameRoomRepository.ForceCleanupPlayerFromAllRoomsAsync(playerId);
+
+            _logger.LogInformation("[GameRoomService] Force cleanup completed: {AffectedRows} records removed for player {PlayerId}",
+                affectedRows, playerId);
+
+            return Result<int>.Success(affectedRows);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error in force cleanup for player {PlayerId}", playerId);
+            return Result<int>.Failure($"Error en limpieza forzada: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// MÉTODO DE MANTENIMIENTO: Limpia salas vacías automáticamente
+    /// </summary>
+    public async Task<Result<int>> CleanupEmptyRoomsAsync()
+    {
+        try
+        {
+            var removedRooms = await _gameRoomRepository.CleanupEmptyRoomsAsync();
+            _logger.LogInformation("[GameRoomService] Cleanup completed: {RemovedRooms} empty rooms removed", removedRooms);
+
+            return Result<int>.Success(removedRooms);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error cleaning up empty rooms");
+            return Result<int>.Failure($"Error en limpieza de salas vacías: {ex.Message}");
+        }
+    }
+
+    #endregion
+
     #region Métodos Privados
 
     private static string GenerateRoomCode()
@@ -882,6 +1452,99 @@ return Result<GameRoom>.Failure("ID de mesa inválido");
 
     #endregion
 }
+
+#region Auto-Betting Models
+
+/// <summary>
+/// Resultado del procesamiento de apuestas automáticas
+/// </summary>
+public class AutoBetResult
+{
+    public string RoomCode { get; set; } = string.Empty;
+    public int TotalPlayersProcessed { get; set; }
+    public int SuccessfulBets { get; set; }
+    public int FailedBets { get; set; }
+    public int PlayersRemovedFromSeats { get; set; }
+    public Money TotalAmountProcessed { get; set; } = Money.Zero;
+    public List<PlayerBetResult> PlayerResults { get; set; } = new();
+    public DateTime ProcessedAt { get; set; }
+
+    public bool HasErrors => FailedBets > 0;
+    public decimal SuccessRate => TotalPlayersProcessed > 0 ? (decimal)SuccessfulBets / TotalPlayersProcessed : 0;
+}
+
+/// <summary>
+/// Resultado de apuesta para un jugador individual
+/// </summary>
+public class PlayerBetResult
+{
+    public PlayerId PlayerId { get; set; } = default!;
+    public string PlayerName { get; set; } = string.Empty;
+    public int SeatPosition { get; set; }
+    public BetStatus Status { get; set; }
+    public Money OriginalBalance { get; set; } = Money.Zero;
+    public Money NewBalance { get; set; } = Money.Zero;
+    public Money BetAmount { get; set; } = Money.Zero;
+    public string? ErrorMessage { get; set; }
+}
+
+/// <summary>
+/// Estado del resultado de una apuesta
+/// </summary>
+public enum BetStatus
+{
+    BetDeducted,        // Apuesta colocada exitosamente
+    InsufficientFunds,  // Fondos insuficientes
+    RemovedFromSeat,    // Removido del asiento por fondos insuficientes  
+    Failed              // Error general
+}
+
+/// <summary>
+/// Validación de sala para auto-betting
+/// </summary>
+public class AutoBetValidation
+{
+    public string RoomCode { get; set; } = string.Empty;
+    public bool IsValid { get; set; }
+    public List<string> ErrorMessages { get; set; } = new();
+    public RoomStatus RoomStatus { get; set; }
+    public int SeatedPlayersCount { get; set; }
+    public Money MinBetPerRound { get; set; } = Money.Zero;
+}
+
+/// <summary>
+/// Estadísticas de auto-betting para una sala
+/// </summary>
+public class AutoBetStatistics
+{
+    public string RoomCode { get; set; } = string.Empty;
+    public Money MinBetPerRound { get; set; } = Money.Zero;
+    public int SeatedPlayersCount { get; set; }
+    public Money TotalBetPerRound { get; set; } = Money.Zero;
+    public int PlayersWithSufficientFunds { get; set; }
+    public int PlayersWithInsufficientFunds { get; set; }
+    public Money TotalAvailableFunds { get; set; } = Money.Zero;
+    public int ExpectedSuccessfulBets { get; set; }
+    public Money ExpectedTotalDeduction { get; set; } = Money.Zero;
+    public List<PlayerAutoBetDetail> PlayerDetails { get; set; } = new();
+    public DateTime CalculatedAt { get; set; }
+}
+
+/// <summary>
+/// Detalle de auto-betting por jugador
+/// </summary>
+public class PlayerAutoBetDetail
+{
+    public PlayerId PlayerId { get; set; } = default!;
+    public string PlayerName { get; set; } = string.Empty;
+    public Money CurrentBalance { get; set; } = Money.Zero;
+    public bool CanAffordBet { get; set; }
+    public Money BalanceAfterBet { get; set; } = Money.Zero;
+}
+
+#endregion
+
+#region Existing Models
 
 /// <summary>
 /// Modelo para información de asientos
@@ -909,3 +1572,5 @@ public class GameRoomStats
     public DateTime CreatedAt { get; set; }
     public DateTime LastActivity { get; set; }
 }
+
+#endregion
