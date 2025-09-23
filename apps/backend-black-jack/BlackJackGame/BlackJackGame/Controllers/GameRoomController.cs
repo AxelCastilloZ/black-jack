@@ -442,6 +442,28 @@ public class GameRoomController : BaseController
         }
     }
 
+    // NUEVO: Endpoint de mantenimiento para limpiar una sala atascada (admin/dev)
+    [HttpPost("{roomCode}/cleanup")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ForceCleanupRoom(string roomCode)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(roomCode))
+            {
+                return BadRequest(new { error = "Room code is required" });
+            }
+
+            var result = await _gameRoomService.ForceCleanupRoomAsync(roomCode);
+            return HandleResult(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomController] Error force-cleaning room: {Error}", ex.Message);
+            return StatusCode(500, new { error = "Error cleaning room", message = ex.Message });
+        }
+    }
+
     #endregion
 
     #region Player Status

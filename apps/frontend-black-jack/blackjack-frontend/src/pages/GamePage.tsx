@@ -611,6 +611,11 @@ export default function GamePage() {
         message: `${amountText} (${event.changeReason}). Nuevo balance: $${event.newBalance}`,
         duration: 5000
       })
+
+      // NUEVO: Persistir balance en authService para que el Lobby lo refleje
+      try {
+        authService.updateBalance(event.newBalance)
+      } catch {}
     }
   }, [addNotification])
 
@@ -1175,6 +1180,7 @@ export default function GamePage() {
       <GameChat
         currentUser={currentUser.current}
         isComponentMounted={isComponentMounted.current}
+        roomCode={gameState?.roomCode}
       />
 
     </div>

@@ -117,6 +117,9 @@ public static class HubMethodNames
         public const string QuickJoinTable = "QuickJoinTable";
         public const string GetLobbyStats = "GetLobbyStats";
         public const string GetRoomDetails = "GetRoomDetails";
+
+        // === Chat ===
+        public const string SendChatMessage = "SendChatMessage";
     }
 
     #endregion

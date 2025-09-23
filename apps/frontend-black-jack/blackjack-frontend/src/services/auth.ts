@@ -147,6 +147,14 @@ class AuthService {
     this.clearAuth()
   }
 
+  // Actualizar saldo y notificar UI
+  updateBalance(newBalance: number) {
+    if (!this.currentUser) return
+    this.currentUser = { ...this.currentUser, balance: newBalance }
+    localStorage.setItem(USER_KEY, JSON.stringify(this.currentUser))
+    window.dispatchEvent(new CustomEvent('auth:userUpdated'))
+  }
+
   // Limpiar datos de auth
   private clearAuth() {
     localStorage.removeItem(TOKEN_KEY)

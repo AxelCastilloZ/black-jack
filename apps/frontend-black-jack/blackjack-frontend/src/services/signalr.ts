@@ -281,6 +281,9 @@ class SignalRService {
   public onQuickJoinTableRedirect?: (data: any) => void
   public onDetailedRoomInfo?: (data: any) => void
 
+  // Chat callbacks
+  public onMessageReceived?: (msg: { roomCode: string; playerId: string; playerName: string; text: string; timestamp: string }) => void
+
   // ===== FUNCIÓN HELPER PARA NORMALIZAR currentPlayerTurn =====
   private normalizeCurrentPlayerTurn(gameState: any, eventName: string): any {
     if (!gameState || !gameState.currentPlayerTurn) {
@@ -615,6 +618,35 @@ class SignalRService {
       const normalizedData = this.normalizeCurrentPlayerTurn(processedData, 'GameEnded')
       this.onGameEnded?.(normalizedData)
       this.onGameStateChanged?.(normalizedData)
+    })
+
+    // Eventos de espectadores
+    connection.on('spectatorJoined', (data: any) => {
+      if (this.isDestroying) return
+      console.log('[SignalR-GameControl] spectatorJoined event:', data)
+    })
+
+    connection.on('spectatorLeft', (data: any) => {
+      if (this.isDestroying) return
+      console.log('[SignalR-GameControl] spectatorLeft event:', data)
+    })
+
+    // Chat events
+    connection.on('messageReceived', (msg: any) => {
+      if (this.isDestroying) return
+      console.log('[SignalR-GameControl] messageReceived event:', msg)
+      try {
+        const normalized = {
+          roomCode: String(msg?.roomCode ?? ''),
+          playerId: String(msg?.playerId ?? ''),
+          playerName: String(msg?.playerName ?? ''),
+          text: String(msg?.text ?? ''),
+          timestamp: String(msg?.timestamp ?? new Date().toISOString())
+        }
+        this.onMessageReceived?.(normalized)
+      } catch (e) {
+        console.warn('[SignalR-GameControl] Invalid chat message payload:', e)
+      }
     })
 
     // HANDLER PRINCIPAL CON NORMALIZACIÓN Y DEBUG
@@ -973,6 +1005,9 @@ class SignalRService {
     this.onQuickJoinRedirect = undefined
     this.onQuickJoinTableRedirect = undefined
     this.onDetailedRoomInfo = undefined
+    
+    // Chat events
+    this.onMessageReceived = undefined
   }
 
   async verifyConnections(): Promise<boolean> {

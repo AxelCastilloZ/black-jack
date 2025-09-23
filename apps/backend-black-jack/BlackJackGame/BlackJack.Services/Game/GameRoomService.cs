@@ -466,9 +466,34 @@ public class GameRoomService : IGameRoomService
             // PASO 5: Gestionar sala vacía o actualizar
             if (room.PlayerCount == 0)
             {
-                _logger.LogInformation("[GameRoomService] Step 5: Room is now empty, deleting...");
-                await _gameRoomRepository.DeleteAsync(room);
-                _logger.LogInformation("[GameRoomService] ✅ Empty room deleted");
+                _logger.LogInformation("[GameRoomService] Step 5: Room is now empty");
+                if (room.Status == RoomStatus.InProgress)
+                {
+                    _logger.LogInformation("[GameRoomService] Empty room was InProgress, ending game state");
+                    room.EndGame();
+                }
+                await _gameRoomRepository.UpdateAsync(room);
+
+                // NUEVO: Sin jugadores -> resetear también la BlackjackTable asociada para que el lobby no muestre InProgress
+                try
+                {
+                    if (room.BlackjackTableId.HasValue)
+                    {
+                        var table = await _tableRepository.GetByIdAsync(room.BlackjackTableId.Value);
+                        if (table != null)
+                        {
+                            table.SetWaitingForPlayers();
+                            await _tableRepository.UpdateAsync(table);
+                            _logger.LogInformation("[GameRoomService] BlackjackTable {TableId} set to WaitingForPlayers due to empty room",
+                                table.Id);
+                        }
+                    }
+                }
+                catch (Exception tex)
+                {
+                    _logger.LogWarning(tex, "[GameRoomService] Could not reset BlackjackTable status when room became empty");
+                }
+                _logger.LogInformation("[GameRoomService] ✅ Empty room persisted with safe status");
             }
             else
             {
@@ -601,7 +626,7 @@ public class GameRoomService : IGameRoomService
     /// <summary>
     /// Agrega un jugador a una sala con PlayerEntityId correcto
     /// </summary>
-    private async Task AddPlayerToRoomAsync(GameRoom gameRoom, PlayerId playerId, Guid playerEntityId, string playerName, bool isViewer = false)
+    private Task AddPlayerToRoomAsync(GameRoom gameRoom, PlayerId playerId, Guid playerEntityId, string playerName, bool isViewer = false)
     {
         try
         {
@@ -627,6 +652,7 @@ public class GameRoomService : IGameRoomService
                 _logger.LogError("[GameRoomService] Failed to find RoomPlayer after adding to GameRoom for PlayerId: {PlayerId}", playerId);
                 throw new InvalidOperationException("Failed to add player to room");
             }
+            return Task.CompletedTask;
         }
         catch (Exception ex)
         {
@@ -1316,7 +1342,8 @@ public class GameRoomService : IGameRoomService
             // 4. Verificar estado de la sala (opcional - puede procesarse en cualquier estado)
             validation.RoomStatus = room.Status;
             validation.SeatedPlayersCount = seatedPlayersCount;
-            validation.MinBetPerRound = room.MinBetPerRound;
+            // Avoid possible null assignment
+            validation.MinBetPerRound = room.MinBetPerRound ?? new Money(0);
 
             return Result<AutoBetValidation>.Success(validation);
         }
@@ -1480,6 +1507,59 @@ public class GameRoomService : IGameRoomService
         {
             _logger.LogError(ex, "[GameRoomService] Error cleaning up empty rooms");
             return Result<int>.Failure($"Error en limpieza de salas vacías: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Fuerza la limpieza total de una sala: elimina RoomPlayers, termina juego y resetea mesa.
+    /// Útil para arreglar estados atascados por desconexiones abruptas.
+    /// </summary>
+    public async Task<Result> ForceCleanupRoomAsync(string roomCode)
+    {
+        try
+        {
+            var room = await _gameRoomRepository.GetRoomWithPlayersAsync(roomCode);
+            if (room == null)
+            {
+                return Result.Failure("Sala no encontrada");
+            }
+
+            // 1) Eliminar todos los RoomPlayers directamente en repositorio
+            var players = room.Players.Select(p => p.PlayerId).ToList();
+            foreach (var pid in players)
+            {
+                try { await _gameRoomRepository.RemoveRoomPlayerAsync(roomCode, pid); } catch { }
+            }
+
+            // 2) Terminar juego si estaba en progreso
+            if (room.Status == RoomStatus.InProgress)
+            {
+                room.EndGame();
+            }
+            await _gameRoomRepository.UpdateAsync(room);
+
+            // 3) Resetear mesa asociada
+            try
+            {
+                if (room.BlackjackTableId.HasValue)
+                {
+                    var table = await _tableRepository.GetByIdAsync(room.BlackjackTableId.Value);
+                    if (table != null)
+                    {
+                        table.SetWaitingForPlayers();
+                        await _tableRepository.UpdateAsync(table);
+                    }
+                }
+            }
+            catch { }
+
+            _logger.LogInformation("[GameRoomService] Force cleanup completed for room {RoomCode}", roomCode);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[GameRoomService] Error in ForceCleanupRoomAsync for room {RoomCode}", roomCode);
+            return Result.Failure($"Error limpiando sala: {ex.Message}");
         }
     }
 

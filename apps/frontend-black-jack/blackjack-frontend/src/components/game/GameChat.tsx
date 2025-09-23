@@ -1,5 +1,6 @@
 // src/components/game/GameChat.tsx
 import React, { useState, useCallback, useRef, useEffect } from 'react'
+import { signalRService } from '../../services/signalr'
 
 interface ChatMessage {
   id: string
@@ -11,31 +12,54 @@ interface ChatMessage {
 interface GameChatProps {
   currentUser: any
   isComponentMounted: boolean
+  roomCode?: string
 }
 
-export default function GameChat({ currentUser, isComponentMounted }: GameChatProps) {
+export default function GameChat({ currentUser, isComponentMounted, roomCode }: GameChatProps) {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatInput, setChatInput] = useState('')
+  const mountedRef = useRef(false)
 
-  const handleSendMessage = useCallback(() => {
-    if (!chatInput.trim() || !currentUser || !isComponentMounted) return
-    
-    const messageId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-    const newMessage: ChatMessage = {
-      id: messageId,
-      playerName: currentUser.displayName,
-      text: chatInput.trim(),
-      timestamp: new Date().toISOString()
-    }
-    
-    setChatMessages(prev => {
-      if (prev.some(m => m.id === newMessage.id)) {
-        return prev
+  useEffect(() => {
+    mountedRef.current = true
+    const handler = (msg: { roomCode: string; playerId: string; playerName: string; text: string; timestamp: string }) => {
+      if (!mountedRef.current) return
+      if (roomCode && msg.roomCode !== roomCode) return
+      const message: ChatMessage = {
+        id: `${msg.timestamp}-${msg.playerId}`,
+        playerName: msg.playerName,
+        text: msg.text,
+        timestamp: msg.timestamp
       }
-      return [...prev.slice(-9), newMessage]
-    })
-    setChatInput('')
-  }, [chatInput, currentUser, isComponentMounted])
+      setChatMessages(prev => [...prev.slice(-49), message])
+    }
+    signalRService.onMessageReceived = handler
+    return () => {
+      mountedRef.current = false
+      if (signalRService.onMessageReceived === handler) {
+        signalRService.onMessageReceived = undefined
+      }
+    }
+  }, [roomCode])
+
+  const handleSendMessage = useCallback(async () => {
+    const text = chatInput.trim()
+    if (!text || !currentUser || !isComponentMounted || !roomCode) return
+    try {
+      await signalRService.sendChatMessage(roomCode, text)
+      setChatInput('')
+    } catch (e) {
+      // Optimistic local echo on failure
+      const newMessage: ChatMessage = {
+        id: `${Date.now()}-local` ,
+        playerName: currentUser.displayName,
+        text,
+        timestamp: new Date().toISOString()
+      }
+      setChatMessages(prev => [...prev.slice(-49), newMessage])
+      setChatInput('')
+    }
+  }, [chatInput, currentUser, isComponentMounted, roomCode])
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
