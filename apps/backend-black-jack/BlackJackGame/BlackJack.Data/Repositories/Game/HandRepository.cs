@@ -1,4 +1,4 @@
-﻿// HandRepository.cs
+﻿
 using Microsoft.EntityFrameworkCore;
 using BlackJack.Domain.Models.Game;
 using BlackJack.Data.Context;
@@ -14,8 +14,7 @@ public class HandRepository : Repository<Hand>, IHandRepository
 
     public async Task<List<Hand>> GetPlayerHandsAsync(Guid playerId)
     {
-        // Esto requerirá una relación específica entre Player y Hand
-        // Por ahora, buscamos por los HandIds en Player
+      
         var player = await _context.Players
             .FirstOrDefaultAsync(p => p.Id == playerId);
 

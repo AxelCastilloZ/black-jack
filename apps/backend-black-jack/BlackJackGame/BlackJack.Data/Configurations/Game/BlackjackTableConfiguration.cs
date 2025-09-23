@@ -1,4 +1,4 @@
-﻿// BlackjackTableConfiguration.cs - LIMPIA (Spectators removidos)
+﻿
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using BlackJack.Domain.Models.Game;
@@ -40,25 +40,18 @@ public class BlackjackTableConfiguration : IEntityTypeConfiguration<BlackjackTab
                  .IsRequired();
         });
 
-        // El Deck se maneja en memoria, no se persiste
+       
         builder.Ignore(t => t.Deck);
 
-        // CORREGIDO: DealerHandId como Guid nullable
+        
         builder.Property(t => t.DealerHandId)
             .HasColumnName("DealerHandId")
             .IsRequired(false);
 
-        // LIMPIADO: Solo relación con Seats (Spectators removidos completamente)
         builder.HasMany(t => t.Seats)
             .WithOne()
             .HasForeignKey("TableId")
             .OnDelete(DeleteBehavior.Cascade);
-
-        // REMOVIDO: Ya no existe t.Spectators en BlackjackTable
-        // builder.HasMany(t => t.Spectators)  // ❌ REMOVIDO - causaba CS1061
-        //     .WithOne()
-        //     .HasForeignKey("TableId")
-        //     .OnDelete(DeleteBehavior.Cascade);
 
         // Índices para performance
         builder.HasIndex(t => t.Status);

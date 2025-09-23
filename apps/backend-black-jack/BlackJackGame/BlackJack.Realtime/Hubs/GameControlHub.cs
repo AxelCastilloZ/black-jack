@@ -1,4 +1,4 @@
-// BlackJack.Realtime/Hubs/GameControlHub.cs - ARCHIVO COMPLETO REFACTORIZADO
+// BlackJack.Realtime/Hubs/GameControlHub.cs - CON LOGS DE DEBUG PARA TURNOS
 using BlackJack.Data.Repositories.Game;
 using BlackJack.Domain.Enums;
 using BlackJack.Domain.Models.Game;
@@ -158,6 +158,11 @@ public class GameControlHub : BaseHub
                     // Actualizar la mesa con los cambios
                     await _tableRepository.UpdateAsync(table);
 
+                    // *** FIX CRÍTICO: TIMING PARA TRANSACCIONES ***
+                    // Permitir que las transacciones se completen antes de consultar HandIds
+                    await Task.Delay(150);
+                    _logger.LogInformation("[GameControlHub] Transaction delay completed, hands should be visible now");
+
                     _logger.LogInformation("[GameControlHub] Initial cards dealt successfully for {Count} players", seatedPlayers.Count);
                 }
                 else
@@ -289,6 +294,14 @@ public class GameControlHub : BaseHub
                 return;
             }
 
+            // ✅ NUEVA VALIDACIÓN: Verificar turno antes de permitir acción
+            if (!room.IsPlayerTurn(playerId))
+            {
+                var currentPlayerName = room.CurrentPlayer?.Name ?? "otro jugador";
+                await SendErrorAsync($"No es tu turno. Es el turno de {currentPlayerName}");
+                return;
+            }
+
             var actionResult = await _gameService.PlayerActionAsync(tableId, playerId, PlayerAction.Hit);
 
             if (actionResult.IsSuccess)
@@ -345,6 +358,14 @@ public class GameControlHub : BaseHub
             if (!room.IsPlayerInRoom(playerId))
             {
                 await SendErrorAsync("No estás en esta sala");
+                return;
+            }
+
+            // ✅ NUEVA VALIDACIÓN: Verificar turno antes de permitir acción
+            if (!room.IsPlayerTurn(playerId))
+            {
+                var currentPlayerName = room.CurrentPlayer?.Name ?? "otro jugador";
+                await SendErrorAsync($"No es tu turno. Es el turno de {currentPlayerName}");
                 return;
             }
 
@@ -431,6 +452,7 @@ public class GameControlHub : BaseHub
         }
     }
 
+    // ✅ MÉTODO CRÍTICO CON DEBUG: BuildGameStatePayload CON INFORMACIÓN DE TURNOS
     private async Task<object> BuildGameStatePayload(string roomCode, BlackjackTable table)
     {
         _logger.LogInformation("[GameControlHub] Building game state payload for room {RoomCode}", roomCode);
@@ -444,6 +466,23 @@ public class GameControlHub : BaseHub
         }
 
         var room = roomResult.Value;
+
+        // ✅ AGREGAR DEBUG LOGS TEMPORALES PARA TROUBLESHOOTING:
+        _logger.LogInformation("[GameControlHub] === DEBUG TURN INFO ===");
+        _logger.LogInformation("[GameControlHub] Room CurrentPlayerIndex: {Index}", room.CurrentPlayerIndex);
+        _logger.LogInformation("[GameControlHub] Room CurrentPlayer: {CurrentPlayer}",
+            room.CurrentPlayer?.Name ?? "NULL");
+        _logger.LogInformation("[GameControlHub] Room CurrentPlayer PlayerId: {PlayerId}",
+            room.CurrentPlayer?.PlayerId.Value);
+
+        var seatedPlayersDebug = room.Players.Where(p => p.IsSeated).OrderBy(p => p.SeatPosition).ToList();
+        _logger.LogInformation("[GameControlHub] Seated players ({Count}):", seatedPlayersDebug.Count);
+        for (int i = 0; i < seatedPlayersDebug.Count; i++)
+        {
+            _logger.LogInformation("[GameControlHub] Seated[{Index}]: {Name} (PlayerId: {PlayerId}, Seat: {Seat})",
+                i, seatedPlayersDebug[i].Name, seatedPlayersDebug[i].PlayerId.Value, seatedPlayersDebug[i].SeatPosition);
+        }
+        _logger.LogInformation("[GameControlHub] === END DEBUG ===");
 
         // Construir dealer payload
         object? dealerPayload = null;
@@ -476,24 +515,46 @@ public class GameControlHub : BaseHub
             _logger.LogInformation("[GameControlHub] Processing player {Name} at seat {Seat}",
                 roomPlayer.Name, roomPlayer.SeatPosition);
 
-            // Obtener el Player entity
+            // *** FIX CRÍTICO: OBTENER ENTIDAD PLAYER FRESCA CON AsNoTracking() ***
             Player? player = null;
+
+            // PRIMERA OPCIÓN: Intentar por PlayerEntityId (consulta fresca sin tracking)
             if (roomPlayer.PlayerEntityId != Guid.Empty)
             {
-                player = await _playerRepository.GetByIdAsync(roomPlayer.PlayerEntityId);
+                _logger.LogInformation("[GameControlHub] Attempting GetByIdFreshAsync for EntityId: {EntityId}", roomPlayer.PlayerEntityId);
+                player = await _playerRepository.GetByIdFreshAsync(roomPlayer.PlayerEntityId);
+            }
+
+            // SEGUNDA OPCIÓN: Intentar por PlayerId si la primera falló (consulta fresca sin tracking)
+            if (player == null)
+            {
+                _logger.LogInformation("[GameControlHub] Attempting GetByPlayerIdFreshAsync for PlayerId: {PlayerId}", roomPlayer.PlayerId.Value);
+                player = await _playerRepository.GetByPlayerIdFreshAsync(roomPlayer.PlayerId);
             }
 
             if (player == null)
             {
-                // Si no hay Player entity, intentar obtenerlo por PlayerId
-                player = await _playerRepository.GetByPlayerIdAsync(roomPlayer.PlayerId);
-            }
+                _logger.LogWarning("[GameControlHub] Player entity not found for {Name} (PlayerId: {PlayerId}, EntityId: {EntityId})",
+                    roomPlayer.Name, roomPlayer.PlayerId, roomPlayer.PlayerEntityId);
 
-            if (player == null)
-            {
-                _logger.LogWarning("[GameControlHub] Player entity not found for {Name}", roomPlayer.Name);
+                // AGREGAR PLAYER SIN MANO PARA DEBUGGING
+                playersPayload.Add(new
+                {
+                    playerId = roomPlayer.PlayerId.Value,
+                    name = roomPlayer.Name,
+                    seat = roomPlayer.SeatPosition!.Value,
+                    hand = (object?)null,
+                    // ✅ NUEVA INFORMACIÓN DE TURNOS
+                    isCurrentTurn = false,
+                    canMakeActions = false,
+                    availableActions = new string[] { },
+                    debug = "player_entity_not_found"
+                });
                 continue;
             }
+
+            _logger.LogInformation("[GameControlHub] Player {Name} has {HandCount} hands (HandIds: {HandIds})",
+                player.Name, player.HandIds.Count, string.Join(", ", player.HandIds));
 
             // Construir hand payload
             object? handPayload = null;
@@ -503,6 +564,9 @@ public class GameControlHub : BaseHub
                 var hand = await _handRepository.GetByIdAsync(firstHandId);
                 if (hand != null)
                 {
+                    _logger.LogInformation("[GameControlHub] Player {Name} hand found: {CardCount} cards, value {Value}",
+                        player.Name, hand.Cards.Count, hand.Value);
+
                     handPayload = new
                     {
                         handId = hand.Id,
@@ -514,25 +578,78 @@ public class GameControlHub : BaseHub
                         status = hand.Status.ToString()
                     };
                 }
+                else
+                {
+                    _logger.LogWarning("[GameControlHub] Hand {HandId} not found for player {Name}", firstHandId, player.Name);
+                }
             }
+            else
+            {
+                _logger.LogWarning("[GameControlHub] Player {Name} has no HandIds", player.Name);
+            }
+
+            // ✅ CALCULAR INFORMACIÓN DE TURNOS Y ACCIONES
+            var isCurrentTurn = room.IsPlayerTurn(roomPlayer.PlayerId);
+            var canMakeActions = isCurrentTurn &&
+                                 room.Status == RoomStatus.InProgress &&
+                                 table.Status == GameStatus.InProgress &&
+                                 handPayload != null;
+
+            // Determinar acciones disponibles
+            var availableActions = new List<string>();
+            if (canMakeActions && handPayload != null)
+            {
+                // Siempre se puede hacer Hit o Stand si es tu turno y tienes una mano activa
+                availableActions.Add("hit");
+                availableActions.Add("stand");
+
+                // TODO: Agregar lógica para Double, Split, etc. cuando se implementen
+            }
+
+            _logger.LogInformation("[GameControlHub] Player {Name}: isCurrentTurn={IsCurrentTurn}, canMakeActions={CanMakeActions}, actions={Actions}",
+                player.Name, isCurrentTurn, canMakeActions, string.Join(",", availableActions));
 
             playersPayload.Add(new
             {
                 playerId = roomPlayer.PlayerId.Value,
                 name = roomPlayer.Name,
                 seat = roomPlayer.SeatPosition!.Value,
-                hand = handPayload
+                hand = handPayload,
+                // ✅ INFORMACIÓN DE TURNOS CRÍTICA PARA EL FRONTEND
+                isCurrentTurn = isCurrentTurn,
+                canMakeActions = canMakeActions,
+                availableActions = availableActions.ToArray()
             });
         }
 
-        _logger.LogInformation("[GameControlHub] Built game state with {Count} players", playersPayload.Count);
+        // ✅ INFORMACIÓN GLOBAL DE TURNOS
+        var currentPlayerTurn = room.CurrentPlayer?.PlayerId.Value;
+        var gameCanMakeActions = room.Status == RoomStatus.InProgress && table.Status == GameStatus.InProgress;
+        var roundInfo = new
+        {
+            current = table.RoundNumber,
+            maximum = 5 // MAX_ROUNDS_PER_GAME constante
+        };
+
+        _logger.LogInformation("[GameControlHub] Built game state with {Count} players, currentTurn: {CurrentTurn}, round: {Round}/5",
+            playersPayload.Count, currentPlayerTurn, table.RoundNumber);
 
         return new
         {
             roomCode = roomCode,
             status = table.Status.ToString(),
             dealerHand = dealerPayload,
-            players = playersPayload
+            players = playersPayload,
+            // ✅ INFORMACIÓN DE TURNOS GLOBAL PARA EL FRONTEND
+            currentPlayerTurn = currentPlayerTurn,
+            canMakeActions = gameCanMakeActions,
+            roundInfo = roundInfo,
+            gameInfo = new
+            {
+                maxRounds = 5,
+                currentRound = table.RoundNumber,
+                isLastRound = table.RoundNumber >= 5
+            }
         };
     }
 

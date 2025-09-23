@@ -8,7 +8,7 @@ namespace BlackJackGame.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize] // Requiere autenticación para todas las acciones
+[Authorize] 
 public class GameRoomController : BaseController
 {
     private readonly IGameRoomService _gameRoomService;

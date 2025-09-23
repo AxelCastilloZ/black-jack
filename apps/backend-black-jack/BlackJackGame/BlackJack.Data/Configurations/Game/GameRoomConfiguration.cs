@@ -1,4 +1,4 @@
-﻿// GameRoomConfiguration.cs - SIMPLIFICADO Y CORREGIDO
+﻿
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using BlackJack.Domain.Models.Game;
@@ -21,11 +21,11 @@ public class GameRoomConfiguration : IEntityTypeConfiguration<GameRoom>
             .IsRequired()
             .HasMaxLength(100);
 
-        // ✅ CORREGIDO: Usar HasConversion en lugar de OwnsOne
+       
         builder.Property(g => g.HostPlayerId)
             .HasConversion(
-                playerId => playerId.Value,       // Convertir PlayerId a Guid para DB
-                value => PlayerId.From(value)     // Convertir Guid a PlayerId desde DB
+                playerId => playerId.Value,     
+                value => PlayerId.From(value)    
             )
             .HasColumnName("HostPlayerId")
             .HasColumnType("uniqueidentifier")

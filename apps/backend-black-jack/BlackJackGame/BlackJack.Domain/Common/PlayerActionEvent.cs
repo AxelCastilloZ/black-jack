@@ -1,4 +1,4 @@
-﻿// PlayerActionEvent.cs
+﻿
 using BlackJack.Domain.Enums;
 using BlackJack.Domain.Models.Users;
 

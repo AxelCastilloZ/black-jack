@@ -52,16 +52,11 @@ public class ApplicationDbContext : DbContext
         modelBuilder.Ignore<SpectatorLeftEvent>();
         modelBuilder.Ignore<TurnChangedEvent>();
 
-        // 2. Ignorar SOLO Value Objects que no se usan en entities
+        
         modelBuilder.Ignore<Card>();
         modelBuilder.Ignore<Deck>();
 
-        // FIX CRÍTICO: NO ignorar PlayerId, Money, etc. porque SÍ se usan en entities
-        // Estos se manejan con HasConversion en las configuraciones específicas
-        // modelBuilder.Ignore<PlayerId>();  // REMOVIDO - causaba el conflicto
-        // modelBuilder.Ignore<Money>();     // REMOVIDO - se usa en GameRoom.MinBetPerRound
-
-        // Ignorar Value Objects que realmente no se persisten
+     
         modelBuilder.Ignore<Bet>();
         modelBuilder.Ignore<Payout>();
 
@@ -71,15 +66,10 @@ public class ApplicationDbContext : DbContext
 
     private static void ConfigureSpecialMappings(ModelBuilder modelBuilder)
     {
-        // NUEVO: Configuración global para PlayerId si no está manejado por configuraciones específicas
-        // Esto asegura consistencia en todo el proyecto
-
-        // Configurar query splitting para mejorar performance con múltiples Includes
-        // Esto resuelve el warning sobre QuerySplittingBehavior
+       
         modelBuilder.HasDefaultSchema("dbo");
 
-        // CRÍTICO: Configurar comportamiento de query splitting para evitar problemas de performance
-        // con múltiples collections (Players y Spectators en GameRoom)
+       
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
             // Configurar tabla nombres consistentes
@@ -97,8 +87,7 @@ public class ApplicationDbContext : DbContext
             }
         }
 
-        // NUEVO: Configuración específica para prevenir ReadOnly collections
-        // Asegurar que las navigation properties se manejen correctamente
+       
         modelBuilder.Entity<GameRoom>()
             .Navigation(e => e.Players)
             .EnableLazyLoading(false); // Evitar lazy loading problemático
@@ -112,7 +101,7 @@ public class ApplicationDbContext : DbContext
     {
         base.OnConfiguring(optionsBuilder);
 
-        // NUEVO: Configuración para debugging y performance
+       
         if (!optionsBuilder.IsConfigured)
         {
             // Solo para debugging - remover en producción
@@ -120,7 +109,7 @@ public class ApplicationDbContext : DbContext
                          .EnableDetailedErrors();
         }
 
-        // CRÍTICO: Configurar query splitting behavior para múltiples collections
+       
         optionsBuilder.UseSqlServer(o =>
         {
             o.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);

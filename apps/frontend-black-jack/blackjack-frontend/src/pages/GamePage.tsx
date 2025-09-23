@@ -1,4 +1,4 @@
-// src/pages/GamePage.tsx - ARCHIVO COMPLETO CORREGIDO
+// src/pages/GamePage.tsx - ARCHIVO COMPLETO CORREGIDO CON TURNOS
 
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
@@ -38,7 +38,7 @@ interface Hand {
   status: 'Active' | 'Stand' | 'Bust' | 'Blackjack'
 }
 
-// GameState fusionado: auto-betting + cartas
+// GameState fusionado: auto-betting + cartas + TURNOS
 interface GameState {
   roomCode: string
   name: string
@@ -47,7 +47,7 @@ interface GameState {
   maxPlayers: number
   players: RoomPlayer[]
   spectators: any[]
-  currentPlayerTurn?: string
+  currentPlayerTurn?: string  // ✅ AGREGADO: GUID del jugador actual
   canStart: boolean
   createdAt: string
   // Auto-betting
@@ -57,6 +57,8 @@ interface GameState {
   dealerHand?: Hand | null
   playerHand?: Hand | null
   playersWithHands?: Array<RoomPlayer & { hand?: Hand | null }>
+  // Game info
+  gameStatus?: string  // Status del juego desde el backend
 }
 
 interface RoomPlayer {
@@ -70,6 +72,10 @@ interface RoomPlayer {
   currentBalance?: number
   totalBetThisSession?: number
   canAffordBet?: boolean
+  // Turn info
+  isCurrentTurn?: boolean
+  canMakeActions?: boolean
+  availableActions?: string[]
 }
 
 // Estados de Auto-Betting
@@ -219,6 +225,7 @@ export default function GamePage() {
     console.log('[GamePage] Room info received via GameRoomHub:', roomData)
     setGameState(prev => ({
       ...roomData,
+      currentPlayerTurn: roomData.currentPlayerTurn || prev?.currentPlayerTurn,  // ✅ PRESERVE TURN
       playerHand: prev?.playerHand || null,
       playersWithHands: prev?.playersWithHands || [],
       dealerHand: prev?.dealerHand || null
@@ -232,6 +239,7 @@ export default function GamePage() {
     console.log('[GamePage] Room created via GameRoomHub:', roomData)
     setGameState(prev => ({
       ...roomData,
+      currentPlayerTurn: roomData.currentPlayerTurn || prev?.currentPlayerTurn,  // ✅ PRESERVE TURN
       playerHand: prev?.playerHand || null,
       playersWithHands: prev?.playersWithHands || [],
       dealerHand: prev?.dealerHand || null
@@ -245,6 +253,7 @@ export default function GamePage() {
     console.log('[GamePage] Room joined via GameRoomHub:', roomData)
     setGameState(prev => ({
       ...roomData,
+      currentPlayerTurn: roomData.currentPlayerTurn || prev?.currentPlayerTurn,  // ✅ PRESERVE TURN
       playerHand: prev?.playerHand || null,
       playersWithHands: prev?.playersWithHands || [],
       dealerHand: prev?.dealerHand || null
@@ -257,6 +266,7 @@ export default function GamePage() {
     console.log('[GamePage] Room info updated via GameRoomHub:', roomData)
     setGameState(prev => ({
       ...roomData,
+      currentPlayerTurn: roomData.currentPlayerTurn || prev?.currentPlayerTurn,  // ✅ PRESERVE TURN
       autoBettingActive: roomData.autoBettingActive !== undefined ? roomData.autoBettingActive : prev?.autoBettingActive,
       minBetPerRound: roomData.minBetPerRound !== undefined ? roomData.minBetPerRound : prev?.minBetPerRound,
       playerHand: prev?.playerHand || null,
@@ -272,7 +282,10 @@ export default function GamePage() {
     console.log('[GamePage] Seat joined via GameRoomHub:', response)
     const roomInfo = response?.roomInfo || response?.data?.roomInfo || response?.RoomInfo
     if (roomInfo) {
-      setGameState(roomInfo)
+      setGameState(prev => ({
+        ...roomInfo,
+        currentPlayerTurn: roomInfo.currentPlayerTurn || prev?.currentPlayerTurn  // ✅ PRESERVE TURN
+      }))
     }
     setError(null)
     setSeatClickLoading(null)
@@ -284,7 +297,10 @@ export default function GamePage() {
     console.log('[GamePage] Seat left via GameRoomHub:', response)
     const roomData = response?.data || response
     if (roomData) {
-      setGameState(roomData)
+      setGameState(prev => ({
+        ...roomData,
+        currentPlayerTurn: roomData.currentPlayerTurn || prev?.currentPlayerTurn  // ✅ PRESERVE TURN
+      }))
     }
     setError(null)
     setSeatClickLoading(null)
@@ -343,27 +359,35 @@ export default function GamePage() {
     })
   }, [])
 
-  // CORREGIDO: Game state changed viene de GameControlHub
+  // ✅ CORREGIDO: Game state changed viene de GameControlHub con currentPlayerTurn
   const handleGameStateChanged = useCallback((newState: any) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] Game state changed via GameControlHub:', newState)
+    
+    console.log('[GamePage] === GAME STATE CHANGED ===')
+    console.log('[GamePage] currentPlayerTurn from backend:', newState?.currentPlayerTurn)
+    console.log('[GamePage] gameStatus:', newState?.status)
+    
     if (newState?.players) {
       console.log('[GamePage] Players with hands:', newState.players.map((p: any) => ({
         playerId: p.playerId,
         name: p.name,
         seat: p.seat,
         hasHand: !!p.hand,
-        handValue: p.hand?.value
+        handValue: p.hand?.value,
+        isCurrentTurn: p.isCurrentTurn,
+        canMakeActions: p.canMakeActions,
+        availableActions: p.availableActions
       })))
     }
     
     setGameState(prev => {
       const prevState: any = prev || {}
 
-      // CORREGIDO: Usar el status real del backend, no hardcodear
+      // Usar el status real del backend
       const status = newState?.status || prevState.status || 'WaitingForPlayers'
+      const gameStatus = newState?.status || prevState.gameStatus
       
-      // CORREGIDO: canStart debe ser false cuando el juego está InProgress
+      // canStart debe ser false cuando el juego está InProgress
       const canStart = status === 'InProgress' ? false : (prevState.canStart ?? true)
 
       const dealerHand = newState?.dealerHand || prevState.dealerHand || null
@@ -382,6 +406,7 @@ export default function GamePage() {
               value: me.hand.value || 0,
               status: me.hand.status || 'Active'
             }
+            console.log('[GamePage] Found my hand:', playerHand)
           }
         }
 
@@ -396,13 +421,17 @@ export default function GamePage() {
           } : null,
           currentBalance: p.currentBalance || 0,
           totalBetThisSession: p.totalBetThisSession || 0,
-          canAffordBet: p.canAffordBet || false
+          canAffordBet: p.canAffordBet || false,
+          isCurrentTurn: p.isCurrentTurn || false,
+          canMakeActions: p.canMakeActions || false,
+          availableActions: p.availableActions || []
         }))
       }
 
       const newGameState = {
         ...prevState,
-        status: status,  // CORREGIDO: Usar status real del backend
+        status: status,
+        gameStatus: gameStatus,
         canStart,
         dealerHand: dealerHand ? {
           id: dealerHand.handId || dealerHand.id,
@@ -413,28 +442,19 @@ export default function GamePage() {
         playerHand,
         playersWithHands,
         minBetPerRound: newState?.minBetPerRound || prevState.minBetPerRound,
-        autoBettingActive: newState?.autoBettingActive !== undefined ? newState.autoBettingActive : prevState.autoBettingActive
+        autoBettingActive: newState?.autoBettingActive !== undefined ? newState.autoBettingActive : prevState.autoBettingActive,
+        // ✅ CRÍTICO: GUARDAR currentPlayerTurn DEL BACKEND
+        currentPlayerTurn: newState?.currentPlayerTurn || prevState.currentPlayerTurn
       } as any
 
-      // Debugging para GameTable
-      console.log('[GamePage] New game state for GameTable:', {
-        status: newGameState.status,
-        canStart: newGameState.canStart,
-        hasPlayerHand: !!newGameState.playerHand,
-        playerHandStatus: newGameState.playerHand?.status
-      })
-
-      if (!newGameState.playerHand && currentUserId && Array.isArray(newState?.players)) {
-        const me = newState.players.find((p: any) => p.playerId === currentUserId)
-        if (me?.hand) {
-          newGameState.playerHand = {
-            id: me.hand.handId || me.hand.id,
-            cards: me.hand.cards || [],
-            value: me.hand.value || 0,
-            status: me.hand.status || 'Active'
-          }
-        }
-      }
+      // DEBUG: Verificar que se guardó el turno
+      console.log('[GamePage] === TURN DEBUG ===')
+      console.log('[GamePage] newState.currentPlayerTurn:', newState?.currentPlayerTurn)
+      console.log('[GamePage] prevState.currentPlayerTurn:', prevState.currentPlayerTurn)
+      console.log('[GamePage] SAVED currentPlayerTurn:', newGameState.currentPlayerTurn)
+      console.log('[GamePage] My ID:', currentUserId)
+      console.log('[GamePage] Is it my turn?:', newGameState.currentPlayerTurn === currentUserId)
+      console.log('[GamePage] === END TURN DEBUG ===')
 
       return newGameState
     })
@@ -694,6 +714,7 @@ export default function GamePage() {
 
     // Listeners de juego y cartas (GameControlHub)
     signalRService.onGameStateChanged = handleGameStateChanged
+    signalRService.onGameStateUpdated = handleGameStateChanged  // ✅ AGREGADO: Escuchar ambos eventos
 
     // Listeners de auto-betting (GameControlHub)
     signalRService.onAutoBetProcessed = handleAutoBetProcessed
@@ -722,6 +743,7 @@ export default function GamePage() {
       signalRService.onPlayerJoined = undefined
       signalRService.onPlayerLeft = undefined
       signalRService.onGameStateChanged = undefined
+      signalRService.onGameStateUpdated = undefined  // ✅ AGREGADO
       signalRService.onError = undefined
       
       signalRService.onAutoBetProcessed = undefined
@@ -775,7 +797,7 @@ export default function GamePage() {
         
         const playerName = currentUser.current?.displayName || (isViewer ? 'Viewer' : 'Jugador')
         
-        // CORREGIDO: Usar métodos exactos del signalRService actualizado
+        // Usar métodos exactos del signalRService actualizado
         if (isViewer) {
           const request: JoinRoomRequest = {
             roomCode: tableId,
@@ -877,7 +899,7 @@ export default function GamePage() {
       console.log('[GamePage] === EXPLICIT LEAVE ROOM ===')
       console.log('[GamePage] RoomCode:', gameState.roomCode)
       
-      // CORREGIDO: Usar GameRoomHub.leaveRoom con método exacto
+      // Usar GameRoomHub.leaveRoom con método exacto
       await signalRService.leaveRoom(gameState.roomCode)
       
       navigate({ to: '/lobby' })
@@ -887,7 +909,7 @@ export default function GamePage() {
     }
   }, [gameState?.roomCode, navigate])
 
-  // CORREGIDO: Start round usando GameControlHub
+  // Start round usando GameControlHub
   const handleStartRound = useCallback(async () => {
     if (isStartingRound) return
     if (!connectionStatus.gameControl || !gameState?.roomCode || !isComponentMounted.current) {
@@ -900,7 +922,7 @@ export default function GamePage() {
       setError(null)
       console.log('[GamePage] Starting game via GameControlHub')
       await signalRService.startGame(gameState.roomCode)
-      // ELIMINADO: No forzar status localmente, el backend enviará gameStateUpdated
+      // No forzar status localmente, el backend enviará gameStateUpdated
       signalRService.getRoomInfo(gameState.roomCode).catch(() => {})
     } catch (error) {
       if (!isComponentMounted.current) return
@@ -946,7 +968,7 @@ export default function GamePage() {
     }
   }, [gameState?.roomCode])
 
-  // NUEVOS: Handlers para asientos usando métodos exactos del signalRService
+  // Handlers para asientos usando métodos exactos del signalRService
   const handleJoinSeat = useCallback(async (position: number) => {
     if (!gameState?.roomCode || seatClickLoading !== null) return
     
@@ -995,6 +1017,22 @@ export default function GamePage() {
   // Computed values
   const currentPlayer = gameState?.players?.find(p => p.playerId === currentUser.current?.id)
   const isPlayerSeated = !!currentPlayer && currentPlayer.position >= 0
+
+  // ✅ CRÍTICO: Calcular isPlayerTurn correctamente
+  const isPlayerTurn = gameState?.currentPlayerTurn === currentUser.current?.id
+
+  // DEBUG para verificar turnos
+  useEffect(() => {
+    if (gameState?.currentPlayerTurn) {
+      console.log('[GamePage] === TURN CHECK ===')
+      console.log('[GamePage] currentPlayerTurn:', gameState.currentPlayerTurn)
+      console.log('[GamePage] currentUser.id:', currentUser.current?.id)
+      console.log('[GamePage] isPlayerTurn:', isPlayerTurn)
+      console.log('[GamePage] gameStatus:', gameState.status)
+      console.log('[GamePage] playerHand:', gameState.playerHand)
+      console.log('[GamePage] === END TURN CHECK ===')
+    }
+  }, [gameState?.currentPlayerTurn, isPlayerTurn])
 
   // Loading screen
   if (!connectionStatus.overall || isJoining) {
@@ -1101,7 +1139,7 @@ export default function GamePage() {
         </div>
       )}
 
-      {/* Game Table */}
+      {/* Game Table - CON isPlayerTurn CALCULADO CORRECTAMENTE */}
       <GameTable
         gameStatus={gameState?.status}
         canStart={gameState?.canStart || false}
@@ -1113,17 +1151,17 @@ export default function GamePage() {
         onStartRound={handleStartRound}
         dealerHand={gameState?.dealerHand}
         playerHand={gameState?.playerHand}
-        isPlayerTurn={gameState?.currentPlayerTurn === currentPlayer?.playerId}
+        isPlayerTurn={isPlayerTurn}  // ✅ AHORA PASA EL VALOR CORRECTO
         onHit={handleHit}
         onStand={handleStand}
       />
 
-      {/* Game Seats - ACTUALIZADO con handlers exactos */}
+      {/* Game Seats */}
       <GameSeats
         players={gameState?.players || []}
         roomCode={gameState?.roomCode}
         gameStatus={gameState?.status}
-        currentPlayerTurn={gameState?.currentPlayerTurn}
+        currentPlayerTurn={gameState?.currentPlayerTurn}  // ✅ AHORA PASA EL GUID
         currentUser={currentUser.current}
         isViewer={isViewer}
         seatHubConnected={connectionStatus.gameRoom}
@@ -1134,7 +1172,6 @@ export default function GamePage() {
         autoBettingActive={isAutoBettingActive()}
         minBetPerRound={gameState?.minBetPerRound || 0}
         playersWithHands={gameState?.playersWithHands || []}
-        // NUEVOS: Handlers exactos para asientos
         onJoinSeat={handleJoinSeat}
         onLeaveSeat={handleLeaveSeat}
       />

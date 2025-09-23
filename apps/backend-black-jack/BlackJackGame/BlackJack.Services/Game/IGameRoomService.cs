@@ -1,4 +1,4 @@
-﻿// BlackJack.Services/Game/IGameRoomService.cs - INTERFAZ ACTUALIZADA CON AUTO-BETTING
+﻿
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Services.Common;

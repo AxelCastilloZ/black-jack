@@ -1,4 +1,4 @@
-﻿// PlayerJoinedRoomEvent.cs
+﻿
 using BlackJack.Domain.Common;
 using BlackJack.Domain.Models.Users;
 

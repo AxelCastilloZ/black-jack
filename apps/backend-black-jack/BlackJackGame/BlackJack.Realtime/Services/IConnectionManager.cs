@@ -1,4 +1,4 @@
-﻿// IConnectionManager.cs - INTERFAZ ACTUALIZADA con métodos de reconexión mejorados
+﻿
 using BlackJack.Domain.Models.Users;
 using BlackJack.Realtime.Models;
 

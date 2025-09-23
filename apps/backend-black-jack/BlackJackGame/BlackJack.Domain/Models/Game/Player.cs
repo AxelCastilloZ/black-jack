@@ -6,14 +6,13 @@ namespace BlackJack.Domain.Models.Users;
 
 public class Player : BaseEntity
 {
-    private readonly List<Guid> _handIds = new();
-
     // Constructor sin parámetros para EF Core
     protected Player() : base()
     {
         PlayerId = PlayerId.New();
         Name = string.Empty;
         Balance = new Money(0m);
+        HandIds = new List<Guid>();
     }
 
     // Constructor principal  
@@ -25,6 +24,7 @@ public class Player : BaseEntity
         Balance = balance ?? throw new ArgumentNullException(nameof(balance));
         CurrentBet = null;
         IsActive = false;
+        HandIds = new List<Guid>();
     }
 
     // Propiedades principales
@@ -34,8 +34,8 @@ public class Player : BaseEntity
     public Bet? CurrentBet { get; private set; }
     public bool IsActive { get; private set; }
 
-    // Para navegación con EF Core - las manos reales se cargarán por separado
-    public IReadOnlyList<Guid> HandIds => _handIds.AsReadOnly();
+    // *** FIX CRÍTICO: HandIds ahora es una propiedad pública para Entity Framework ***
+    public List<Guid> HandIds { get; private set; } = new();
 
     // Propiedades calculadas
     public bool HasActiveBet => CurrentBet != null;
@@ -65,19 +65,19 @@ public class Player : BaseEntity
         UpdateTimestamp();
     }
 
-    // Métodos de manos - ahora solo manejamos IDs
+    // Métodos de manos - ahora trabajan directamente con la propiedad HandIds
     public void AddHandId(Guid handId)
     {
-        if (!_handIds.Contains(handId))
+        if (!HandIds.Contains(handId))
         {
-            _handIds.Add(handId);
+            HandIds.Add(handId);
             UpdateTimestamp();
         }
     }
 
     public void RemoveHandId(Guid handId)
     {
-        if (_handIds.Remove(handId))
+        if (HandIds.Remove(handId))
         {
             UpdateTimestamp();
         }
@@ -85,7 +85,7 @@ public class Player : BaseEntity
 
     public void ClearHandIds()
     {
-        _handIds.Clear();
+        HandIds.Clear();
         UpdateTimestamp();
     }
 
