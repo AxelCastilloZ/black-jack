@@ -2,13 +2,17 @@
 import React from 'react'
 
 interface GameTableProps {
-  gameStatus?: 'WaitingForPlayers' | 'InProgress' | 'Finished'
+  gameStatus?: string
   canStart: boolean
   isPlayerSeated: boolean
   isViewer: boolean
   isCurrentPlayerHost: boolean
   gameControlConnected: boolean
-  onStartRound: () => Promise<void>
+  onStartRound: () => void
+  // AGREGAR ESTAS:
+  onProcessAutoBets?: () => void          
+  autoBettingActive?: boolean              
+  autoBettingProcessing?: boolean          
 }
 
 export default function GameTable({

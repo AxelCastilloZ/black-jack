@@ -1,4 +1,4 @@
-﻿// SignalRNotificationService.cs - CORREGIDO COMPLETAMENTE PARA ENVIAR A MÚLTIPLES HUBS + AUTO-BETTING
+﻿// SignalRNotificationService.cs - SIMPLIFICADO PARA USAR SOLO 2 HUBS + AUTO-BETTING
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using BlackJack.Domain.Models.Users;
@@ -9,33 +9,18 @@ namespace BlackJack.Realtime.Services;
 
 public class SignalRNotificationService : ISignalRNotificationService
 {
-    private readonly IHubContext<GameHub> _gameHubContext;
-    private readonly IHubContext<RoomHub> _roomHubContext;
-    private readonly IHubContext<SeatHub> _seatHubContext;
-    private readonly IHubContext<SpectatorHub> _spectatorHubContext;
-    private readonly IHubContext<ConnectionHub> _connectionHubContext;
-    private readonly IHubContext<GameControlHub> _gameControlHubContext;
-    private readonly IHubContext<LobbyHub> _lobbyHubContext;
+    private readonly IHubContext<GameRoomHub> _gameRoomHubContext;  // Hub principal para salas
+    private readonly IHubContext<LobbyHub> _lobbyHubContext;        // Hub para lobby
     private readonly IConnectionManager _connectionManager;
     private readonly ILogger<SignalRNotificationService> _logger;
 
     public SignalRNotificationService(
-        IHubContext<GameHub> gameHubContext,
-        IHubContext<RoomHub> roomHubContext,
-        IHubContext<SeatHub> seatHubContext,
-        IHubContext<SpectatorHub> spectatorHubContext,
-        IHubContext<ConnectionHub> connectionHubContext,
-        IHubContext<GameControlHub> gameControlHubContext,
+        IHubContext<GameRoomHub> gameRoomHubContext,
         IHubContext<LobbyHub> lobbyHubContext,
         IConnectionManager connectionManager,
         ILogger<SignalRNotificationService> logger)
     {
-        _gameHubContext = gameHubContext;
-        _roomHubContext = roomHubContext;
-        _seatHubContext = seatHubContext;
-        _spectatorHubContext = spectatorHubContext;
-        _connectionHubContext = connectionHubContext;
-        _gameControlHubContext = gameControlHubContext;
+        _gameRoomHubContext = gameRoomHubContext;
         _lobbyHubContext = lobbyHubContext;
         _connectionManager = connectionManager;
         _logger = logger;
@@ -49,24 +34,14 @@ public class SignalRNotificationService : ISignalRNotificationService
         {
             var groupName = HubMethodNames.Groups.GetRoomGroup(roomCode);
 
-            _logger.LogInformation("[SignalRNotification] === SENDING EVENT TO ALL HUBS ===");
+            _logger.LogInformation("[SignalRNotification] === SENDING EVENT TO GAME ROOM HUB ===");
             _logger.LogInformation("[SignalRNotification] Method: {MethodName}, RoomCode: {RoomCode}, Group: {GroupName}",
                 methodName, roomCode, groupName);
 
-            // CRÍTICO: Enviar a TODOS los hubs donde pueden estar los usuarios
-            var tasks = new List<Task>
-            {
-                _gameHubContext.Clients.Group(groupName).SendAsync(methodName, data),
-                _roomHubContext.Clients.Group(groupName).SendAsync(methodName, data),
-                _seatHubContext.Clients.Group(groupName).SendAsync(methodName, data),
-                _spectatorHubContext.Clients.Group(groupName).SendAsync(methodName, data),
-                _connectionHubContext.Clients.Group(groupName).SendAsync(methodName, data),
-                _gameControlHubContext.Clients.Group(groupName).SendAsync(methodName, data)
-            };
+            // SIMPLIFICADO: Solo enviar al GameRoomHub (en lugar de 6 hubs)
+            await _gameRoomHubContext.Clients.Group(groupName).SendAsync(methodName, data);
 
-            await Task.WhenAll(tasks);
-
-            _logger.LogInformation("[SignalRNotification] ✅ Successfully sent {MethodName} to room {RoomCode} via ALL HUBS",
+            _logger.LogInformation("[SignalRNotification] ✅ Successfully sent {MethodName} to room {RoomCode} via GameRoomHub",
                 methodName, roomCode);
         }
         catch (Exception ex)
@@ -88,23 +63,13 @@ public class SignalRNotificationService : ISignalRNotificationService
         {
             var groupName = HubMethodNames.Groups.GetRoomGroup(roomCode);
 
-            _logger.LogInformation("[SignalRNotification] Sending {MethodName} to room {RoomCode} except connection {ConnectionId} via ALL HUBS",
+            _logger.LogInformation("[SignalRNotification] Sending {MethodName} to room {RoomCode} except connection {ConnectionId} via GameRoomHub",
                 methodName, roomCode, excludeConnectionId);
 
-            // CRÍTICO: Enviar a TODOS los hubs excluyendo conexión específica
-            var tasks = new List<Task>
-            {
-                _gameHubContext.Clients.GroupExcept(groupName, excludeConnectionId).SendAsync(methodName, data),
-                _roomHubContext.Clients.GroupExcept(groupName, excludeConnectionId).SendAsync(methodName, data),
-                _seatHubContext.Clients.GroupExcept(groupName, excludeConnectionId).SendAsync(methodName, data),
-                _spectatorHubContext.Clients.GroupExcept(groupName, excludeConnectionId).SendAsync(methodName, data),
-                _connectionHubContext.Clients.GroupExcept(groupName, excludeConnectionId).SendAsync(methodName, data),
-                _gameControlHubContext.Clients.GroupExcept(groupName, excludeConnectionId).SendAsync(methodName, data)
-            };
+            // SIMPLIFICADO: Solo enviar al GameRoomHub
+            await _gameRoomHubContext.Clients.GroupExcept(groupName, excludeConnectionId).SendAsync(methodName, data);
 
-            await Task.WhenAll(tasks);
-
-            _logger.LogDebug("[SignalRNotification] Sent {MethodName} to room {RoomCode} except {ConnectionId} via ALL HUBS",
+            _logger.LogDebug("[SignalRNotification] Sent {MethodName} to room {RoomCode} except {ConnectionId} via GameRoomHub",
                 methodName, roomCode, excludeConnectionId);
         }
         catch (Exception ex)
@@ -122,23 +87,13 @@ public class SignalRNotificationService : ISignalRNotificationService
             var playerConnections = await _connectionManager.GetConnectionsForPlayerAsync(excludePlayerId);
             var groupName = HubMethodNames.Groups.GetRoomGroup(roomCode);
 
-            _logger.LogInformation("[SignalRNotification] Sending {MethodName} to room {RoomCode} except player {PlayerId} ({ConnectionCount} connections) via ALL HUBS",
+            _logger.LogInformation("[SignalRNotification] Sending {MethodName} to room {RoomCode} except player {PlayerId} ({ConnectionCount} connections) via GameRoomHub",
                 methodName, roomCode, excludePlayerId, playerConnections.Count);
 
-            // CRÍTICO: Enviar a TODOS los hubs excluyendo conexiones del jugador
-            var tasks = new List<Task>
-            {
-                _gameHubContext.Clients.GroupExcept(groupName, playerConnections).SendAsync(methodName, data),
-                _roomHubContext.Clients.GroupExcept(groupName, playerConnections).SendAsync(methodName, data),
-                _seatHubContext.Clients.GroupExcept(groupName, playerConnections).SendAsync(methodName, data),
-                _spectatorHubContext.Clients.GroupExcept(groupName, playerConnections).SendAsync(methodName, data),
-                _connectionHubContext.Clients.GroupExcept(groupName, playerConnections).SendAsync(methodName, data),
-                _gameControlHubContext.Clients.GroupExcept(groupName, playerConnections).SendAsync(methodName, data)
-            };
+            // SIMPLIFICADO: Solo enviar al GameRoomHub
+            await _gameRoomHubContext.Clients.GroupExcept(groupName, playerConnections).SendAsync(methodName, data);
 
-            await Task.WhenAll(tasks);
-
-            _logger.LogDebug("[SignalRNotification] Sent {MethodName} to room {RoomCode} except player {PlayerId} via ALL HUBS",
+            _logger.LogDebug("[SignalRNotification] Sent {MethodName} to room {RoomCode} except player {PlayerId} via GameRoomHub",
                 methodName, roomCode, excludePlayerId);
         }
         catch (Exception ex)
@@ -160,23 +115,13 @@ public class SignalRNotificationService : ISignalRNotificationService
             var connections = await _connectionManager.GetConnectionsForPlayerAsync(playerId);
             if (connections.Any())
             {
-                _logger.LogInformation("[SignalRNotification] Sending {MethodName} to player {PlayerId} ({ConnectionCount} connections) via ALL HUBS",
+                _logger.LogInformation("[SignalRNotification] Sending {MethodName} to player {PlayerId} ({ConnectionCount} connections) via GameRoomHub",
                     methodName, playerId, connections.Count);
 
-                // CRÍTICO: Enviar a TODOS los hubs donde puede estar el jugador
-                var tasks = new List<Task>
-                {
-                    _gameHubContext.Clients.Clients(connections).SendAsync(methodName, data),
-                    _roomHubContext.Clients.Clients(connections).SendAsync(methodName, data),
-                    _seatHubContext.Clients.Clients(connections).SendAsync(methodName, data),
-                    _spectatorHubContext.Clients.Clients(connections).SendAsync(methodName, data),
-                    _connectionHubContext.Clients.Clients(connections).SendAsync(methodName, data),
-                    _gameControlHubContext.Clients.Clients(connections).SendAsync(methodName, data)
-                };
+                // SIMPLIFICADO: Solo enviar al GameRoomHub
+                await _gameRoomHubContext.Clients.Clients(connections).SendAsync(methodName, data);
 
-                await Task.WhenAll(tasks);
-
-                _logger.LogDebug("[SignalRNotification] Sent {MethodName} to player {PlayerId} via ALL HUBS", methodName, playerId);
+                _logger.LogDebug("[SignalRNotification] Sent {MethodName} to player {PlayerId} via GameRoomHub", methodName, playerId);
             }
             else
             {
@@ -200,23 +145,13 @@ public class SignalRNotificationService : ISignalRNotificationService
     {
         try
         {
-            _logger.LogInformation("[SignalRNotification] Sending {MethodName} to connection {ConnectionId} via ALL HUBS",
+            _logger.LogInformation("[SignalRNotification] Sending {MethodName} to connection {ConnectionId} via GameRoomHub",
                 methodName, connectionId);
 
-            // CRÍTICO: Enviar a TODOS los hubs para asegurar entrega
-            var tasks = new List<Task>
-            {
-                _gameHubContext.Clients.Client(connectionId).SendAsync(methodName, data),
-                _roomHubContext.Clients.Client(connectionId).SendAsync(methodName, data),
-                _seatHubContext.Clients.Client(connectionId).SendAsync(methodName, data),
-                _spectatorHubContext.Clients.Client(connectionId).SendAsync(methodName, data),
-                _connectionHubContext.Clients.Client(connectionId).SendAsync(methodName, data),
-                _gameControlHubContext.Clients.Client(connectionId).SendAsync(methodName, data)
-            };
+            // SIMPLIFICADO: Solo enviar al GameRoomHub
+            await _gameRoomHubContext.Clients.Client(connectionId).SendAsync(methodName, data);
 
-            await Task.WhenAll(tasks);
-
-            _logger.LogDebug("[SignalRNotification] Sent {MethodName} to connection {ConnectionId} via ALL HUBS",
+            _logger.LogDebug("[SignalRNotification] Sent {MethodName} to connection {ConnectionId} via GameRoomHub",
                 methodName, connectionId);
         }
         catch (Exception ex)
@@ -240,23 +175,18 @@ public class SignalRNotificationService : ISignalRNotificationService
     {
         try
         {
-            _logger.LogInformation("[SignalRNotification] Broadcasting {MethodName} to ALL clients via ALL HUBS", methodName);
+            _logger.LogInformation("[SignalRNotification] Broadcasting {MethodName} to ALL clients via BOTH HUBS", methodName);
 
-            // CRÍTICO: Broadcast a TODOS los hubs
+            // ENVIAR A AMBOS HUBS para cobertura completa
             var tasks = new List<Task>
             {
-                _gameHubContext.Clients.All.SendAsync(methodName, data),
-                _roomHubContext.Clients.All.SendAsync(methodName, data),
-                _seatHubContext.Clients.All.SendAsync(methodName, data),
-                _spectatorHubContext.Clients.All.SendAsync(methodName, data),
-                _connectionHubContext.Clients.All.SendAsync(methodName, data),
-                _gameControlHubContext.Clients.All.SendAsync(methodName, data),
+                _gameRoomHubContext.Clients.All.SendAsync(methodName, data),
                 _lobbyHubContext.Clients.All.SendAsync(methodName, data)
             };
 
             await Task.WhenAll(tasks);
 
-            _logger.LogDebug("[SignalRNotification] Broadcast {MethodName} to all clients via ALL HUBS", methodName);
+            _logger.LogDebug("[SignalRNotification] Broadcast {MethodName} to all clients via BOTH HUBS", methodName);
         }
         catch (Exception ex)
         {
@@ -274,24 +204,22 @@ public class SignalRNotificationService : ISignalRNotificationService
     {
         try
         {
-            _logger.LogInformation("[SignalRNotification] Sending {MethodName} to group {GroupName} via ALL HUBS",
+            _logger.LogInformation("[SignalRNotification] Sending {MethodName} to group {GroupName}",
                 methodName, groupName);
 
-            // CRÍTICO: Enviar a TODOS los hubs para el grupo específico
-            var tasks = new List<Task>
+            // DECIDIR SEGÚN EL GRUPO: Lobby vs Room
+            if (groupName == HubMethodNames.Groups.LobbyGroup)
             {
-                _gameHubContext.Clients.Group(groupName).SendAsync(methodName, data),
-                _roomHubContext.Clients.Group(groupName).SendAsync(methodName, data),
-                _seatHubContext.Clients.Group(groupName).SendAsync(methodName, data),
-                _spectatorHubContext.Clients.Group(groupName).SendAsync(methodName, data),
-                _connectionHubContext.Clients.Group(groupName).SendAsync(methodName, data),
-                _gameControlHubContext.Clients.Group(groupName).SendAsync(methodName, data),
-                _lobbyHubContext.Clients.Group(groupName).SendAsync(methodName, data)
-            };
-
-            await Task.WhenAll(tasks);
-
-            _logger.LogDebug("[SignalRNotification] Sent {MethodName} to group {GroupName} via ALL HUBS", methodName, groupName);
+                // Solo enviar al LobbyHub para grupo lobby
+                await _lobbyHubContext.Clients.Group(groupName).SendAsync(methodName, data);
+                _logger.LogDebug("[SignalRNotification] Sent {MethodName} to lobby group via LobbyHub", methodName);
+            }
+            else
+            {
+                // Enviar al GameRoomHub para grupos de sala/mesa
+                await _gameRoomHubContext.Clients.Group(groupName).SendAsync(methodName, data);
+                _logger.LogDebug("[SignalRNotification] Sent {MethodName} to group {GroupName} via GameRoomHub", methodName, groupName);
+            }
         }
         catch (Exception ex)
         {
@@ -401,7 +329,7 @@ public class SignalRNotificationService : ISignalRNotificationService
 
     #endregion
 
-    #region Auto-Betting Events
+    #region Auto-Betting Events (SISTEMA COMPLETO PRESERVADO)
 
     /// <summary>
     /// Notifica el resultado completo del procesamiento de apuestas automáticas
@@ -538,18 +466,21 @@ public class SignalRNotificationService : ISignalRNotificationService
         _logger.LogInformation("[SignalRNotification] === ACTIVE ROOMS UPDATED ===");
         _logger.LogInformation("[SignalRNotification] Room count: {RoomCount}", activeRooms.Count);
 
+        // ESPECÍFICO PARA LOBBY: Solo enviar al LobbyHub
         await _lobbyHubContext.Clients.Group(HubMethodNames.Groups.LobbyGroup)
             .SendAsync(HubMethodNames.ServerMethods.ActiveRoomsUpdated, activeRooms);
     }
 
     public async Task NotifyRoomCreatedAsync(ActiveRoomModel newRoom)
     {
+        // ESPECÍFICO PARA LOBBY: Solo enviar al LobbyHub
         await _lobbyHubContext.Clients.Group(HubMethodNames.Groups.LobbyGroup)
             .SendAsync(HubMethodNames.ServerMethods.RoomListUpdated, new { action = "created", room = newRoom });
     }
 
     public async Task NotifyRoomClosedAsync(string roomCode)
     {
+        // ESPECÍFICO PARA LOBBY: Solo enviar al LobbyHub
         await _lobbyHubContext.Clients.Group(HubMethodNames.Groups.LobbyGroup)
             .SendAsync(HubMethodNames.ServerMethods.RoomListUpdated, new { action = "closed", roomCode });
     }

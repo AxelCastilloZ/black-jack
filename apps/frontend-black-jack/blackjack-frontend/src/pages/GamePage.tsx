@@ -1,4 +1,4 @@
-// src/pages/GamePage.tsx - CORREGIDO: Estados sincronizados, lógica de auto-betting consistente
+// src/pages/GamePage.tsx - DIVIDIDO: Compatible con arquitectura de 3 hubs especializados
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
 import { 
@@ -13,7 +13,7 @@ import {
 } from '../services/signalr'
 import { authService } from '../services/auth'
 
-// Componentes (GameBettings REMOVIDO)
+// Componentes
 import GameHeader from '../components/game/GameHeader'
 import GameTable from '../components/game/GameTable'
 import GameSeats from '../components/game/GameSeats'
@@ -30,7 +30,7 @@ interface GameState {
   currentPlayerTurn?: string
   canStart: boolean
   createdAt: string
-  // Auto-betting - UNIFICADO: Solo una fuente de verdad
+  // Auto-betting
   minBetPerRound?: number
   autoBettingActive?: boolean
 }
@@ -48,7 +48,17 @@ interface RoomPlayer {
   canAffordBet?: boolean
 }
 
-// Estados de Auto-Betting - SIMPLIFICADO: Sin duplicar isActive
+// DIVIDIDO: Estado de conexión para 3 hubs especializados
+interface ConnectionStatus {
+  lobby: boolean
+  gameRoom: boolean
+  gameControl: boolean
+  overall: boolean
+  gameControlRequired: boolean
+  gameControlConnecting: boolean
+}
+
+// Estados de Auto-Betting
 interface AutoBettingState {
   isProcessing: boolean
   statistics: AutoBetStatistics | null
@@ -75,20 +85,24 @@ export default function GamePage() {
   // Estados principales
   const [isViewer, setIsViewer] = useState(false)
   const [gameState, setGameState] = useState<GameState | null>(null)
-  const [connectionStatus, setConnectionStatus] = useState({
-    room: false,
-    seat: false,
-    spectator: false,
+  
+  // DIVIDIDO: Estado de conexión para 3 hubs especializados
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({
+    lobby: false,
+    gameRoom: false,
     gameControl: false,
-    overall: false
+    overall: false,
+    gameControlRequired: false,
+    gameControlConnecting: false
   })
+  
   const [isJoining, setIsJoining] = useState(false)
   const [error, setError] = useState<string | null>(null)
   
   // Estado de loading centralizado
   const [seatClickLoading, setSeatClickLoading] = useState<number | null>(null)
   
-  // Estados de Auto-Betting - SIMPLIFICADO: Sin isActive duplicado
+  // Estados de Auto-Betting
   const [autoBettingState, setAutoBettingState] = useState<AutoBettingState>({
     isProcessing: false,
     statistics: null,
@@ -104,13 +118,35 @@ export default function GamePage() {
   const hasJoinedTable = useRef(false)
   const currentUser = useRef(authService.getCurrentUser())
   const isComponentMounted = useRef(true)
+  const gameControlSetupAttempted = useRef(false)
+
+  // COMPUTED: Determinar si se necesita GameControl
+  const needsGameControl = useCallback(() => {
+    if (isViewer) return false
+    
+    // Se necesita GameControl si:
+    // 1. Hay auto-betting activo (minBetPerRound > 0 y jugadores sentados)
+    // 2. El usuario está sentado (puede iniciar juego o usar auto-betting)
+    // 3. Es el host (puede controlar el juego)
+    
+    const hasAutoBetting = gameState?.minBetPerRound && gameState.minBetPerRound > 0
+    const hasSeatedPlayers = gameState?.players?.some(p => p.position >= 0) || false
+    const currentPlayer = gameState?.players?.find(p => p.playerId === currentUser.current?.id)
+    const isSeated = currentPlayer && currentPlayer.position >= 0
+    const isHost = currentPlayer?.isHost || false
+    
+    return Boolean(
+      (hasAutoBetting && hasSeatedPlayers) || 
+      isSeated || 
+      isHost
+    )
+  }, [gameState, isViewer])
 
   // COMPUTED: Lógica centralizada de auto-betting
   const isAutoBettingActive = useCallback(() => {
     if (!gameState || !gameState.minBetPerRound || gameState.minBetPerRound <= 0) {
       return false
     }
-    // Auto-betting está activo si hay jugadores sentados (position >= 0) y hay minBetPerRound
     const seatedPlayers = gameState.players?.filter(p => p.position >= 0) || []
     return seatedPlayers.length > 0
   }, [gameState])
@@ -141,7 +177,7 @@ export default function GamePage() {
 
   // Detectar modo viewer y inicializar componente
   useEffect(() => {
-    console.log('[GamePage] === COMPONENT MOUNT ===')
+    console.log('[GamePage] === COMPONENT MOUNT - DIVIDED HUBS ===')
     isComponentMounted.current = true
     
     const isViewerMode = window.location.pathname.includes('/viewer/')
@@ -149,49 +185,130 @@ export default function GamePage() {
     console.log('[GamePage] Mode detected:', isViewerMode ? 'VIEWER' : 'PLAYER')
 
     return () => {
-      console.log('[GamePage] === COMPONENT UNMOUNT ===')
+      console.log('[GamePage] === COMPONENT UNMOUNT - DIVIDED HUBS ===')
       isComponentMounted.current = false
     }
   }, [])
 
-  // Verificar conexiones de hubs
+  // DIVIDIDO: Verificar conexiones de 3 hubs especializados
   useEffect(() => {
     let mounted = true
     
     const checkConnections = () => {
       if (!mounted || !isComponentMounted.current) return
       
-      const status = {
-        room: signalRService.isRoomHubConnected,
-        seat: signalRService.isSeatHubConnected,
-        spectator: signalRService.isSpectatorHubConnected,
+      const gameControlRequired = needsGameControl()
+      
+      const status: ConnectionStatus = {
+        lobby: signalRService.isLobbyConnected,
+        gameRoom: signalRService.isGameRoomHubConnected,
         gameControl: signalRService.isGameControlHubConnected,
-        overall: signalRService.areAllConnected
+        overall: signalRService.areBasicConnected,
+        gameControlRequired,
+        gameControlConnecting: connectionStatus.gameControlConnecting
       }
       
       setConnectionStatus(prev => {
         const hasChanged = JSON.stringify(prev) !== JSON.stringify(status)
         if (hasChanged) {
-          console.log('[GamePage] Hub connection status changed:', status)
+          console.log('[GamePage] DIVIDED hub connection status changed:', status)
         }
         return hasChanged ? status : prev
       })
     }
     
     checkConnections()
-    const interval = setInterval(checkConnections, 10000)
+    const interval = setInterval(checkConnections, 2000)
     
     return () => {
       mounted = false
       clearInterval(interval)
     }
-  }, [])
+  }, [needsGameControl, connectionStatus.gameControlConnecting])
 
-  // Handlers para eventos SignalR existentes
+  // DIVIDIDO: Setup automático de GameControlHub cuando sea necesario
+  useEffect(() => {
+    let mounted = true
+    
+    const setupGameControlIfNeeded = async () => {
+      if (
+        !mounted || 
+        !isComponentMounted.current ||
+        !connectionStatus.gameControlRequired ||
+        connectionStatus.gameControl ||
+        connectionStatus.gameControlConnecting ||
+        gameControlSetupAttempted.current
+      ) {
+        return
+      }
+
+      try {
+        console.log('[GamePage] === SETTING UP GAMECONTROL HUB ===')
+        console.log('[GamePage] Reason: Auto-betting or game control needed')
+        
+        setConnectionStatus(prev => ({ ...prev, gameControlConnecting: true }))
+        gameControlSetupAttempted.current = true
+        
+        const success = await signalRService.startGameControlConnection()
+        
+        if (!mounted || !isComponentMounted.current) return
+        
+        if (success) {
+          console.log('[GamePage] ✅ GameControlHub connected successfully')
+          
+          // Setup listeners de GameControl
+          setupGameControlListeners()
+          
+          // Unirse al room para game control
+          if (gameState?.roomCode) {
+            try {
+              await signalRService.joinRoomForGameControl(gameState.roomCode)
+              console.log('[GamePage] ✅ Joined room for game control')
+            } catch (error) {
+              console.warn('[GamePage] Could not join room for game control:', error)
+            }
+          }
+          
+        } else {
+          console.error('[GamePage] ❌ Failed to connect GameControlHub')
+          addNotification({
+            type: 'warning',
+            title: 'GameControl No Disponible',
+            message: 'Funcionalidad avanzada limitada. Reconectando...',
+            duration: 8000
+          })
+        }
+        
+      } catch (error) {
+        if (!mounted || !isComponentMounted.current) return
+        console.error('[GamePage] Error setting up GameControlHub:', error)
+        
+        addNotification({
+          type: 'error',
+          title: 'Error GameControl',
+          message: 'No se pudo conectar control de juego',
+          duration: 10000
+        })
+      } finally {
+        if (mounted && isComponentMounted.current) {
+          setConnectionStatus(prev => ({ ...prev, gameControlConnecting: false }))
+        }
+      }
+    }
+
+    const timeoutId = setTimeout(setupGameControlIfNeeded, 500)
+    
+    return () => {
+      mounted = false
+      clearTimeout(timeoutId)
+    }
+  }, [connectionStatus.gameControlRequired, connectionStatus.gameControl, connectionStatus.gameControlConnecting, gameState?.roomCode])
+
+  // DIVIDIDO: Handlers para GameRoomHub (funcionalidad básica)
   const handleRoomInfo = useCallback((response: any) => {
     if (!isComponentMounted.current) return
     const roomData = response?.data || response
-    console.log('[GamePage] Room info received via RoomHub:', roomData)
+    console.log('[GamePage] [GameRoomHub] Room info received:', roomData)
     setGameState(roomData)
     setError(null)
   }, [])
@@ -199,7 +316,7 @@ export default function GamePage() {
   const handleRoomCreated = useCallback((response: any) => {
     if (!isComponentMounted.current) return
     const roomData = response?.data || response
-    console.log('[GamePage] Room created via RoomHub:', roomData)
+    console.log('[GamePage] [GameRoomHub] Room created:', roomData)
     setGameState(roomData)
     setError(null)
   }, [])
@@ -207,17 +324,16 @@ export default function GamePage() {
   const handleRoomJoined = useCallback((response: any) => {
     if (!isComponentMounted.current) return
     const roomData = response?.data || response
-    console.log('[GamePage] Room joined via RoomHub:', roomData)
+    console.log('[GamePage] [GameRoomHub] Room joined:', roomData)
     setGameState(roomData)
     setError(null)
   }, [])
 
   const handleRoomInfoUpdated = useCallback((roomData: any) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] Room info updated via RoomHub:', roomData)
+    console.log('[GamePage] [GameRoomHub] Room info updated:', roomData)
     setGameState(prev => ({
       ...roomData,
-      // CORREGIDO: Mantener continuidad con datos existentes si no vienen en el update
       autoBettingActive: roomData.autoBettingActive !== undefined ? roomData.autoBettingActive : prev?.autoBettingActive,
       minBetPerRound: roomData.minBetPerRound !== undefined ? roomData.minBetPerRound : prev?.minBetPerRound
     }))
@@ -226,7 +342,7 @@ export default function GamePage() {
 
   const handleSeatJoined = useCallback((response: any) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] Seat joined via SeatHub:', response)
+    console.log('[GamePage] [GameRoomHub] Seat joined:', response)
     const roomInfo = response?.roomInfo || response?.data?.roomInfo || response?.RoomInfo
     if (roomInfo) {
       setGameState(roomInfo)
@@ -238,7 +354,7 @@ export default function GamePage() {
 
   const handleSeatLeft = useCallback((response: any) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] Seat left via SeatHub:', response)
+    console.log('[GamePage] [GameRoomHub] Seat left:', response)
     const roomData = response?.data || response
     if (roomData) {
       setGameState(roomData)
@@ -250,7 +366,7 @@ export default function GamePage() {
 
   const handlePlayerJoined = useCallback((eventData: any) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] Player joined event via RoomHub:', eventData)
+    console.log('[GamePage] [GameRoomHub] Player joined event:', eventData)
     
     setGameState(prev => {
       if (!prev) return prev
@@ -284,7 +400,7 @@ export default function GamePage() {
 
   const handlePlayerLeft = useCallback((eventData: any) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] Player left event via RoomHub:', eventData)
+    console.log('[GamePage] [GameRoomHub] Player left event:', eventData)
     
     setGameState(prev => {
       if (!prev) return prev
@@ -300,24 +416,44 @@ export default function GamePage() {
     })
   }, [])
 
-  const handleGameStateChanged = useCallback((newState: any) => {
-    if (!isComponentMounted.current) return
-    console.log('[GamePage] Game state changed via GameControlHub:', newState)
-    setGameState(newState)
-  }, [])
-
   const handleError = useCallback((errorMessage: string) => {
     if (!isComponentMounted.current) return
-    console.error('[GamePage] SignalR Error from any hub:', errorMessage)
+    console.error('[GamePage] SignalR Error:', errorMessage)
     setError(errorMessage)
     setSeatClickLoading(null)
     console.log('[GamePage] Loading state reset after error')
   }, [])
 
-  // Handlers para Auto-Betting Events
+  // DIVIDIDO: Handlers para GameControlHub (funcionalidad avanzada)
+  const handleGameStarted = useCallback((gameData: any) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] [GameControlHub] Game started event:', gameData)
+    setGameState(prev => prev ? { ...prev, status: 'InProgress' } : prev)
+    
+    addNotification({
+      type: 'success',
+      title: 'Juego Iniciado',
+      message: 'El juego ha comenzado',
+      duration: 4000
+    })
+  }, [addNotification])
+
+  const handleGameEnded = useCallback((gameData: any) => {
+    if (!isComponentMounted.current) return
+    console.log('[GamePage] [GameControlHub] Game ended event:', gameData)
+    setGameState(prev => prev ? { ...prev, status: 'Finished' } : prev)
+    
+    addNotification({
+      type: 'info',
+      title: 'Juego Terminado',
+      message: 'El juego ha finalizado',
+      duration: 4000
+    })
+  }, [addNotification])
+
   const handleAutoBetProcessed = useCallback((event: AutoBetProcessedEvent) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] 🎰 AutoBetProcessed event:', event)
+    console.log('[GamePage] [GameControlHub] 🎰 AutoBetProcessed event:', event)
     
     setAutoBettingState(prev => ({
       ...prev,
@@ -340,20 +476,18 @@ export default function GamePage() {
 
   const handleAutoBetStatistics = useCallback((event: AutoBetStatistics) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] 📊 AutoBetStatistics event:', event)
+    console.log('[GamePage] [GameControlHub] 📊 AutoBetStatistics event:', event)
     
     setAutoBettingState(prev => ({
       ...prev,
       statistics: event
     }))
 
-    // CORREGIDO: Actualizar gameState con datos del evento
     setGameState(prev => {
       if (!prev) return prev
       return {
         ...prev,
         minBetPerRound: event.minBetPerRound,
-        // LÓGICA CORREGIDA: autoBettingActive se determina por jugadores sentados, no por el evento
         autoBettingActive: event.seatedPlayersCount > 0 && event.minBetPerRound > 0
       }
     })
@@ -361,7 +495,7 @@ export default function GamePage() {
 
   const handleAutoBetProcessingStarted = useCallback((event: AutoBetProcessingStartedEvent) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] 🚀 AutoBetProcessingStarted event:', event)
+    console.log('[GamePage] [GameControlHub] 🚀 AutoBetProcessingStarted event:', event)
     
     setAutoBettingState(prev => ({
       ...prev,
@@ -379,7 +513,7 @@ export default function GamePage() {
 
   const handleAutoBetRoundSummary = useCallback((event: AutoBetRoundSummaryEvent) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] 📋 AutoBetRoundSummary event:', event)
+    console.log('[GamePage] [GameControlHub] 📋 AutoBetRoundSummary event:', event)
     
     setAutoBettingState(prev => ({
       ...prev,
@@ -398,7 +532,7 @@ export default function GamePage() {
 
   const handlePlayerRemovedFromSeat = useCallback((event: PlayerRemovedFromSeatEvent) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] 🚪 PlayerRemovedFromSeat event:', event)
+    console.log('[GamePage] [GameControlHub] 🚪 PlayerRemovedFromSeat event:', event)
     
     addNotification({
       type: 'warning',
@@ -426,7 +560,7 @@ export default function GamePage() {
 
   const handlePlayerBalanceUpdated = useCallback((event: PlayerBalanceUpdatedEvent) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] 💰 PlayerBalanceUpdated event:', event)
+    console.log('[GamePage] [GameControlHub] 💰 PlayerBalanceUpdated event:', event)
     
     setGameState(prev => {
       if (!prev) return prev
@@ -464,7 +598,7 @@ export default function GamePage() {
 
   const handleInsufficientFundsWarning = useCallback((event: InsufficientFundsWarningEvent) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] ⚠️ InsufficientFundsWarning event:', event)
+    console.log('[GamePage] [GameControlHub] ⚠️ InsufficientFundsWarning event:', event)
     
     addNotification({
       type: 'warning',
@@ -476,7 +610,7 @@ export default function GamePage() {
 
   const handleAutoBetFailed = useCallback((event: any) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] ❌ AutoBetFailed event:', event)
+    console.log('[GamePage] [GameControlHub] ❌ AutoBetFailed event:', event)
     
     setAutoBettingState(prev => ({
       ...prev,
@@ -493,10 +627,10 @@ export default function GamePage() {
     })
   }, [addNotification])
 
-  // Handlers para eventos personales
+  // Handlers para eventos personales (GameControlHub)
   const handleYouWereRemovedFromSeat = useCallback((event: PlayerRemovedFromSeatEvent) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] 🔴 YouWereRemovedFromSeat event:', event)
+    console.log('[GamePage] [GameControlHub] 🔴 YouWereRemovedFromSeat event:', event)
     
     addNotification({
       type: 'error',
@@ -509,7 +643,7 @@ export default function GamePage() {
 
   const handleYourBalanceUpdated = useCallback((event: PlayerBalanceUpdatedEvent) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] 💳 YourBalanceUpdated event:', event)
+    console.log('[GamePage] [GameControlHub] 💳 YourBalanceUpdated event:', event)
     
     const amountText = event.amountChanged > 0 
       ? `+$${event.amountChanged}` 
@@ -525,7 +659,7 @@ export default function GamePage() {
 
   const handleInsufficientFundsWarningPersonal = useCallback((event: InsufficientFundsWarningEvent) => {
     if (!isComponentMounted.current) return
-    console.log('[GamePage] 🟠 InsufficientFundsWarningPersonal event:', event)
+    console.log('[GamePage] [GameControlHub] 🟠 InsufficientFundsWarningPersonal event:', event)
     
     addNotification({
       type: 'warning',
@@ -538,13 +672,10 @@ export default function GamePage() {
     })
   }, [addNotification])
 
-  // Setup de listeners SignalR
-  useEffect(() => {
-    if (!isComponentMounted.current) return
+  // DIVIDIDO: Setup de listeners GameRoomHub (funcionalidad básica)
+  const setupGameRoomListeners = useCallback(() => {
+    console.log('[GamePage] Setting up GameRoomHub listeners (basic functionality)...')
     
-    console.log('[GamePage] Setting up hub listeners including auto-betting...')
-    
-    // Listeners existentes
     signalRService.onRoomInfo = handleRoomInfo
     signalRService.onRoomCreated = handleRoomCreated
     signalRService.onRoomJoined = handleRoomJoined
@@ -553,10 +684,18 @@ export default function GamePage() {
     signalRService.onSeatLeft = handleSeatLeft
     signalRService.onPlayerJoined = handlePlayerJoined
     signalRService.onPlayerLeft = handlePlayerLeft
-    signalRService.onGameStateChanged = handleGameStateChanged
     signalRService.onError = handleError
+  }, [
+    handleRoomInfo, handleRoomCreated, handleRoomJoined, handleRoomInfoUpdated,
+    handleSeatJoined, handleSeatLeft, handlePlayerJoined, handlePlayerLeft, handleError
+  ])
 
-    // Listeners de auto-betting
+  // DIVIDIDO: Setup de listeners GameControlHub (funcionalidad avanzada)
+  const setupGameControlListeners = useCallback(() => {
+    console.log('[GamePage] Setting up GameControlHub listeners (advanced functionality)...')
+    
+    signalRService.onGameStarted = handleGameStarted
+    signalRService.onGameEnded = handleGameEnded
     signalRService.onAutoBetProcessed = handleAutoBetProcessed
     signalRService.onAutoBetStatistics = handleAutoBetStatistics
     signalRService.onAutoBetProcessingStarted = handleAutoBetProcessingStarted
@@ -565,15 +704,26 @@ export default function GamePage() {
     signalRService.onPlayerBalanceUpdated = handlePlayerBalanceUpdated
     signalRService.onInsufficientFundsWarning = handleInsufficientFundsWarning
     signalRService.onAutoBetFailed = handleAutoBetFailed
-    
-    // Listeners personales
     signalRService.onYouWereRemovedFromSeat = handleYouWereRemovedFromSeat
     signalRService.onYourBalanceUpdated = handleYourBalanceUpdated
     signalRService.onInsufficientFundsWarningPersonal = handleInsufficientFundsWarningPersonal
+  }, [
+    handleGameStarted, handleGameEnded, handleAutoBetProcessed, handleAutoBetStatistics,
+    handleAutoBetProcessingStarted, handleAutoBetRoundSummary, handlePlayerRemovedFromSeat,
+    handlePlayerBalanceUpdated, handleInsufficientFundsWarning, handleAutoBetFailed,
+    handleYouWereRemovedFromSeat, handleYourBalanceUpdated, handleInsufficientFundsWarningPersonal
+  ])
+
+  // DIVIDIDO: Setup inicial de listeners
+  useEffect(() => {
+    if (!isComponentMounted.current) return
+    
+    setupGameRoomListeners()
 
     return () => {
-      console.log('[GamePage] Cleaning up hub listeners including auto-betting...')
+      console.log('[GamePage] Cleaning up ALL hub listeners...')
       
+      // Limpiar GameRoomHub listeners
       signalRService.onRoomInfo = undefined
       signalRService.onRoomCreated = undefined
       signalRService.onRoomJoined = undefined
@@ -582,9 +732,11 @@ export default function GamePage() {
       signalRService.onSeatLeft = undefined
       signalRService.onPlayerJoined = undefined
       signalRService.onPlayerLeft = undefined
-      signalRService.onGameStateChanged = undefined
       signalRService.onError = undefined
       
+      // Limpiar GameControlHub listeners
+      signalRService.onGameStarted = undefined
+      signalRService.onGameEnded = undefined
       signalRService.onAutoBetProcessed = undefined
       signalRService.onAutoBetStatistics = undefined
       signalRService.onAutoBetProcessingStarted = undefined
@@ -597,9 +749,9 @@ export default function GamePage() {
       signalRService.onYourBalanceUpdated = undefined
       signalRService.onInsufficientFundsWarningPersonal = undefined
     }
-  }, [])
+  }, [setupGameRoomListeners])
 
-  // Auto-join logic - CORREGIDO: Sin auto-activar auto-betting
+  // DIVIDIDO: Auto-join logic actualizado para nueva arquitectura
   useEffect(() => {
     let mounted = true
     
@@ -615,10 +767,8 @@ export default function GamePage() {
         return
       }
 
-      const requiredHub = isViewer ? connectionStatus.spectator : connectionStatus.room
-      
-      if (!requiredHub) {
-        console.log(`[GamePage] Waiting for ${isViewer ? 'SpectatorHub' : 'RoomHub'} to connect...`)
+      if (!connectionStatus.gameRoom) {
+        console.log('[GamePage] Waiting for GameRoomHub to connect...')
         return
       }
 
@@ -629,7 +779,7 @@ export default function GamePage() {
         hasJoinedTable.current = true
         setError(null)
         
-        console.log(`[GamePage] === AUTO-JOINING TABLE ===`)
+        console.log(`[GamePage] === AUTO-JOINING TABLE - DIVIDED HUBS ===`)
         console.log(`[GamePage] TableId: ${tableId}`)
         console.log(`[GamePage] Mode: ${isViewer ? 'VIEWER' : 'PLAYER'}`)
         
@@ -639,8 +789,7 @@ export default function GamePage() {
           await signalRService.joinOrCreateRoomForTableAsViewer(tableId, playerName)
         } else {
           await signalRService.joinOrCreateRoomForTable(tableId, playerName)
-          // CORREGIDO: NO auto-activar auto-betting aquí
-          console.log('[GamePage] Player joined table, auto-betting status will be determined by game state')
+          console.log('[GamePage] Player joined table, GameControl will connect if needed')
         }
         
         console.log('[GamePage] Successfully joined table')
@@ -664,9 +813,9 @@ export default function GamePage() {
       mounted = false
       clearTimeout(timeoutId)
     }
-  }, [connectionStatus.overall, connectionStatus.room, connectionStatus.spectator, tableId, isViewer])
+  }, [connectionStatus.overall, connectionStatus.gameRoom, tableId, isViewer])
 
-  // Obtener estadísticas de auto-betting - CORREGIDO: Usar lógica centralizada
+  // DIVIDIDO: Obtener estadísticas de auto-betting solo cuando GameControl esté disponible
   useEffect(() => {
     const autoBettingActive = isAutoBettingActive()
     
@@ -677,7 +826,7 @@ export default function GamePage() {
       !autoBettingState.statistics &&
       !isViewer
     ) {
-      console.log('[GamePage] Getting auto-bet statistics for room:', gameState.roomCode)
+      console.log('[GamePage] [GameControlHub] Getting auto-bet statistics for room:', gameState.roomCode)
       
       signalRService.getAutoBetStatistics(gameState.roomCode)
         .catch(error => {
@@ -717,64 +866,123 @@ export default function GamePage() {
     }
   }, [gameState?.roomCode, navigate])
 
+  // DIVIDIDO: Start round requiere GameControlHub
   const handleStartRound = useCallback(async () => {
-    if (!connectionStatus.gameControl || !gameState?.roomCode || !isComponentMounted.current) {
-      console.log('[GamePage] Cannot start game - GameControlHub not connected')
+    if (!gameState?.roomCode || !isComponentMounted.current) {
+      console.log('[GamePage] Cannot start game - No room code')
       return
+    }
+
+    if (!connectionStatus.gameControl) {
+      console.log('[GamePage] GameControlHub not connected, attempting to connect...')
+      
+      try {
+        const success = await signalRService.startGameControlConnection()
+        if (!success) {
+          setError('No se pudo conectar al control de juego')
+          return
+        }
+        
+        // Setup listeners si no están configurados
+        setupGameControlListeners()
+        
+        // Unirse al room para game control
+        await signalRService.joinRoomForGameControl(gameState.roomCode)
+        
+      } catch (error) {
+        console.error('[GamePage] Error connecting GameControlHub:', error)
+        setError('Error conectando control de juego')
+        return
+      }
     }
     
     try {
       setError(null)
-      console.log('[GamePage] Starting game via GameControlHub')
+      console.log('[GamePage] [GameControlHub] Starting game')
       await signalRService.startGame(gameState.roomCode)
     } catch (error) {
       if (!isComponentMounted.current) return
       console.error('[GamePage] Error starting game:', error)
       setError(error instanceof Error ? error.message : 'Error iniciando juego')
     }
-  }, [connectionStatus.gameControl, gameState?.roomCode])
+  }, [gameState?.roomCode, connectionStatus.gameControl, setupGameControlListeners])
+
+  // DIVIDIDO: Process auto-bets requiere GameControlHub
+  const handleProcessAutoBets = useCallback(async () => {
+    if (!gameState?.roomCode || !connectionStatus.gameControl) {
+      addNotification({
+        type: 'error',
+        title: 'GameControl No Disponible',
+        message: 'Conectando control de juego...',
+        duration: 5000
+      })
+      return
+    }
+    
+    try {
+      console.log('[GamePage] [GameControlHub] Processing auto-bets')
+      await signalRService.processRoundAutoBets(gameState.roomCode, true)
+    } catch (error) {
+      console.error('[GamePage] Error processing auto-bets:', error)
+      addNotification({
+        type: 'error',
+        title: 'Error Auto-Betting',
+        message: error instanceof Error ? error.message : 'Error desconocido',
+        duration: 8000
+      })
+    }
+  }, [gameState?.roomCode, connectionStatus.gameControl, addNotification])
 
   // Computed values
   const currentPlayer = gameState?.players?.find(p => p.playerId === currentUser.current?.id)
   const isPlayerSeated = !!currentPlayer && currentPlayer.position >= 0
+  const shouldShowGameControl = connectionStatus.gameControlRequired && !isViewer
 
-  // Loading screen
+  // DIVIDIDO: Loading screen para 3 hubs especializados
   if (!connectionStatus.overall || isJoining) {
     return (
       <div className="fixed top-0 left-0 w-screen h-screen bg-gradient-to-br from-emerald-900 to-emerald-800 z-[9999] overflow-hidden m-0 p-0 flex items-center justify-center">
         <div className="bg-black/80 rounded-xl p-8 text-center max-w-md">
           <div className="w-8 h-8 border-2 border-white border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
           <div className="text-white text-lg mb-4">
-            {!connectionStatus.overall ? 'Conectando hubs especializados...' : 'Uniéndose a la mesa...'}
+            {!connectionStatus.overall ? 'Conectando hubs divididos...' : 'Uniéndose a la mesa...'}
           </div>
           <div className="text-gray-300 text-sm mb-4">Mesa: {tableId?.slice(0, 8)}...</div>
           
           {!connectionStatus.overall && (
             <div className="text-xs text-gray-400 space-y-1 text-left">
               <div className="flex justify-between">
-                <span>RoomHub:</span>
-                <span className={connectionStatus.room ? 'text-green-400' : 'text-yellow-400'}>
-                  {connectionStatus.room ? '✓' : '⏳'}
+                <span>LobbyHub:</span>
+                <span className={connectionStatus.lobby ? 'text-green-400' : 'text-yellow-400'}>
+                  {connectionStatus.lobby ? '✓' : '⏳'}
                 </span>
               </div>
               <div className="flex justify-between">
-                <span>SeatHub:</span>
-                <span className={connectionStatus.seat ? 'text-green-400' : 'text-yellow-400'}>
-                  {connectionStatus.seat ? '✓' : '⏳'}
+                <span>GameRoomHub:</span>
+                <span className={connectionStatus.gameRoom ? 'text-green-400' : 'text-yellow-400'}>
+                  {connectionStatus.gameRoom ? '✓' : '⏳'}
                 </span>
               </div>
-              <div className="flex justify-between">
-                <span>SpectatorHub:</span>
-                <span className={connectionStatus.spectator ? 'text-green-400' : 'text-yellow-400'}>
-                  {connectionStatus.spectator ? '✓' : '⏳'}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>GameControlHub:</span>
-                <span className={connectionStatus.gameControl ? 'text-green-400' : 'text-yellow-400'}>
-                  {connectionStatus.gameControl ? '✓' : '⏳'}
-                </span>
-              </div>
+              {shouldShowGameControl && (
+                <div className="flex justify-between">
+                  <span>GameControlHub:</span>
+                  <span className={
+                    connectionStatus.gameControl ? 'text-green-400' : 
+                    connectionStatus.gameControlConnecting ? 'text-yellow-400' : 
+                    connectionStatus.gameControlRequired ? 'text-orange-400' : 'text-gray-500'
+                  }>
+                    {connectionStatus.gameControl ? '✓' : 
+                     connectionStatus.gameControlConnecting ? '⏳' : 
+                     connectionStatus.gameControlRequired ? '!' : '-'}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+          
+          {connectionStatus.gameControlRequired && !connectionStatus.gameControl && (
+            <div className="text-xs text-orange-300 mt-2">
+              Configurando control avanzado...
             </div>
           )}
           
@@ -858,9 +1066,12 @@ export default function GamePage() {
         isCurrentPlayerHost={currentPlayer?.isHost || false}
         gameControlConnected={connectionStatus.gameControl}
         onStartRound={handleStartRound}
+        onProcessAutoBets={shouldShowGameControl ? handleProcessAutoBets : undefined}
+        autoBettingActive={isAutoBettingActive()}
+        autoBettingProcessing={autoBettingState.isProcessing}
       />
 
-      {/* Game Seats - CORREGIDO: Props sincronizados */}
+      {/* Game Seats */}
       <GameSeats
         players={gameState?.players || []}
         roomCode={gameState?.roomCode}
@@ -868,12 +1079,11 @@ export default function GamePage() {
         currentPlayerTurn={gameState?.currentPlayerTurn}
         currentUser={currentUser.current}
         isViewer={isViewer}
-        seatHubConnected={connectionStatus.seat}
+        seatHubConnected={connectionStatus.gameRoom}
         isComponentMounted={isComponentMounted.current}
         onError={setError}
         seatClickLoading={seatClickLoading}
         setSeatClickLoading={setSeatClickLoading}
-        // CORREGIDO: Usar función centralizada para determinar estado
         autoBettingActive={isAutoBettingActive()}
         minBetPerRound={gameState?.minBetPerRound || 0}
       />
@@ -883,6 +1093,15 @@ export default function GamePage() {
         currentUser={currentUser.current}
         isComponentMounted={isComponentMounted.current}
       />
+
+      {/* Debug Info - Solo en desarrollo */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="fixed bottom-4 left-4 bg-black/80 text-white text-xs p-2 rounded">
+          <div>GameRoom: {connectionStatus.gameRoom ? '✓' : '✗'}</div>
+          <div>GameControl: {connectionStatus.gameControl ? '✓' : connectionStatus.gameControlRequired ? '!' : '-'}</div>
+          <div>AutoBetting: {isAutoBettingActive() ? '✓' : '✗'}</div>
+        </div>
+      )}
 
     </div>
   )
