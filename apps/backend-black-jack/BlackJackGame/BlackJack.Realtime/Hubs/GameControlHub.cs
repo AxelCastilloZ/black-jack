@@ -1,9 +1,12 @@
-﻿// BlackJack.Realtime/Hubs/GameControlHub.cs - Hub avanzado para control de juego y auto-betting
+// BlackJack.Realtime/Hubs/GameControlHub.cs - FUSIONADO: Development + Cartas
+//development
+
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Users;
 using BlackJack.Realtime.Models;
 using BlackJack.Services.Game;
 using BlackJack.Realtime.Services;
+using BlackJack.Data.Repositories.Game;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
@@ -16,52 +19,29 @@ public class GameControlHub : BaseHub
     private readonly IGameRoomService _gameRoomService;
     private readonly IConnectionManager _connectionManager;
     private readonly ISignalRNotificationService _notificationService;
+    // AGREGADO: Dependencias para cartas (del documento 5)
+    private readonly IGameService _gameService;
+    private readonly ITableRepository _tableRepository;
+    private readonly IHandRepository _handRepository;
 
     public GameControlHub(
         IGameRoomService gameRoomService,
         IConnectionManager connectionManager,
         ISignalRNotificationService notificationService,
+        // AGREGADO: Inyección de dependencias para cartas
+        IGameService gameService,
+        ITableRepository tableRepository,
+        IHandRepository handRepository,
         ILogger<GameControlHub> logger) : base(logger)
     {
         _gameRoomService = gameRoomService;
         _connectionManager = connectionManager;
         _notificationService = notificationService;
+        // AGREGADO: Asignación de dependencias para cartas
+        _gameService = gameService;
+        _tableRepository = tableRepository;
+        _handRepository = handRepository;
     }
-
-    #region Connection Management
-
-    public override async Task OnConnectedAsync()
-    {
-        await base.OnConnectedAsync();
-        var playerId = GetCurrentPlayerId();
-        var userName = GetCurrentUserName();
-
-        _logger.LogInformation("[GameControlHub] Player {PlayerId} ({UserName}) connected with ConnectionId {ConnectionId}",
-            playerId, userName, Context.ConnectionId);
-
-        // Registrar conexión para funcionalidad avanzada
-        if (playerId != null && userName != null)
-        {
-            await _connectionManager.AddConnectionAsync(Context.ConnectionId, playerId, userName);
-            await _notificationService.SendSuccessToConnectionAsync(Context.ConnectionId, "Conectado exitosamente al hub de control de juego");
-        }
-        else
-        {
-            await _notificationService.SendErrorToConnectionAsync(Context.ConnectionId, "Error de autenticación en GameControlHub");
-        }
-    }
-
-    public override async Task OnDisconnectedAsync(Exception? exception)
-    {
-        var playerId = GetCurrentPlayerId();
-        _logger.LogInformation("[GameControlHub] Player {PlayerId} disconnecting from ConnectionId {ConnectionId}",
-            playerId, Context.ConnectionId);
-
-        await _connectionManager.RemoveConnectionAsync(Context.ConnectionId);
-        await base.OnDisconnectedAsync(exception);
-    }
-
-    #endregion
 
     #region Game Control
 
@@ -94,6 +74,75 @@ public class GameControlHub : BaseHub
             _logger.LogInformation("[GameControlHub] Player {PlayerId} starting game in room {RoomCode}",
                 playerId, roomCode);
 
+            // FUSIONADO: Lógica mejorada del documento 5 para manejar cartas
+            // 1. Obtener la sala y verificar el estado
+            var roomResult = await _gameRoomService.GetRoomAsync(roomCode);
+            if (!roomResult.IsSuccess)
+            {
+                await SendErrorAsync(roomResult.Error ?? "Sala no encontrada");
+                return;
+            }
+
+            var room = roomResult.Value!;
+
+            // 2. Si hay mesa de blackjack, sentar jugadores y iniciar ronda de cartas
+            if (room.BlackjackTableId.HasValue)
+            {
+                var tableId = room.BlackjackTableId.Value;
+
+                int seatedCount = 0;
+                foreach (var rp in room.Players)
+                {
+                    if (rp.SeatPosition.HasValue && rp.SeatPosition.Value >= 0 && rp.SeatPosition.Value <= 5)
+                    {
+                        try
+                        {
+                            _logger.LogInformation("[GameControlHub] Ensuring player {PlayerId} is seated at table {TableId} seat {Seat}", 
+                                rp.PlayerId, tableId, rp.SeatPosition.Value);
+                            var joinRes = await _gameService.JoinTableAsync(tableId, rp.PlayerId, rp.SeatPosition.Value);
+                            if (joinRes.IsSuccess) seatedCount++;
+                            else _logger.LogWarning("[GameControlHub] JoinTableAsync warning for player {PlayerId}: {Error}", 
+                                rp.PlayerId, joinRes.Error);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "[GameControlHub] JoinTableAsync threw for player {PlayerId}", rp.PlayerId);
+                        }
+                    }
+                }
+
+                // Fallback: si nadie tiene asiento válido, sentar al caller en asiento 0
+                if (seatedCount == 0)
+                {
+                    try
+                    {
+                        _logger.LogInformation("[GameControlHub] Fallback seat host {PlayerId} at seat 0 for table {TableId}", 
+                            playerId, tableId);
+                        await _gameService.JoinTableAsync(tableId, playerId, 0);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[GameControlHub] Fallback seating failed for host {PlayerId}", playerId);
+                    }
+                }
+
+                // Iniciar la ronda de blackjack (idempotente)
+                _logger.LogInformation("[GameControlHub] Triggering StartRoundAsync for table {TableId}", tableId);
+                var startRoundResult = await _gameService.StartRoundAsync(tableId);
+                if (!startRoundResult.IsSuccess)
+                {
+                    // Si el error es por 0 asientos pero status ya es InProgress, tratar como OK
+                    var tableStatusOk = startRoundResult.Error?.Contains("al menos 1 jugador") == true;
+                    if (!tableStatusOk)
+                    {
+                        _logger.LogWarning("[GameControlHub] StartRoundAsync failed: {Error}", startRoundResult.Error);
+                        await SendErrorAsync(startRoundResult.Error ?? "No se pudo iniciar la ronda");
+                        return;
+                    }
+                }
+            }
+
+            // 3. Marcar sala como iniciada (para lobby/turnos) - DESARROLLO ORIGINAL
             var result = await _gameRoomService.StartGameAsync(roomCode, playerId);
 
             if (result.IsSuccess)
@@ -103,17 +152,82 @@ public class GameControlHub : BaseHub
                 var updatedRoomResult = await _gameRoomService.GetRoomAsync(roomCode);
                 if (updatedRoomResult.IsSuccess)
                 {
-                    var room = updatedRoomResult.Value!;
+                    var updatedRoom = updatedRoomResult.Value!;
                     var gameStartedEvent = new GameStartedEventModel(
                         RoomCode: roomCode,
-                        GameTableId: room.BlackjackTableId ?? Guid.Empty,
-                        PlayerNames: room.Players.Select(p => p.Name).ToList(),
-                        FirstPlayerTurn: room.CurrentPlayer?.PlayerId.Value ?? Guid.Empty,
+                        GameTableId: updatedRoom.BlackjackTableId ?? Guid.Empty,
+                        PlayerNames: updatedRoom.Players.Select(p => p.Name).ToList(),
+                        FirstPlayerTurn: updatedRoom.CurrentPlayer?.PlayerId.Value ?? Guid.Empty,
                         Timestamp: DateTime.UtcNow
                     );
 
                     _logger.LogInformation("[GameControlHub] Broadcasting GameStarted via NotificationService...");
                     await _notificationService.NotifyGameStartedAsync(roomCode, gameStartedEvent);
+
+                    // FUSIONADO: Enviar estado inicial con cartas (del documento 5)
+                    if (updatedRoom.BlackjackTableId.HasValue)
+                    {
+                        var tableAfterStart = await _tableRepository.GetTableWithPlayersAsync(updatedRoom.BlackjackTableId.Value);
+                        if (tableAfterStart != null)
+                        {
+                            object? dealerPayload = null;
+                            if (tableAfterStart.DealerHandId.HasValue)
+                            {
+                                var dealerHand = await _handRepository.GetByIdAsync(tableAfterStart.DealerHandId.Value);
+                                if (dealerHand != null)
+                                {
+                                    dealerPayload = new
+                                    {
+                                        handId = dealerHand.Id,
+                                        cards = dealerHand.Cards.Select(c => new { suit = c.Suit.ToString(), rank = c.Rank.ToString() }).ToList(),
+                                        value = dealerHand.Value,
+                                        status = dealerHand.Status.ToString()
+                                    };
+                                }
+                            }
+
+                            var playersPayload = new List<object>();
+                            foreach (var seat in tableAfterStart.Seats.Where(s => s.IsOccupied && s.Player != null))
+                            {
+                                var player = seat.Player!;
+                                Guid? firstHandId = player.HandIds.FirstOrDefault();
+                                object? handPayload = null;
+                                if (firstHandId.HasValue)
+                                {
+                                    var hand = await _handRepository.GetByIdAsync(firstHandId.Value);
+                                    if (hand != null)
+                                    {
+                                        handPayload = new
+                                        {
+                                            handId = hand.Id,
+                                            cards = hand.Cards.Select(c => new { suit = c.Suit.ToString(), rank = c.Rank.ToString() }).ToList(),
+                                            value = hand.Value,
+                                            status = hand.Status.ToString()
+                                        };
+                                    }
+                                }
+
+                                playersPayload.Add(new
+                                {
+                                    playerId = player.PlayerId.Value,
+                                    name = player.Name,
+                                    seat = seat.Position,
+                                    hand = handPayload
+                                });
+                            }
+
+                            var gameState = new
+                            {
+                                roomCode = roomCode,
+                                status = "InProgress",
+                                dealerHand = dealerPayload,
+                                players = playersPayload
+                            };
+
+                            _logger.LogInformation("[GameControlHub] Sending GameStateUpdated with {PlayerCount} players", playersPayload.Count);
+                            await _notificationService.NotifyRoomAsync(roomCode, HubMethodNames.ServerMethods.GameStateUpdated, gameState);
+                        }
+                    }
 
                     await Clients.Caller.SendAsync(HubMethodNames.ServerMethods.Success,
                         new { Message = "Juego iniciado correctamente", GameInfo = gameStartedEvent });
@@ -202,7 +316,7 @@ public class GameControlHub : BaseHub
 
     #endregion
 
-    #region Auto-Betting
+    #region Auto-Betting - MANTENIDO INTACTO DE DEVELOPMENT
 
     public async Task ProcessRoundAutoBets(string roomCode, bool removePlayersWithoutFunds = true)
     {

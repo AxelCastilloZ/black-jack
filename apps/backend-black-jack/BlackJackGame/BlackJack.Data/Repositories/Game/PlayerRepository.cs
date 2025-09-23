@@ -17,6 +17,7 @@ public class PlayerRepository : Repository<Player>, IPlayerRepository
     // CORREGIDO: Métodos existentes con comparaciones de value objects
     public async Task<Player?> GetByPlayerIdAsync(PlayerId playerId)
     {
+        // Compare by underlying GUID to avoid EF Core owned-type member access issues
         return await _dbSet
             .FirstOrDefaultAsync(p => p.PlayerId.Value == playerId.Value);
     }

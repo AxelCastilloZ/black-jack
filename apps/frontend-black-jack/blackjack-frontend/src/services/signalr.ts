@@ -1,4 +1,4 @@
-// src/services/signalr.ts - ACTUALIZADO para arquitectura de hubs divididos
+// src/services/signalr.ts - FUSIONADO: Hubs especializados + Auto-betting completo
 import {
   HubConnection,
   HubConnectionBuilder,
@@ -11,7 +11,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:7102'
 
 export type ConnectionState = 'Disconnected' | 'Connecting' | 'Connected' | 'Reconnecting'
 
-// TIPOS para Auto-Betting Events (sin cambios)
+// TIPOS para Auto-Betting Events (del documento 4)
 export interface AutoBetProcessedEvent {
   roomCode: string
   totalPlayersProcessed: number
@@ -121,7 +121,7 @@ class SignalRService {
   private isStarting = false
   private isDestroying = false
 
-  // Event callbacks para el UI - EXISTENTES (via GameRoomHub)
+  // Event callbacks para el UI - BÁSICOS (del documento 3)
   public onPlayerJoined?: (player: any) => void
   public onPlayerLeft?: (player: any) => void
   public onRoomInfo?: (roomData: any) => void
@@ -132,12 +132,7 @@ class SignalRService {
   public onSeatLeft?: (data: any) => void
   public onError?: (message: string) => void
 
-  // Event callbacks para Game Control (via GameControlHub)
-  public onGameStateChanged?: (gameState: any) => void
-  public onGameStarted?: (gameData: any) => void
-  public onGameEnded?: (gameData: any) => void
-
-  // Event callbacks para Auto-Betting (via GameControlHub)
+  // Event callbacks para Auto-Betting - GRUPALES (del documento 4)
   public onAutoBetProcessed?: (event: AutoBetProcessedEvent) => void
   public onAutoBetStatistics?: (event: AutoBetStatistics) => void
   public onAutoBetProcessingStarted?: (event: AutoBetProcessingStartedEvent) => void
@@ -148,7 +143,7 @@ class SignalRService {
   public onAutoBetFailed?: (event: any) => void
   public onMinBetPerRoundUpdated?: (event: any) => void
   
-  // Event callbacks personales (via GameControlHub)
+  // Event callbacks personales - INDIVIDUALES (del documento 4)
   public onYouWereRemovedFromSeat?: (event: PlayerRemovedFromSeatEvent) => void
   public onYourBalanceUpdated?: (event: PlayerBalanceUpdatedEvent) => void
   public onInsufficientFundsWarningPersonal?: (event: InsufficientFundsWarningEvent) => void
@@ -305,7 +300,15 @@ class SignalRService {
 
         connection.on('RoomInfoUpdated', (roomData: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 [GameRoom] RoomInfoUpdated event:', roomData)
+          console.log('[SignalR] 📥 RoomInfoUpdated event:', roomData)
+          const data = roomData?.data || roomData
+          this.onRoomInfoUpdated?.(data)
+        })
+
+        // FUSIONADO: Handler adicional del documento 3
+        connection.on('RoomUpdated', (roomData: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 RoomUpdated event:', roomData)
           const data = roomData?.data || roomData
           this.onRoomInfoUpdated?.(data)
         })
@@ -321,12 +324,26 @@ class SignalRService {
           console.log('[SignalR] 📥 [GameRoom] PlayerJoined event:', data)
           this.onPlayerJoined?.(data)
         })
-        
+
         connection.on('PlayerLeft', (data: any) => {
           if (this.isDestroying) return
           console.log('[SignalR] 📥 [GameRoom] PlayerLeft event:', data)
           this.onPlayerLeft?.(data)
         })
+
+        // FUSIONADO: Game events que pueden venir por RoomHub (del documento 3)
+        connection.on('GameStarted', (gameData: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 GameStarted event (via RoomHub):', gameData)
+          this.onGameStateChanged?.(gameData)
+        })
+
+        connection.on('GameStateUpdated', (gameState: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] 📥 GameStateUpdated event (via RoomHub):', gameState)
+          this.onGameStateChanged?.(gameState)
+        })
+        break
 
         // === EVENTOS DE SEAT ===
         connection.on('SeatJoined', (response: any) => {
@@ -350,9 +367,7 @@ class SignalRService {
         break
 
       case 'GameControl':
-        // AVANZADO: Game control y auto-betting
-
-        // === EVENTOS DE JUEGO ===
+        // Eventos de juego básicos
         connection.on('GameStarted', (gameData: any) => {
           if (this.isDestroying) return
           console.log('[SignalR] 📥 [GameControl] GameStarted event:', gameData)
@@ -366,13 +381,14 @@ class SignalRService {
           this.onGameStateChanged?.(gameState)
         })
 
-        connection.on('GameEnded', (gameData: any) => {
+        // FUSIONADO: Handler adicional del documento 3
+        connection.on('GameStateUpdated', (gameState: any) => {
           if (this.isDestroying) return
-          console.log('[SignalR] 📥 [GameControl] GameEnded event:', gameData)
-          this.onGameEnded?.(gameData)
+          console.log('[SignalR] 📥 GameStateUpdated event:', gameState)
+          this.onGameStateChanged?.(gameState)
         })
 
-        // === EVENTOS DE AUTO-BETTING - GRUPALES ===
+        // EVENTOS DE AUTO-BETTING - GRUPALES (del documento 4)
         connection.on('AutoBetProcessed', (event: AutoBetProcessedEvent) => {
           if (this.isDestroying) return
           console.log('[SignalR] 📥 🎰 [GameControl] AutoBetProcessed event:', event)
@@ -427,7 +443,7 @@ class SignalRService {
           this.onMinBetPerRoundUpdated?.(event)
         })
 
-        // === EVENTOS DE AUTO-BETTING - PERSONALES ===
+        // EVENTOS DE AUTO-BETTING - PERSONALES (del documento 4)
         connection.on('YouWereRemovedFromSeat', (event: PlayerRemovedFromSeatEvent) => {
           if (this.isDestroying) return
           console.log('[SignalR] 📥 🔴 [GameControl] YouWereRemovedFromSeat event:', event)
@@ -644,7 +660,7 @@ class SignalRService {
     this.gameRoomHub = undefined
     this.gameControlHub = undefined
     
-    // Limpiar todos los callbacks
+    // Limpiar callbacks básicos
     this.onPlayerJoined = undefined
     this.onPlayerLeft = undefined
     this.onRoomInfo = undefined
@@ -658,7 +674,7 @@ class SignalRService {
     this.onGameEnded = undefined
     this.onError = undefined
     
-    // Limpiar callbacks de auto-betting
+    // Limpiar callbacks de auto-betting - GRUPALES
     this.onAutoBetProcessed = undefined
     this.onAutoBetStatistics = undefined
     this.onAutoBetProcessingStarted = undefined
@@ -668,6 +684,8 @@ class SignalRService {
     this.onInsufficientFundsWarning = undefined
     this.onAutoBetFailed = undefined
     this.onMinBetPerRoundUpdated = undefined
+    
+    // Limpiar callbacks de auto-betting - PERSONALES
     this.onYouWereRemovedFromSeat = undefined
     this.onYourBalanceUpdated = undefined
     this.onInsufficientFundsWarningPersonal = undefined
@@ -852,27 +870,7 @@ class SignalRService {
     }
   }
 
-  // === MÉTODOS AVANZADOS (via GameControlHub) ===
-
-  async joinRoomForGameControl(roomCode: string): Promise<void> {
-    // Asegurar que GameControlHub esté conectado
-    if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
-      if (!(await this.startGameControlConnection())) {
-        throw new Error('GameControlHub no está disponible')
-      }
-    }
-
-    console.log(`[SignalR] 🎮 [GameControlHub] Joining room for game control: ${roomCode}`)
-
-    try {
-      await this.gameControlHub!.invoke('JoinRoomForGameControl', roomCode)
-      console.log(`[SignalR] ✅ Successfully joined room for game control via GameControlHub`)
-    } catch (error) {
-      console.error(`[SignalR] ❌ Error in JoinRoomForGameControl:`, error)
-      throw error
-    }
-  }
-
+  // MÉTODOS QUE USAN GAMECONTROLHUB - BÁSICOS
   async startGame(roomCode: string): Promise<void> {
     if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
       if (!(await this.startGameControlConnection())) {
@@ -884,17 +882,7 @@ class SignalRService {
     await this.gameControlHub!.invoke('StartGame', roomCode)
   }
 
-  async endGame(roomCode: string): Promise<void> {
-    if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
-      if (!(await this.startGameControlConnection())) {
-        throw new Error('GameControlHub no está disponible')
-      }
-    }
-
-    console.log(`[SignalR] 🏁 [GameControlHub] Ending game for room: ${roomCode}`)
-    await this.gameControlHub!.invoke('EndGame', roomCode)
-  }
-
+  // MÉTODOS QUE USAN GAMECONTROLHUB - AUTO-BETTING (del documento 4)
   async processRoundAutoBets(roomCode: string, removePlayersWithoutFunds: boolean = true): Promise<void> {
     if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
       if (!(await this.startGameControlConnection())) {
@@ -951,7 +939,8 @@ class SignalRService {
     }
   }
 
-  async testGameControlConnection(): Promise<void> {
+  // MÉTODOS DE JUEGO
+  async placeBet(roomCode: string, amount: number): Promise<void> {
     if (!this.gameControlHub || this.gameControlHub.state !== HubConnectionState.Connected) {
       if (!(await this.startGameControlConnection())) {
         throw new Error('GameControlHub no está disponible')

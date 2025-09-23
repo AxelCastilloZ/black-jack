@@ -8,4 +8,5 @@ public interface IDealerService
     bool ShouldHit(Hand dealerHand);
     Hand PlayDealerHand(Hand dealerHand, Deck deck);
     void DealInitialCards(BlackjackTable table);
+    Task DealInitialCardsAsync(BlackjackTable table);
 }
