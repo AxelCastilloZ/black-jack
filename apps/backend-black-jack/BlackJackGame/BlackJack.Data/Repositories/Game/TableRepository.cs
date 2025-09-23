@@ -1,4 +1,4 @@
-﻿// BlackJack.Data.Repositories.Game/TableRepository.cs - LIMPIO (Spectators removidos)
+﻿
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using BlackJack.Domain.Models.Game;
@@ -21,9 +21,7 @@ public class TableRepository : Repository<BlackjackTable>, ITableRepository
     {
         try
         {
-            // CAMBIO: No filtrar por status, devolver todas las mesas para debugging
-            // Una vez que funcione, puedes agregar el filtro: .Where(t => t.Status == Domain.Enums.GameStatus.WaitingForPlayers)
-
+          
             var tables = await _dbSet
                 .Include(t => t.Seats)
                     .ThenInclude(s => s.Player)

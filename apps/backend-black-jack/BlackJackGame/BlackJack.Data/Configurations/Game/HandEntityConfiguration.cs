@@ -16,12 +16,12 @@ public class HandEntityConfiguration : IEntityTypeConfiguration<Hand>
             .HasMaxLength(50)
             .IsRequired();
 
-        // CORREGIDO: Mapear la propiedad privada CardsJson para persistir las cartas
+     
         builder.Property<string>("CardsJson")
             .HasColumnName("Cards")
-            .IsRequired(false); // Permitir null para manos vacías o recién creadas
+            .IsRequired(false);
 
-        // Ignorar propiedades calculadas (solo lectura)
+  
         builder.Ignore(h => h.Value);
         builder.Ignore(h => h.IsSoft);
         builder.Ignore(h => h.IsBlackjack);

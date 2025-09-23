@@ -64,8 +64,8 @@ builder.Services.AddCors(opt =>
             "https://localhost:5173",
             "https://localhost:5174",
             "https://localhost:3000",
-            "http://localhost:8080",    // AGREGADO
-            "https://localhost:8080")); //  AGREGADO
+            "http://localhost:8080",    
+            "https://localhost:8080")); 
 });
 
 var app = builder.Build();
@@ -120,10 +120,10 @@ app.MapControllers();
 app.MapHealthChecks("/api/health").AllowAnonymous();
 
 Console.WriteLine($"[STARTUP-DEBUG] Mapping SignalR hubs (3 HUBS ACTIVOS)...");
-// ARQUITECTURA DE 3 HUBS DIVIDIDOS POR FUNCIONALIDAD  CORREGIDO ENDPOINTS
+
 app.MapHub<LobbyHub>("/hubs/lobby");
-app.MapHub<GameRoomHub>("/hubs/game-room");        // CORREGIDO: game-room en lugar de gameroom
-app.MapHub<GameControlHub>("/hubs/game-control");  // CORREGIDO: game-control en lugar de gamecontrol
+app.MapHub<GameRoomHub>("/hubs/game-room");       
+app.MapHub<GameControlHub>("/hubs/game-control");  
 
 Console.WriteLine($"[STARTUP-DEBUG] 3 SignalR hubs mapped successfully:");
 Console.WriteLine($"[STARTUP-DEBUG] - LobbyHub: /hubs/lobby (navegación y lobby)");
@@ -297,7 +297,6 @@ if (app.Environment.IsDevelopment())
         return Results.Ok(hubs);
     }).AllowAnonymous();
 
-    // NUEVO: Endpoint específico para verificar configuración de hubs - CORREGIDO
     app.MapGet("/api/debug/hub-config", (IServiceProvider services) =>
     {
         Console.WriteLine($"[DEBUG-HUB-CONFIG] Hub configuration check requested");
@@ -316,11 +315,11 @@ if (app.Environment.IsDevelopment())
                 NotificationService = services.GetService<BlackJack.Realtime.Services.ISignalRNotificationService>() != null,
                 GameRoomService = services.GetService<BlackJack.Services.Game.IGameRoomService>() != null
             },
-            ExpectedEndpoints = new[]  //  CORREGIDO
+            ExpectedEndpoints = new[]  
             {
                 "/hubs/lobby",
-                "/hubs/game-room",     //  CORREGIDO
-                "/hubs/game-control"   // CORREGIDO
+                "/hubs/game-room",     
+                "/hubs/game-control"   
             },
             Configuration = "3-Hub Architecture - LobbyHub + GameRoomHub + GameControlHub",
             Timestamp = DateTime.UtcNow

@@ -1,4 +1,4 @@
-﻿// SeatConfiguration.cs - CORREGIDA
+﻿
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using BlackJack.Domain.Models.Game;

@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using BlackJack.Domain.Models.Users;
+using System.Text.Json;
 
 namespace BlackJack.Data.Configurations.Users;
 
@@ -38,15 +39,16 @@ public class PlayerConfiguration : IEntityTypeConfiguration<Player>
         builder.Property(p => p.IsActive)
             .IsRequired();
 
-        // SIMPLIFICADO: HandIds como string simple
-        builder.Property<string>("_handIdsJson")
-               .HasColumnName("HandIds")
-               .HasColumnType("nvarchar(max)");
-
-        builder.Ignore(p => p.HandIds);
-
-        // ELIMINADO: Player no hereda de AggregateRoot, así que NO tiene DomainEvents
-        // builder.Ignore(p => p.DomainEvents); // ❌ Esta línea causa el error
+        // ✅ FIX CRÍTICO: Configuración correcta para HandIds con JSON serialization
+        builder.Property(p => p.HandIds)
+            .HasColumnName("HandIds")
+            .HasColumnType("nvarchar(max)")
+            .HasConversion(
+                v => JsonSerializer.Serialize(v, (JsonSerializerOptions)null!),
+                v => string.IsNullOrEmpty(v)
+                    ? new List<Guid>()
+                    : JsonSerializer.Deserialize<List<Guid>>(v, (JsonSerializerOptions)null!)
+            );
 
         // Índices simples
         builder.HasIndex(p => p.Name);

@@ -1,4 +1,4 @@
-﻿// GameEndedEvent.cs
+﻿
 using BlackJack.Domain.Models.Betting;
 using BlackJack.Domain.Models.Users;
 

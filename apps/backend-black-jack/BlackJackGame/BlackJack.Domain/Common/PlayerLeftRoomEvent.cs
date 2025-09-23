@@ -1,4 +1,4 @@
-﻿// PlayerLeftRoomEvent.cs
+﻿
 using BlackJack.Domain.Models.Users;
 
 namespace BlackJack.Domain.Common;

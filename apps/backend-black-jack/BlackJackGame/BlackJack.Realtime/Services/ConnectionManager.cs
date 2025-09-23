@@ -1,4 +1,4 @@
-﻿// BlackJack.Realtime/Services/ConnectionManager.cs - Solo tracking de conexiones
+﻿
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using BlackJack.Domain.Models.Users;

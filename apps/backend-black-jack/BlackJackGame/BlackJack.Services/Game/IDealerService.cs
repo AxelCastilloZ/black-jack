@@ -1,4 +1,4 @@
-﻿// BlackJack.Services.Game/IDealerService.cs - INTERFAZ COMPLETA
+﻿
 using BlackJack.Domain.Models.Game;
 using BlackJack.Domain.Models.Cards;
 

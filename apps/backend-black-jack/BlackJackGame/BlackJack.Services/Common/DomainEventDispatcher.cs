@@ -1,4 +1,4 @@
-﻿// DomainEventDispatcher.cs - En Services/Common/
+﻿
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using BlackJack.Domain.Common;

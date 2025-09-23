@@ -1,4 +1,4 @@
-// src/components/game/GameTable.tsx - CORREGIDO
+// src/components/game/GameTable.tsx - COMPLETO CON DEBUGGING
 import React from 'react'
 import HandDisplay from './HandDisplay'
 import GameActions from './GameActions'
@@ -55,7 +55,7 @@ export default function GameTable({
                           isCurrentPlayerHost &&
                           gameControlConnected
 
-  // DEBUGGING: Agregar logs para diagnosticar
+  // DEBUGGING DETALLADO: Agregar logs para diagnosticar el problema de los botones
   console.log('[GameTable] Render state:', {
     gameStatus,
     canStart,
@@ -63,8 +63,43 @@ export default function GameTable({
     showStartButton,
     hasPlayerHand: !!playerHand,
     isPlayerTurn,
-    playerHandStatus: playerHand?.status
+    playerHandStatus: playerHand?.status,
+    // NUEVOS CAMPOS DE DEBUG:
+    isViewer,
+    onHitExists: !!onHit,
+    onStandExists: !!onStand,
+    shouldShowButtons: isPlayerSeated && 
+                       !isViewer && 
+                       gameStatus === 'InProgress' && 
+                       playerHand && 
+                       playerHand.status === 'Active' &&
+                       onHit && 
+                       onStand
   })
+
+  // DEBUGGING ESPECÍFICO PARA CONDICIONES DE BOTONES
+  if (isPlayerSeated && !isViewer && gameStatus === 'InProgress' && playerHand) {
+    console.log('[GameTable] BUTTON CONDITIONS CHECK:', {
+      step1_isPlayerSeated: isPlayerSeated,
+      step2_notViewer: !isViewer,
+      step3_gameInProgress: gameStatus === 'InProgress',
+      step4_hasPlayerHand: !!playerHand,
+      step5_handIsActive: playerHand?.status === 'Active',
+      step6_onHitExists: !!onHit,
+      step7_onStandExists: !!onStand,
+      step8_finalResult: isPlayerSeated && 
+                         !isViewer && 
+                         gameStatus === 'InProgress' && 
+                         playerHand && 
+                         playerHand.status === 'Active' &&
+                         onHit && 
+                         onStand,
+      handStatus: playerHand?.status,
+      onHitType: typeof onHit,
+      onStandType: typeof onStand,
+      isPlayerTurn: isPlayerTurn
+    })
+  }
 
   return (
     <>
@@ -106,6 +141,19 @@ export default function GameTable({
             onHit={onHit}
             onStand={onStand}
           />
+        </div>
+      )}
+
+      {/* DEBUGGING: Mostrar estado de condiciones cuando deberían aparecer botones */}
+      {isPlayerSeated && !isViewer && gameStatus === 'InProgress' && playerHand && (
+        <div className="absolute bottom-4 right-4 bg-black/80 text-white text-xs p-2 rounded font-mono z-50">
+          <div>Hand Status: {playerHand?.status}</div>
+          <div>Is Player Turn: {isPlayerTurn ? 'YES' : 'NO'}</div>
+          <div>onHit: {onHit ? 'EXISTS' : 'MISSING'}</div>
+          <div>onStand: {onStand ? 'EXISTS' : 'MISSING'}</div>
+          <div>Should Show: {
+            (playerHand.status === 'Active' && onHit && onStand) ? 'YES' : 'NO'
+          }</div>
         </div>
       )}
 

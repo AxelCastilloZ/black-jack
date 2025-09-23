@@ -1,4 +1,4 @@
-﻿// ISignalRNotificationService.cs - En BlackJack.Realtime/Services/ - COMPLETO CON AUTO-BETTING
+﻿
 using BlackJack.Domain.Models.Users;
 using BlackJack.Realtime.Models;
 
