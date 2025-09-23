@@ -176,6 +176,8 @@ class SignalRService {
   public onQuickJoinRedirect?: (data: any) => void
   public onQuickJoinTableRedirect?: (data: any) => void
   public onDetailedRoomInfo?: (data: any) => void
+  // Chat callbacks
+  public onMessageReceived?: (msg: { roomCode: string; playerId: string; playerName: string; text: string; timestamp: string }) => void
 
   private buildConnection(hubPath: string): HubConnection {
     const fullUrl = `${API_BASE}${hubPath}`
@@ -404,6 +406,24 @@ class SignalRService {
           if (this.isDestroying) return
           console.log('[SignalR] spectatorLeft event:', data)
         })
+
+        // Chat events
+        connection.on('messageReceived', (msg: any) => {
+          if (this.isDestroying) return
+          console.log('[SignalR] messageReceived event:', msg)
+          try {
+            const normalized = {
+              roomCode: String(msg?.roomCode ?? ''),
+              playerId: String(msg?.playerId ?? ''),
+              playerName: String(msg?.playerName ?? ''),
+              text: String(msg?.text ?? ''),
+              timestamp: String(msg?.timestamp ?? new Date().toISOString())
+            }
+            this.onMessageReceived?.(normalized)
+          } catch (e) {
+            console.warn('[SignalR] Invalid chat message payload:', e)
+          }
+        })
         break
 
       case 'GameControl':
@@ -533,6 +553,17 @@ class SignalRService {
 
         break
     }
+  }
+
+  // Chat API
+  async sendChatMessage(roomCode: string, text: string): Promise<void> {
+    if (!this.gameRoomConnection || this.gameRoomConnection.state !== HubConnectionState.Connected) {
+      if (!(await this.verifyConnections())) {
+        throw new Error('GameRoomHub no está disponible')
+      }
+    }
+
+    await this.gameRoomConnection!.invoke('SendChatMessage', { roomCode, text })
   }
 
   async startConnections(): Promise<boolean> {

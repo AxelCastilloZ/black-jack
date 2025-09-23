@@ -1138,6 +1138,7 @@ export default function GamePage() {
       <GameChat
         currentUser={currentUser.current}
         isComponentMounted={isComponentMounted.current}
+        roomCode={gameState?.roomCode}
       />
 
     </div>

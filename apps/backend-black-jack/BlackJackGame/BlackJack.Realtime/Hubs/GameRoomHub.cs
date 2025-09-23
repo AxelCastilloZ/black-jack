@@ -465,6 +465,50 @@ public class GameRoomHub : BaseHub
 
     #endregion
 
+    #region Chat
+
+    public class ChatMessageRequest
+    {
+        public string RoomCode { get; set; } = string.Empty;
+        public string Text { get; set; } = string.Empty;
+    }
+
+    public async Task SendChatMessage(ChatMessageRequest request)
+    {
+        try
+        {
+            var playerId = await ValidateAuthenticationAsync();
+            if (playerId == null) return;
+
+            if (!ValidateInput(request.RoomCode, nameof(request.RoomCode)) ||
+                !ValidateInput(request.Text, nameof(request.Text), 200))
+            {
+                await SendErrorAsync("Datos de chat inválidos");
+                return;
+            }
+
+            var userName = GetCurrentUserName() ?? "Jugador";
+            var roomGroupName = HubMethodNames.Groups.GetRoomGroup(request.RoomCode);
+
+            var payload = new
+            {
+                roomCode = request.RoomCode,
+                playerId = playerId.Value,
+                playerName = userName,
+                text = request.Text,
+                timestamp = DateTime.UtcNow
+            };
+
+            await Clients.Group(roomGroupName).SendAsync(HubMethodNames.ServerMethods.MessageReceived, payload);
+        }
+        catch (Exception ex)
+        {
+            await HandleExceptionAsync(ex, "SendChatMessage");
+        }
+    }
+
+    #endregion
+
     #region Test Methods
 
     [AllowAnonymous]
